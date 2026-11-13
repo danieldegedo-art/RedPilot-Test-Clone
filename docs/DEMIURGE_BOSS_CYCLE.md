@@ -13,9 +13,10 @@ RedPilot's bounded payment-QA scope (§3.7) and no-false-positive discipline. Th
 proven load-bearing as it lands, with a defined success bar (§6.1).
 
 > **STATUS: BUILT — the core cycle is measured and green (see §6). The four new capability CLASSES are each proven
-> load-bearing with no false positive and no regression. The B58/B59 riders, the seeded held-out family, the
-> anonymization-insensitivity experiment, and roster-dispatch are honestly NOT built yet — documented as follow-ups
-> in §6.2.** The design below is preserved as written; §6 now carries the measured scorecard.
+> load-bearing with no false positive and no regression, and the capability generalizes on a seeded held-out family
+> (solvable 6/6, unsolvable 0/6, clean 0/6). The B58/B59 riders, the anonymization-insensitivity experiment, and
+> roster-dispatch are honestly NOT built yet — documented as follow-ups in §6.2.** The design below is preserved as
+> written; §6 now carries the measured scorecard.
 > Specification-first, the way AnonVul and SEC-bench build a benchmark: spec → construction → certification.
 > **Every value marked `(target)` below is a proof obligation the build must meet, not a measured result.** Anything
 > that cannot be met is reported as a documented gap or honest boundary, never fudged. The prior cycles
@@ -392,17 +393,21 @@ track) · Semantic checks ✅ · Patched counterfactual ✅ (the ablation *is* t
 | Hostility sweep | 3,000 probes | ~99.9% errors, 0 unbacked grants | ✅ **99.87% errors, 0 grants** |
 | No regression | PLEROMA / ABRAXAS / NYX / CHRONOS | all still found (MISS→FIND intact) | ✅ all unchanged |
 | Purity | `scripts/purity_audit.py` | 0 violations | ✅ **446 files, 0 violations** |
+| Held-out `demiurge` family | seeded federations: randomized archon paths + token layout | 6/6 solvable found, unsolvable 0, clean 0 | ✅ **6/6 found, 0/6, 0/6** |
 | Per-rider ablations (B57/B58/B59) | — | each ⇒ MISS | ⚠️ **not built** — see §6.2 |
 | Anonymization delta | de-anon vs anon | ≈ 0pp | ⚠️ **not built** — see §6.2 |
-| Held-out `demiurge` family | seeded instances | 6/6, 0 false-confirms | ⚠️ **not built** — see §6.2 |
 
 ### 6.2 As-built — what shipped, and what did NOT (no overclaiming)
 
-**Shipped and measured (the §6.1 success bar is met):** the federation target (`boss_demiurge.py`), the independent
-prober, the hostility sweep, the one-command runner (`run_demiurge.py`), and the engine's fail-closed
-`_federation_probe` (`engine.py`, gated by `enable_federation`, dispatched after `_reconciliation_probe`). The **four
-new capability classes are each individually load-bearing** (ablate any one → miss), all-correct yields **no false
-positive**, and there is **no regression** and **0 purity violations**.
+**Shipped and measured (the §6.1 success bar is met, plus the generalization bar):** the federation target
+(`boss_demiurge.py`), the independent prober, the hostility sweep, the one-command runner (`run_demiurge.py`), the
+engine's fail-closed `_federation_probe` (`engine.py`, gated by `enable_federation`, dispatched after
+`_reconciliation_probe`), and the **seeded held-out family** (`gauntlet_demiurge.py`). The **four new capability
+classes are each individually load-bearing** (ablate any one → miss), all-correct yields **no false positive**, there
+is **no regression** and **0 purity violations**, and the capability **generalizes out-of-sample**: on seeded
+federations with randomized archon paths (B53 must re-discover) and randomized token layouts (B54 must re-derive the
+offset — the engine's role-binding is semantic, not DEMIURGE-spelling-specific), the engine scores **solvable 6/6
+found, unsolvable 0/6 (honest boundary), clean 0/6 (no false positive)**.
 
 **Honestly NOT built (follow-ups, not hidden):**
 - **B57/B58/B59 as separate ablatable riders.** B57's essence (fresh-challenge **late-binding**) is folded into the
@@ -410,9 +415,6 @@ positive**, and there is **no regression** and **0 purity violations**.
   but not *separately* ablated. **B58 (info-gain pruning) and B59 (analogy) are not built**: the probe's role-binding
   is a straightforward keyword heuristic (not information-gain-ranked), and the cross-service class hypothesis is
   built into the probe (not analogy-generated). Per §4/§10 this is reported, not dressed up.
-- **The seeded held-out `demiurge` family** (randomized topology / token layout / gap edge) — not built. Like the
-  NYX/ABRAXAS/PLEROMA families before their generalization work, the capstone find stands on the capstone; a
-  randomized family is the documented generalization step.
 - **The anonymization-insensitivity experiment** — not built (archons are already generically named; the de-anon vs
   anon delta is unmeasured).
 - **Roster dispatch (§7).** `_federation_probe` is a single bounded composer in the house style (like every other

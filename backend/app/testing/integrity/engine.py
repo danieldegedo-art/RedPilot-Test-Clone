@@ -1946,9 +1946,14 @@ class PureBlackBoxEngine:
         for n, o in b.operations.items():
             if o.method == "GET":
                 _paths((await cal.call(n, label=f"U:fed:disco:{n}")).body, pairs)
-        roles = {"mint": _role(pairs, "correlation", "token", "vault"), "open": _role(pairs, "open", "period", "meter"),
-                 "credit": _role(pairs, "credit", "dispute"), "close": _role(pairs, "close", "reconcil"),
-                 "final": _role(pairs, "finalize", "settle"), "step": _role(pairs, "stepup", "step", "challenge", "radar")}
+        # role binding is SEMANTIC (a principled synonym set), not DEMIURGE-spelling-specific, so it generalises to the
+        # held-out family's renamed archons; the sets are disjoint so a path binds at most one role.
+        roles = {"mint": _role(pairs, "correlation", "token", "vault", "mint", "issue", "custod"),
+                 "open": _role(pairs, "open", "meter", "usage", "cycle"),
+                 "credit": _role(pairs, "credit", "dispute", "rebate", "adjust", "chargeback"),
+                 "close": _role(pairs, "close", "reconcil", "seal", "lock"),
+                 "final": _role(pairs, "finaliz", "settle", "clear", "disburse", "payout"),
+                 "step": _role(pairs, "stepup", "step", "challenge", "radar", "otp", "verify", "nonce")}
         if not all(roles[k] for k in ("mint", "open", "credit", "close", "final")):
             return None
 

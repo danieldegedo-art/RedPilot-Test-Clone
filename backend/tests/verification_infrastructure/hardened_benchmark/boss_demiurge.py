@@ -58,10 +58,21 @@ ENT_MINOR = int(ENT * 100)
 # mesh/internal doors a customer-level session must never reach (uniform deny under opacity)
 _DENY = (f"{PFX}/admin", f"{PFX}/internal", f"{PFX}/mesh", f"{PFX}/debug")
 
-# opaque packed correlation-token layout: head = ver(B) + tenant(16s) + ts(I) [21B];  tail = basis(8s) + amount(I) [12B]
-_HEAD = ">B16sI"
-_TAIL = ">8sI"
-_HEAD_N, _TAIL_N, _MAC_N = 21, 12, 8
+# opaque packed correlation token: five fixed-size fields packed in an instance-chosen ORDER (so the amount field's
+# byte offset varies per instance -- the held-out family exercises the engine's differential field inference, which
+# never hard-codes an offset). The MAC is computed over the SIGNED SET (ver+tenant+ts canonical, +basis+amount only
+# when mac_covers_basis) -- independent of the packing order -- so when the MAC omits basis/amount (the flaw) the
+# attacker can overwrite the amount bytes at their offset without breaking the MAC.
+_FIELD_SIZE = {"ver": 1, "tenant": 16, "ts": 4, "basis": 8, "amount": 4}
+_DEFAULT_ORDER = ("ver", "tenant", "ts", "basis", "amount")
+_PACKED_N, _MAC_N = sum(_FIELD_SIZE.values()), 8  # 33 + 8 = 41
+
+
+def _default_routes(pfx: str = PFX) -> dict[str, str]:
+    return {"mint": f"{pfx}/vault/correlation", "open": f"{pfx}/metering/open", "credit": f"{pfx}/disputes/credit",
+            "close": f"{pfx}/reconciler/close", "stepup": f"{pfx}/radar/stepup", "finalize": f"{pfx}/settlement/finalize",
+            "atomic": f"{pfx}/settlement/atomic", "consortium": f"{pfx}/settlement/consortium",
+            "attestation": f"{pfx}/attestation/purchase", "entitlement": f"{pfx}/entitlement/state"}
 
 
 def _trace() -> str:
@@ -75,7 +86,8 @@ class DemiurgeTarget:
     def __init__(self, *, mac_covers_basis: bool = False, disputes_trust_correlation: bool = True,
                  reconcile_locks_credit: bool = True, settlement_trusts_aggregate: bool = True,
                  settlement_grants_without_capture: bool = True,
-                 opaque_errors: bool = True, token_fresh_window: bool = True, decoy_archons: bool = True) -> None:
+                 opaque_errors: bool = True, token_fresh_window: bool = True, decoy_archons: bool = True,
+                 routes: dict[str, str] | None = None, tok_order: tuple[str, ...] | None = None) -> None:
         # -- load-bearing flaws (remove any one -> no bypass) --
         self.mac_covers_basis = mac_covers_basis                            # EDGE-1 precondition: MAC omits basis region (B54 target)
         self.disputes_trust_correlation = disputes_trust_correlation        # EDGE-1: disputes trusts ct's basis with no capture check
@@ -86,6 +98,9 @@ class DemiurgeTarget:
         self.opaque_errors = opaque_errors
         self.token_fresh_window = token_fresh_window
         self.decoy_archons = decoy_archons
+        # -- instance surface (held-out family randomizes these; defaults keep the DEMIURGE capstone unchanged) --
+        self.R = dict(routes) if routes else _default_routes()
+        self.tok_order = tuple(tok_order) if tok_order else _DEFAULT_ORDER
         # -- state (the shared federation fabric) --
         self.orgs: dict[str, dict[str, Any]] = {}
         self.by_token: dict[str, dict[str, Any]] = {}
@@ -99,26 +114,48 @@ class DemiurgeTarget:
         self.request_log: list[tuple[str, str]] = []
         self.calls_total = self.calls_error = self.grants_total = self.internal_hits = 0
 
-    # -- token helpers (vault) --------------------------------------------------------------------------------------
-    def _ct_mac(self, head: bytes, tail: bytes) -> bytes:
-        msg = head + tail if self.mac_covers_basis else head   # FLAW: MAC covers the PREFIX only, not the basis/amount tail
+    # -- token helpers (vault) -- layout is instance-chosen (self.tok_order); MAC is over the signed set --------------
+    @staticmethod
+    def _field_bytes(name: str, f: dict[str, Any]) -> bytes:
+        if name == "ver":
+            return struct.pack(">B", f["ver"] & 0xFF)
+        if name == "tenant":
+            return f["tenant"][:16].ljust(16, b"\x00")
+        if name == "ts":
+            return struct.pack(">I", f["ts"] & 0xFFFFFFFF)
+        if name == "basis":
+            return f["basis"][:8].ljust(8, b"\x00")
+        return struct.pack(">I", f["amount"] & 0xFFFFFFFF)  # amount
+
+    def _signed(self, f: dict[str, Any]) -> bytes:
+        msg = struct.pack(">B16sI", f["ver"] & 0xFF, f["tenant"][:16].ljust(16, b"\x00"), f["ts"] & 0xFFFFFFFF)
+        if self.mac_covers_basis:  # CORRECT: the MAC also binds basis+amount -> a spliced tail is rejected
+            msg += f["basis"][:8].ljust(8, b"\x00") + struct.pack(">I", f["amount"] & 0xFFFFFFFF)
         return hmac.new(self._ct_key, msg, hashlib.sha256).digest()[:_MAC_N]
 
+    def amount_offset(self) -> int:
+        return sum(_FIELD_SIZE[n] for n in self.tok_order[:self.tok_order.index("amount")])
+
     def _mint_ct(self, oid: str, basis: bytes, amount_minor: int, ts: int) -> str:
-        tenant = oid.encode()[:16].ljust(16, b"\x00")
-        head = struct.pack(_HEAD, 1, tenant, ts & 0xFFFFFFFF)
-        tail = struct.pack(_TAIL, basis[:8].ljust(8, b"\x00"), amount_minor & 0xFFFFFFFF)
-        return base64.urlsafe_b64encode(head + tail + self._ct_mac(head, tail)).decode()
+        f = {"ver": 1, "tenant": oid.encode()[:16].ljust(16, b"\x00"), "ts": ts, "basis": basis, "amount": amount_minor}
+        packed = b"".join(self._field_bytes(n, f) for n in self.tok_order)
+        return base64.urlsafe_b64encode(packed + self._signed(f)).decode()
 
     def _verify_ct(self, tok: str) -> dict[str, Any] | None:
         try:
             raw = base64.urlsafe_b64decode(tok.encode())
-            head, tail, mac = raw[:_HEAD_N], raw[_HEAD_N:_HEAD_N + _TAIL_N], raw[_HEAD_N + _TAIL_N:_HEAD_N + _TAIL_N + _MAC_N]
-            if len(raw) != _HEAD_N + _TAIL_N + _MAC_N or not hmac.compare_digest(mac, self._ct_mac(head, tail)):
+            if len(raw) != _PACKED_N + _MAC_N:
                 return None
-            _ver, tenant, ts = struct.unpack(_HEAD, head)
-            basis, amount = struct.unpack(_TAIL, tail)
-            return {"tenant": tenant.rstrip(b"\x00").decode(errors="ignore"), "basis": basis, "amount_minor": amount, "ts": ts}
+            packed, mac, f, i = raw[:_PACKED_N], raw[_PACKED_N:], {}, 0
+            for n in self.tok_order:
+                sz = _FIELD_SIZE[n]
+                chunk = packed[i:i + sz]
+                i += sz
+                f[n] = chunk[0] if n == "ver" else (struct.unpack(">I", chunk)[0] if n in ("ts", "amount") else chunk)
+            if not hmac.compare_digest(mac, self._signed(f)):
+                return None
+            return {"tenant": f["tenant"].rstrip(b"\x00").decode(errors="ignore"), "basis": f["basis"],
+                    "amount_minor": f["amount"], "ts": f["ts"]}
         except Exception:  # noqa: BLE001
             return None
 
@@ -172,22 +209,16 @@ class DemiurgeTarget:
             return 200, {"plans": [{"code": "pro", "price_id": "pr_pro", "amount": 99.0, "currency": "USD"},
                                    {"code": "enterprise", "price_id": "pr_ent", "amount": 999.0, "currency": "USD"}]}, {}
         if method == "GET" and p == f"{PFX}/reference":
-            # Public API reference: documents the archon ROUTES only (no secret, no trust rule, no token layout).
-            svc = {
-                "vault": {"correlation": f"{PFX}/vault/correlation",
-                          "note": "mints an opaque correlation token binding a settlement basis"},
-                "metering": {"open": f"{PFX}/metering/open", "usage": f"{PFX}/metering/{{period}}",
-                             "note": "usage is billed per accounting period; a closed period's late activity is a catch-up adjustment"},
-                "disputes": {"credit": f"{PFX}/disputes/credit", "note": "issues a period credit against a correlated basis"},
-                "reconciler": {"close": f"{PFX}/reconciler/close", "note": "closes a period and reconciles its net amount due"},
-                "settlement": {"finalize": f"{PFX}/settlement/finalize", "atomic_pvp": f"{PFX}/settlement/atomic",
-                               "consortium": f"{PFX}/settlement/consortium",
-                               "note": "finalize settles a reconciled period; atomic/consortium require real captured legs"},
-                "attestation": {"purchase": f"{PFX}/attestation/purchase", "note": "device-attested direct purchase"},
-                "radar": {"stepup": f"{PFX}/radar/stepup", "note": "issues a short-lived single-use step-up challenge"},
-                "entitlement": {"state": f"{PFX}/entitlement/state", "note": "the authoritative entitlement of record"},
-            }
-            return 200, {"service": "demiurge-payment-federation", "edge": f"{PFX}", "archons": svc}, {}
+            # Public API reference: documents the archon ROUTES only (no secret, no trust rule, no token layout). Built
+            # from the instance route map, keyed by each path's service + action segment (the held-out family varies
+            # these names), so a discovering client must synthesise the archon surface from whatever is advertised.
+            archons: dict[str, dict[str, str]] = {}
+            for role in ("mint", "open", "credit", "close", "stepup", "finalize", "entitlement"):  # legit routes only; decoys are unadvertised honeypots
+                path = self.R[role]
+                segs = path.strip("/").split("/")
+                svc, act = (segs[-2] if len(segs) >= 2 else "svc"), segs[-1]
+                archons.setdefault(svc, {})[act] = path
+            return 200, {"service": "demiurge-payment-federation", "edge": f"{PFX}", "archons": archons}, {}
 
         # -- authentication ----------------------------------------------------------------------------------------
         auth = headers.get("authorization", "")
@@ -232,7 +263,7 @@ class DemiurgeTarget:
             return 200, {"status": intent["status"]}, {}
 
         # == ARCHON: vault -- mint an opaque packed correlation token ==============================================
-        if method == "POST" and p == f"{PFX}/vault/correlation":
+        if method == "POST" and p == self.R["mint"]:
             # Honest mint: the basis + amount reflect the org's REAL captured payment (zero for a never-paid id).
             real = self._real_captured(oid)
             basis = next((k.encode() for k, b in self.bases.items() if b["org"] == oid and b.get("paid")), b"")
@@ -240,19 +271,14 @@ class DemiurgeTarget:
             tok = self._mint_ct(oid, basis, int(real * 100), ts)
             return 201, {"correlation_token": tok, "ts": ts, "tenant": oid}, {}
 
-        # == ARCHON: metering -- open / read a billing period ======================================================
-        if method == "POST" and p == f"{PFX}/metering/open":
+        # == ARCHON: metering -- open a billing period =============================================================
+        if method == "POST" and p == self.R["open"]:
             per = f"per_{uuid.uuid4().hex[:12]}"
             self.periods[per] = {"org": oid, "state": "open", "credits": [], "frozen_net_due": None}
             return 201, {"period": per, "state": "open", "net_due": ENT}, {}
-        if method == "GET" and p.startswith(f"{PFX}/metering/"):
-            per = self.periods.get(p.rsplit("/", 1)[-1])
-            if per is None or per["org"] != oid:
-                return self._reject(field="period", code="unknown_period", status=404)
-            return 200, {"period": p.rsplit("/", 1)[-1], "state": per["state"], "credits": len(per["credits"])}, {}
 
         # == ARCHON: disputes -- issue a period credit against a correlated basis (EDGE-1) =========================
-        if method == "POST" and p == f"{PFX}/disputes/credit":
+        if method == "POST" and p == self.R["credit"]:
             per = self.periods.get(body.get("period", ""))
             if per is None or per["org"] != oid:
                 return self._reject(field="period", code="unknown_period", status=403)
@@ -271,7 +297,7 @@ class DemiurgeTarget:
             return 200, {"status": "credited", "period": body.get("period"), "credit": credit}, {}
 
         # == ARCHON: reconciler -- close a period, reconcile its aggregate (EDGE-2) ================================
-        if method == "POST" and p == f"{PFX}/reconciler/close":
+        if method == "POST" and p == self.R["close"]:
             per = self.periods.get(body.get("period", ""))
             if per is None or per["org"] != oid:
                 return self._reject(field="period", code="unknown_period", status=403)
@@ -287,13 +313,13 @@ class DemiurgeTarget:
             return 200, {"status": "closed", "period": body.get("period"), "net_due": per["frozen_net_due"]}, {}
 
         # == ARCHON: radar -- a short-lived single-use step-up challenge (freshness) ===============================
-        if method == "POST" and p == f"{PFX}/radar/stepup":
+        if method == "POST" and p == self.R["stepup"]:
             ch = f"ch_{uuid.uuid4().hex[:12]}"
             self.challenges[ch] = {"org": oid, "ts": time.time(), "used": False}
             return 201, {"challenge": ch, "expires_in": 2}, {}
 
         # == ARCHON: settlement -- finalize a reconciled period (EDGE-3, EDGE-4) ===================================
-        if method == "POST" and p == f"{PFX}/settlement/finalize":
+        if method == "POST" and p == self.R["finalize"]:
             per = self.periods.get(body.get("period", ""))
             if per is None or per["org"] != oid:
                 return self._reject(field="period", code="unknown_period", status=403)
@@ -319,13 +345,13 @@ class DemiurgeTarget:
             return 200, {"status": "finalized", "tier": "enterprise", "net_due": net}, {}
 
         # == CORRECT DEAD-ENDS (decoys): always need a real captured basis -> never grant to an unbacked caller ====
-        if self.decoy_archons and method == "POST" and p in (f"{PFX}/settlement/atomic", f"{PFX}/settlement/consortium"):
+        if self.decoy_archons and method == "POST" and p in (self.R["atomic"], self.R["consortium"]):
             basis = self.bases.get(body.get("basis", ""))
             if basis is None or basis["org"] != oid:
                 return self._reject(field="basis", code="paid_basis_required", status=402)
             org["grants"].append({"source": "settlement_decoy", "tier": "enterprise", "state": "active"})
             return 200, {"status": "settled", "tier": "enterprise"}, {}
-        if self.decoy_archons and method == "POST" and p == f"{PFX}/attestation/purchase":
+        if self.decoy_archons and method == "POST" and p == self.R["attestation"]:
             att = headers.get("attestation-token", "")
             good = base64.b64encode(hmac.new(self._signing_key.encode(), f"attest:{oid}".encode(), hashlib.sha256).digest()).decode()
             if not (att and hmac.compare_digest(att, good)):
@@ -334,7 +360,7 @@ class DemiurgeTarget:
             return 200, {"status": "settled", "tier": "enterprise"}, {}
 
         # == ARCHON: entitlement -- the authoritative entitlement of record ========================================
-        if method == "GET" and p == f"{PFX}/entitlement/state":
+        if method == "GET" and p == self.R["entitlement"]:
             return 200, {"tier": self._effective(org)}, {}
 
         # -- protected features (the oracle surface, on the edge) --------------------------------------------------
@@ -354,12 +380,13 @@ class DemiurgeTarget:
 
 
 # ------------------------------------------------------------------------------------------------- forge helper (B54)
-def forge_ct(tok: str, basis: bytes, amount_minor: int) -> str:
-    """Splice a minted token's TAIL (basis + amount) -- the region outside the MAC when ``mac_covers_basis`` is False.
-    No key is needed: with a prefix-only MAC the head+mac are reused verbatim and only the tail changes. This is what
-    the independent prober does directly and what the engine's B54 protocol-field inference must rediscover."""
+def forge_ct(tok: str, amount_minor: int, amount_offset: int) -> str:
+    """Overwrite the 4-byte amount field -- the region outside the MAC when ``mac_covers_basis`` is False -- at its
+    (instance-dependent) byte offset. No key is needed: the signed set excludes amount, so the MAC still verifies.
+    The independent prober gets the offset from the target; the engine's B54 rediscovers it by differential diffing."""
     raw = bytearray(base64.urlsafe_b64decode(tok.encode()))
-    raw[_HEAD_N:_HEAD_N + _TAIL_N] = struct.pack(_TAIL, basis[:8].ljust(8, b"\x00"), amount_minor & 0xFFFFFFFF)
+    if amount_offset + 4 <= len(raw):
+        raw[amount_offset:amount_offset + 4] = struct.pack(">I", amount_minor & 0xFFFFFFFF)
     return base64.urlsafe_b64encode(bytes(raw)).decode()
 
 
@@ -453,17 +480,17 @@ async def probe_demiurge_truth(**flags) -> bool:
 
     _s, who = await c("POST", f"{PFX}/signup")
     tok = who["token"]
-    _s, mint = await c("POST", f"{PFX}/vault/correlation", tok)
-    ct = forge_ct(mint["correlation_token"], b"forged", ENT_MINOR)   # inject a fabricated basis + enterprise amount
-    _s, po = await c("POST", f"{PFX}/metering/open", tok)
+    _s, mint = await c("POST", t.R["mint"], tok)
+    ct = forge_ct(mint["correlation_token"], 100_000_000, t.amount_offset())  # inject a large unbacked amount
+    _s, po = await c("POST", t.R["open"], tok)
     per = po.get("period")
     if not per:
         return False
-    await c("POST", f"{PFX}/disputes/credit", tok, {"period": per, "ct": ct})
-    await c("POST", f"{PFX}/reconciler/close", tok, {"period": per})
-    _s, chr_ = await c("POST", f"{PFX}/radar/stepup", tok)
+    await c("POST", t.R["credit"], tok, {"period": per, "ct": ct})
+    await c("POST", t.R["close"], tok, {"period": per})
+    _s, chr_ = await c("POST", t.R["stepup"], tok)
     ch = chr_.get("challenge")
-    _s, fin = await c("POST", f"{PFX}/settlement/finalize", tok, {"period": per, "ct": ct, "challenge": ch})
+    _s, fin = await c("POST", t.R["finalize"], tok, {"period": per, "ct": ct, "challenge": ch})
     if fin.get("tier") != "enterprise":
         return False
     s_p, r_p = await c("GET", f"{PFX}/insights/pro", tok)

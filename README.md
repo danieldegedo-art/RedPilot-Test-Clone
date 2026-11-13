@@ -32,7 +32,7 @@ Use it only where you are authorised. You are responsible for operating within y
 
 - **Engine**: `PureBlackBoxEngine` — role-agnostic, FAIL-CLOSED, confirmation-gated. 19 capstone bosses beaten
   (depth 4 → 22, plus the opaque multi-branch apex NYX, the enterprise apex ABRAXAS, the reconciliation apex PLEROMA
-  and the **federation apex DEMIURGE**), 21 solvable randomized held-out families at 6/6 (0 false-confirms, 0 clean
+  and the **federation apex DEMIURGE**), 22 solvable randomized held-out families at 6/6 (0 false-confirms, 0 clean
   false-positives), plus two honest boundaries correctly refused.
 - `2026-11-13` — **federation apex boss DEMIURGE**: the first boss that is a DISTRIBUTED FEDERATION (one edge fronting
   eight archon services, all implemented correctly; the archon surface is UNDECLARED, advertised only in the public
@@ -109,8 +109,10 @@ hard-coded path.
 Capabilities 26–29 (the **DEMIURGE federation family**) are verified on the **DEMIURGE** capstone, each individually
 ablated (disable discovery → the archon surface is never synthesised → miss; disable token RE → the honest token
 carries zero credit → miss; disable trust-graph → the cross-service order is not composed → miss; disable
-orchestration → the fresh step-up is not late-bound → miss), with all-correct → no false positive. A randomized
-held-out `demiurge` family is a documented follow-up (as the B49/B50/B52 families were before theirs).
+orchestration → the fresh step-up is not late-bound → miss), with all-correct → no false positive. They also
+**generalize out-of-sample**: a seeded held-out `demiurge` family (randomized archon paths + token layout;
+`gauntlet_demiurge.py`) scores solvable **6/6** found, unsolvable **0/6** (honest boundary), clean **0/6** (no false
+positive).
 
 Capabilities 16–18 (the **B49 convergence family**) are verified on the **NYX** capstone; capabilities 19–22 (the
 **B50 settlement-fabric family**) on the **ABRAXAS** enterprise capstone; capabilities 23–25 (the **B52

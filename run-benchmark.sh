@@ -27,7 +27,7 @@ if ! "$PY" -c "import cryptography" 2>/dev/null; then
 fi
 
 one() { echo; echo "==== boss: $1 ===="; "$PY" "$HB/run_$1.py" "${@:2}"; }
-families() { for f in "$HB"/gauntlet_families*.py "$HB"/gauntlet_providers.py; do echo; echo "---- $(basename "$f") ----"; "$PY" "$f"; done; }
+families() { for f in "$HB"/gauntlet_families*.py "$HB"/gauntlet_providers.py "$HB"/gauntlet_demiurge.py; do echo; echo "---- $(basename "$f") ----"; "$PY" "$f"; done; }
 
 case "${1:-demiurge}" in
   list)     printf '%s\n' "${BOSSES[@]}" ;;
