@@ -1,0 +1,83 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: qa_user
+      POSTGRES_PASSWORD: qa_password
+      POSTGRES_DB: payment_qa
+    ports:
+      # Bound to loopback only: the compose file used to publish this (default credentials!) on every
+      # interface. Remove the 127.0.0.1: prefix ONLY if you deliberately want LAN access.
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qa_user -d payment_qa"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6380:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      QA_DATABASE_URL: postgresql+asyncpg://qa_user:qa_password@postgres:5432/payment_qa
+      QA_REDIS_URL: redis://redis:6379
+      QA_HOST: 0.0.0.0
+      QA_PORT: 8420
+      QA_LOG_LEVEL: INFO
+      # (Removed: QA_ENABLE_LLM_ESCALATION / QA_ANTHROPIC_API_KEY. The LLM-escalation feature no longer
+      # exists in the code -- config.py ignores both -- yet the compose file kept injecting an API key
+      # from the host environment into a container that never reads it.)
+      #
+      # Scope guard / request budget (testing/scope_guard.py): applied to every request of every run.
+      QA_MAX_REQUESTS_PER_RUN: ${QA_MAX_REQUESTS_PER_RUN:-10000}
+      QA_MAX_REQUESTS_PER_SECOND: ${QA_MAX_REQUESTS_PER_SECOND:-25}
+      # Local-only API guard (core/security.py). Set QA_API_TOKEN to require a bearer token on every
+      # request (closes the residual null-origin gap described in that module); set
+      # QA_STRICT_LOCAL_ORIGINS=true to reject opaque (null/file) origins outright.
+      QA_API_TOKEN: ${QA_API_TOKEN:-}
+      QA_STRICT_LOCAL_ORIGINS: ${QA_STRICT_LOCAL_ORIGINS:-false}
+      # Customer-declared payment-integrity contract (plain file, 0600, no DB column). Absent => the
+      # payment_integrity module sends no request and only lists the untested P0 classes.
+      QA_INTEGRITY_BRIEF_PATH: /app/qa_integrity/brief.json
+      QA_ENABLE_EXPERIMENTAL_COGNITION_MODULES: ${QA_ENABLE_EXPERIMENTAL_COGNITION_MODULES:-false}
+    ports:
+      # Loopback only (was: every interface). The API starts outbound test runs and holds session cookies.
+      - "127.0.0.1:8420:8420"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8420/health"]
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
+      retries: 10
+    volumes:
+      - qa-cognition-data:/app/qa_cognition
+      - qa-integrity-data:/app/qa_integrity
+
+volumes:
+  postgres-data:
+  redis-data:
+  qa-cognition-data:
+  qa-integrity-data:
