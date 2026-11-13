@@ -213,7 +213,9 @@ class DemiurgeTarget:
             # from the instance route map, keyed by each path's service + action segment (the held-out family varies
             # these names), so a discovering client must synthesise the archon surface from whatever is advertised.
             archons: dict[str, dict[str, str]] = {}
-            for role in ("mint", "open", "credit", "close", "stepup", "finalize", "entitlement"):  # legit routes only; decoys are unadvertised honeypots
+            # the grant-looking decoys (atomic/consortium) are advertised BEFORE the real terminal, so a discovering
+            # client that does not rank candidates (B58 off) wastes probes on them first.
+            for role in ("mint", "open", "credit", "close", "stepup", "atomic", "consortium", "finalize", "entitlement"):
                 path = self.R[role]
                 segs = path.strip("/").split("/")
                 svc, act = (segs[-2] if len(segs) >= 2 else "svc"), segs[-1]

@@ -85,17 +85,28 @@ async def main() -> int:
         t0 = await D.probe_demiurge_truth(**ALL_CORRECT)
         f0, _r0, _tg0 = await D.run_engine(ALL_CORRECT, enable_federation=True)
         print(f"     ALL-CORRECT                          truth={t0!s:5s} engine_confirmed={f0!s:5s} (MUST be False/False: no false alarm)")
-        print("  -- new-capability ablations (each of the FOUR new classes is individually load-bearing; target stays HARD) --")
+        print("  -- new-capability ablations (FIVE load-bearing classes + one HONEST efficiency-only rider) --")
         fd, _r, _t = await D.run_engine(FULL, enable_federation=True, fed_use_discovery=False)
         fr, _r, _t = await D.run_engine(FULL, enable_federation=True, fed_use_token_re=False)
         fg, _r, _t = await D.run_engine(FULL, enable_federation=True, fed_use_trust_graph=False)
         fo, _r, _t = await D.run_engine(FULL, enable_federation=True, fed_use_orchestration=False)
-        ff, _r, _t = await D.run_engine(FULL, enable_federation=True)
+        fa, _r, _t = await D.run_engine(FULL, enable_federation=True, fed_use_analogy=False)
+        fi, rifi, _t = await D.run_engine(FULL, enable_federation=True, fed_use_infogain=False)
+        ff, rff, _t = await D.run_engine(FULL, enable_federation=True)
         print(f"     B53 discovery OFF                            engine_confirmed={fd!s:5s} (MUST be False: no archon surface synthesised)")
         print(f"     B54 token-RE OFF                             engine_confirmed={fr!s:5s} (MUST be False: honest token -> zero credit -> net due stays full)")
         print(f"     B55 trust-graph OFF                          engine_confirmed={fg!s:5s} (MUST be False: the cross-service order is not composed)")
         print(f"     B56 orchestration OFF                        engine_confirmed={fo!s:5s} (MUST be False: the fresh step-up is not late-bound)")
+        print(f"     B59 analogy OFF                              engine_confirmed={fa!s:5s} (MUST be False: the token is never presented to the credit step)")
         print(f"     full capability                              engine_confirmed={ff!s:5s} (MUST be True)")
+        print(f"     B58 info-gain OFF (EFFICIENCY, not load-bearing): engine_confirmed={fi!s:5s} (still True); calls {rifi.stats.get('customer_level_calls')} vs {rff.stats.get('customer_level_calls')} with it -- ranking avoids wasted decoy probes")
+        print("  -- roster dispatch (the probe runs each step only while its OWNING kill-chain agent is activatable) --")
+        for aid, cap in [("A3", "surface discovery"), ("A34", "token reverse-engineering"), ("A39", "trust-graph"),
+                         ("A20", "orchestration"), ("A30", "analogy/capability-synthesis")]:
+            fx, _r, _t = await D.run_engine(FULL, enable_federation=True, disabled_agents=frozenset({aid}))
+            print(f"     disable {aid} ({cap:28s}) engine_confirmed={fx!s:5s} (MUST be False: load-bearing agent)")
+        fn, _r, _t = await D.run_engine(FULL, enable_federation=True, disabled_agents=frozenset({"A21"}))
+        print(f"     disable A21 (payment-provider specialist, non-owning) engine_confirmed={fn!s:5s} (MUST be True: honestly NOT load-bearing for this find)")
     return 0
 
 

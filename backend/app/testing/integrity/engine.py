@@ -209,7 +209,9 @@ class PureBlackBoxEngine:
                  enable_reconciliation_probe: bool = False, recon_use_lifecycle: bool = True,
                  recon_use_overlay: bool = True, recon_use_sequence: bool = True,
                  enable_federation: bool = False, fed_use_discovery: bool = True, fed_use_token_re: bool = True,
-                 fed_use_trust_graph: bool = True, fed_use_orchestration: bool = True) -> None:
+                 fed_use_trust_graph: bool = True, fed_use_orchestration: bool = True,
+                 fed_use_analogy: bool = True, fed_use_infogain: bool = True,
+                 disabled_agents: frozenset[str] = frozenset()) -> None:
         self._prioritizer = prioritizer  # ZR-003/ZR-012: None keeps the static EXPERIMENT_ORDER, exactly as before
         # B45 recon-breadth + B46 chain-composition: FAIL-CLOSED. Off unless an authorised caller enables them; when off, the probes are no-ops and behaviour is identical to before.
         self._enable_channel_probe = enable_channel_probe
@@ -311,6 +313,19 @@ class PureBlackBoxEngine:
         self._fed_use_token_re = fed_use_token_re
         self._fed_use_trust_graph = fed_use_trust_graph
         self._fed_use_orchestration = fed_use_orchestration
+        # B59 cross-domain analogy (rider; LOAD-BEARING): adapt the B52 single-service reconciliation lifecycle to the
+        # federation and recognise the correlation token as the cross-service rate carrier for the credit step. Off ->
+        # the probe never realises the token carries the credit basis, so it is not presented to the credit step ->
+        # miss. B58 info-gain (rider; EFFICIENCY): rank discovered candidates so grant-looking decoys are tried after
+        # the real terminal -> fewer calls. Off -> candidates tried in discovery order (decoys first) -> more calls but
+        # still found (so B58 is efficiency-only, not load-bearing -- reported honestly, never a faked ablation).
+        self._fed_use_analogy = fed_use_analogy
+        self._fed_use_infogain = fed_use_infogain
+        # Roster dispatch: the federation probe binds each distinct capability to the kill-chain-roster agent that
+        # OWNS it and runs the step only while that agent is activatable (owner-declined / disabled -> the step does
+        # not run). ``disabled_agents`` is the ablation lever that proves which roster agents are genuinely
+        # load-bearing for a federation find (honestly: one per distinct capability, not the whole roster).
+        self._disabled_agents = frozenset(disabled_agents)
         # B47 find-fast: opt-in triage mode -- stop after the first CONFIRMED_P0 (fewer calls). OFF by default, so a full assessment still runs every class and nothing changes.
         self._find_fast = find_fast
         if not getattr(http, "stateless", False):
@@ -1911,8 +1926,17 @@ class PureBlackBoxEngine:
         b, feature = self.brief, self.brief.primary_feature()
         if feature is None or not cs.setup_ok or not cs.positive_ok or not cs.negative_ok or cs.open_feature or cs.global_leak:
             return None
-        if not self._fed_use_discovery:
-            return None  # B53 ablation: without undeclared-operation discovery there is no archon surface to drive
+        from app.testing.integrity import kill_chain_roster as _roster
+        # roster dispatch: each distinct capability is OWNED by one kill-chain-roster agent; the step runs only while
+        # that agent is activatable (owner-declined via the roster, or ablated here -> the step does not run).
+        _AGENT = {"discovery": "A3", "token_re": "A34", "trust_graph": "A39", "orchestration": "A20", "analogy": "A30"}
+
+        def _agent_ok(cap: str) -> bool:
+            aid = _AGENT[cap]
+            return _roster.is_activatable(aid) and aid not in self._disabled_agents
+
+        if not (self._fed_use_discovery and _agent_ok("discovery")):
+            return None  # B53 / agent A3 ablation: without undeclared-operation discovery there is no archon surface
 
         def _paths(body: Any, acc: list[tuple[str, str]]) -> None:
             if isinstance(body, dict):
@@ -1925,8 +1949,17 @@ class PureBlackBoxEngine:
                 for v in body:
                     _paths(v, acc)
 
-        def _role(pairs: list[tuple[str, str]], *kw: str) -> str | None:
-            return next((p for k, p in pairs if any(w in (k + " " + p).lower() for w in kw)), None)
+        def _role(pairs: list[tuple[str, str]], *kw: str) -> list[str]:
+            # all candidate paths matching a role's keyword set, as a ranked list. B58 info-gain ranks the real
+            # terminal (keyword in the ACTION segment) ahead of grant-looking decoys (keyword only elsewhere), so the
+            # chain is assembled with fewer wasted probes; without it, discovery order is kept.
+            hits = [(k, p) for k, p in pairs if any(w in (k + " " + p).lower() for w in kw)]
+            if self._fed_use_infogain:
+                def _score(kp: tuple[str, str]) -> int:
+                    act = kp[1].rstrip("/").rsplit("/", 1)[-1].lower()
+                    return 1 if any(w in act for w in kw) else 0
+                hits = sorted(hits, key=_score, reverse=True)
+            return [p for _k, p in hits]
 
         def _first_str(body: Any, keys: tuple[str, ...]) -> str | None:
             if isinstance(body, dict):
@@ -1957,14 +1990,23 @@ class PureBlackBoxEngine:
         if not all(roles[k] for k in ("mint", "open", "credit", "close", "final")):
             return None
 
+        # -- B59 cross-domain analogy: adapt the B52 reconciliation lifecycle to the federation ----------------------
+        # The credit step is the cross-service analogue of B52's rate-bearing overlay, and the correlation token is
+        # what carries the (forged) rate across services. FAIL-CLOSED: without the analogy the probe has only the
+        # literal single-service template (an overlay with a DECLARED rate field), which DEMIURGE's token-carried
+        # credit never matches -- so the token is never presented to the credit step and the bypass is not formed.
+        if not (self._fed_use_analogy and _agent_ok("analogy")):
+            return None
+        credit_via_token = True
+
         # -- B54 token RE: calibrate the amount-field offset by differential diffing of two known-amount tokens ------
         amount_offset: int | None = None
-        if self._fed_use_token_re:
+        if self._fed_use_token_re and _agent_ok("token_re"):
             unit = int(round(float(b.plans.get(b.cheapest_plan, {}).get(b.primary_currency, 0.0)) * 100)) or 100
             await self._pay(cal, plan=b.cheapest_plan, outcome_key="success", label="U:fed:cal:pay1")
-            t1 = await _mint(cal, roles["mint"], "U:fed:cal:mint1")
+            t1 = await _mint(cal, roles["mint"][0], "U:fed:cal:mint1")
             await self._pay(cal, plan=b.cheapest_plan, outcome_key="success", label="U:fed:cal:pay2")
-            t2 = await _mint(cal, roles["mint"], "U:fed:cal:mint2")
+            t2 = await _mint(cal, roles["mint"][0], "U:fed:cal:mint2")
             if t1 and t2:
                 try:
                     d1, d2 = _b64.urlsafe_b64decode(t1.encode()), _b64.urlsafe_b64decode(t2.encode())
@@ -1986,8 +2028,8 @@ class PureBlackBoxEngine:
                 raw[amount_offset:amount_offset + 4] = _struct.pack(">I", 100_000_000)  # a large unbacked credit -> net<=0
             return _b64.urlsafe_b64encode(bytes(raw)).decode()
 
-        if not self._fed_use_trust_graph:
-            return None  # B55 ablation: the surface is discovered and the token RE'd, but the cross-service order is not composed
+        if not (self._fed_use_trust_graph and _agent_ok("trust_graph")):
+            return None  # B55 / agent A39 ablation: surface discovered and token RE'd, but the cross-service order is not composed
 
         # -- B55/B56 orchestration: drive the cross-service confused-deputy order, late-binding a fresh step-up ------
         async def assemble(label: str) -> tuple[CustomerSession | None, OracleObservation | None]:
@@ -1997,24 +2039,29 @@ class PureBlackBoxEngine:
                 return None, None
             if (await self.oracle.check(S, feature, oracle_id=f"U:fed:{label}:pre")).outcome != "denied":
                 return S, None
-            tok = await _mint(S, roles["mint"], f"U:fed:{label}:mint")
+            tok = await _mint(S, roles["mint"][0], f"U:fed:{label}:mint")
             if not tok:
                 return S, None
             forged = _forge(tok)
-            opened = await S.raw("POST", roles["open"], label=f"U:fed:{label}:open", json_body={})
+            opened = await S.raw("POST", roles["open"][0], label=f"U:fed:{label}:open", json_body={})
             period = _first_str(opened.body, ("period", "handle", "id"))
             if not period:
                 return S, None
-            await S.raw("POST", roles["credit"], label=f"U:fed:{label}:credit", json_body={"period": period, "ct": forged})
-            await S.raw("POST", roles["close"], label=f"U:fed:{label}:close", json_body={"period": period})
+            credit_body = {"period": period, "ct": forged} if credit_via_token else {"period": period}
+            await S.raw("POST", roles["credit"][0], label=f"U:fed:{label}:credit", json_body=credit_body)
+            await S.raw("POST", roles["close"][0], label=f"U:fed:{label}:close", json_body={"period": period})
             fin: dict[str, Any] = {"period": period, "ct": forged}
-            if roles["step"] and self._fed_use_orchestration:
-                ch = _first_str((await S.raw("POST", roles["step"], label=f"U:fed:{label}:stepup", json_body={})).body,
+            if roles["step"] and self._fed_use_orchestration and _agent_ok("orchestration"):
+                ch = _first_str((await S.raw("POST", roles["step"][0], label=f"U:fed:{label}:stepup", json_body={})).body,
                                 ("challenge", "nonce", "id"))
                 if ch:
                     fin["challenge"] = ch
-            rf = await S.raw("POST", roles["final"], label=f"U:fed:{label}:finalize", json_body=fin)
-            if not (rf.status and 200 <= rf.status < 300):
+            rf = None
+            for fp in roles["final"]:  # try terminal candidates; decoys 402, the real finalize 2xx (B58 ranks these)
+                rf = await S.raw("POST", fp, label=f"U:fed:{label}:finalize", json_body=fin)
+                if rf.status and 200 <= rf.status < 300:
+                    break
+            if not (rf and rf.status and 200 <= rf.status < 300):
                 return S, None
             return S, await self.oracle.check(S, feature, oracle_id=f"U:fed:{label}:post")
 
