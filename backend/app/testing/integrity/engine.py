@@ -205,7 +205,9 @@ class PureBlackBoxEngine:
                  enable_race_probe: bool = False, race_burst: int = 10, enable_convergence_probe: bool = False,
                  convergence_use_schema: bool = True, convergence_concurrent: bool = True,
                  enable_fabric_probe: bool = False, fabric_use_dag: bool = True, fabric_use_race: bool = True,
-                 fabric_multi_candidate: bool = True, fabric_fresh_challenge: bool = True) -> None:
+                 fabric_multi_candidate: bool = True, fabric_fresh_challenge: bool = True,
+                 enable_reconciliation_probe: bool = False, recon_use_lifecycle: bool = True,
+                 recon_use_overlay: bool = True, recon_use_sequence: bool = True) -> None:
         self._prioritizer = prioritizer  # ZR-003/ZR-012: None keeps the static EXPERIMENT_ORDER, exactly as before
         # B45 recon-breadth + B46 chain-composition: FAIL-CLOSED. Off unless an authorised caller enables them; when off, the probes are no-ops and behaviour is identical to before.
         self._enable_channel_probe = enable_channel_probe
@@ -263,6 +265,28 @@ class PureBlackBoxEngine:
         # attestation DAG takes to build turns it away; True acquires such a challenge LATE -- immediately before
         # the terminal step, inside the same burst -- so it is still fresh at settlement.
         self._fabric_fresh_challenge = fabric_fresh_challenge
+        # B52 reconciliation-gap probe: OPT-IN (off by default). A new capability class beyond the B50 fabric probe,
+        # for targets whose no-payment bypass lives not in a >=2-capability convergence but in the ASYNCHRONOUS
+        # MULTI-AUTHORITY RECONCILIATION GAP that real usage-billing exhibits (Orb query-based billing + read-path
+        # overlay + closed-period catch-up; Stripe/Metronome amend/credit; Microsoft base-blind metering). It
+        # reconstructs a STATEFUL RESOURCE LIFECYCLE from the declared surface -- an "open" op that mints a period
+        # handle, a rate-bearing "overlay/credit" op on that handle, a "close/seal" op on that handle, and a
+        # terminal "reconcile" op that consumes the handle -- and drives them in the one order that makes the
+        # release stand: open -> overlay(rate=0) -> close (which locks the unbacked overlay into the authoritative
+        # aggregate) -> reconcile (which finalises the grant on the frozen net<=0). Confirmation is UNCHANGED (the
+        # real oracle must flip for a never-paid identity + an independent clean-session reproduction through the
+        # ConfirmationGate), it issues only DECLARED operations and uses only harvested / brief-declared black-box
+        # values, so a correctly-implemented target (overlay needs a real basis, close defers an unbacked overlay,
+        # reconcile re-derives from real bases / requires a real captured basis) yields no false positive.
+        # FAIL-CLOSED: a no-op when off. Three capability switches (default capable; flipped by ablation harnesses
+        # to PROVE each is individually load-bearing): ``recon_use_lifecycle`` False drops the open/close period
+        # lifecycle (no owned closed period -> reconcile is refused); ``recon_use_overlay`` False skips the credit
+        # overlay (the authoritative net due stays at the full commitment); ``recon_use_sequence`` False applies the
+        # overlay AFTER the close (a closed period rejects it, so nothing is locked in).
+        self._enable_reconciliation_probe = enable_reconciliation_probe
+        self._recon_use_lifecycle = recon_use_lifecycle
+        self._recon_use_overlay = recon_use_overlay
+        self._recon_use_sequence = recon_use_sequence
         # B47 find-fast: opt-in triage mode -- stop after the first CONFIRMED_P0 (fewer calls). OFF by default, so a full assessment still runs every class and nothing changes.
         self._find_fast = find_fast
         if not getattr(http, "stateless", False):
@@ -1678,6 +1702,162 @@ class PureBlackBoxEngine:
                                  limitations=[f"Found by a bounded settlement-fabric composer: the capability DAG ({layer_desc}) is derived from the brief's declared response_fields/request_fields, fired layer-concurrently; any declared rate-adjustment op was raced into the terminal step's check-then-act window; any short-lived step-up challenge was acquired just before the terminal. A convergence whose inputs are not externally derivable from the declared surface, or whose capture is atomic / server-recomputed / step-up-bound to a real payment, is out of scope (reported as a gap, not ruled out)."])
         return None
 
+    async def _reconciliation_probe(self, cs: ControlState) -> Finding | None:
+        """B52 asynchronous-reconciliation composer (BOUNDED, FAIL-CLOSED): a capability class beyond the B50 fabric
+        probe. Where the convergence/fabric probes compose a >=2-capability quorum at a single terminal, this probe
+        reasons about a STATEFUL RESOURCE LIFECYCLE and an eventually-consistent reconciliation gap: it reconstructs,
+        from the declared surface, an "open" op that mints a period/resource handle, a rate-bearing "overlay/credit"
+        op on that handle, a "close/seal" op on that handle, and a terminal "reconcile" op that consumes the handle,
+        and drives them in the one order that makes the release survive reconciliation --
+            open -> overlay(rate=0) -> close -> reconcile
+        -- so a client-declared credit overlay is locked into the closed period's authoritative aggregate and the
+        reconcile finalises a grant on net<=0. It issues only DECLARED operations and uses only harvested /
+        brief-declared black-box values; confirmation is unchanged (the real oracle must flip for a never-paid
+        identity, reproduced in a clean session), so a correctly-implemented target yields no false positive.
+
+          C1 -- RESOURCE-LIFECYCLE RECONSTRUCTION. Discover (open, overlay, close, reconcile) around one produced
+                handle. (recon_use_lifecycle False drops open/close -> no owned closed period -> reconcile refused.)
+          C2 -- AGGREGATE CREDIT OVERLAY. Apply the rate-bearing overlay op at rate 0 to drive the period aggregate
+                to <=0. (recon_use_overlay False skips it -> the authoritative net due stays the full commitment.)
+          C3 -- SEAL-BEFORE-SETTLE ORDERING. Apply the overlay while the period is OPEN, then close, then reconcile.
+                (recon_use_sequence False overlays AFTER the close -> the closed period rejects it -> nothing locked.)"""
+        if not self._enable_reconciliation_probe:
+            return None
+        import re as _re
+        b, feature = self.brief, self.brief.primary_feature()
+        if feature is None or not cs.setup_ok or not cs.positive_ok or not cs.negative_ok or cs.open_feature or cs.global_leak:
+            return None
+        rate_like = _re.compile(r"amount|rate|price|qty|quantit|total|value|cost|units|seats|\bnet|balance|subtotal|credit", _re.I)
+
+        def _ph(path: str) -> list[str]:
+            return _re.findall(r"\{(\w+)\}", path)
+
+        producers: dict[str, str] = {}
+        for name, op in b.operations.items():
+            for logical in (op.response_fields or {}):
+                producers.setdefault(logical, name)
+        if not producers:
+            return None
+
+        def _produces(opname: str) -> bool:
+            spec = b.op(opname)
+            return bool(spec and spec.response_fields)
+
+        # Reconstruct a lifecycle around each candidate handle X from the DECLARED surface:
+        #   open     = a POST op that PRODUCES X, no path placeholders, no produced-capability inputs (a root mint)
+        #   overlay  = a POST op consuming X as a path placeholder, rate-bearing, producing no capability
+        #   close    = a POST op consuming X as a path placeholder, NOT rate-bearing, producing no capability
+        #   terminal = a POST op consuming X via request_fields (not a path placeholder), producing no capability
+        lifecycle: tuple[str, str, str, str, str] | None = None  # (handle, open, overlay, close, terminal)
+        for handle, open_op in producers.items():
+            ospec = b.op(open_op)
+            if ospec is None or ospec.method != "POST" or _ph(ospec.path):
+                continue
+            if any(f in producers for f in (ospec.request_fields or {})):
+                continue  # the "open" must be a root (no produced inputs of its own)
+            overlay_op = close_op = terminal = None
+            for name, op in b.operations.items():
+                if op.method != "POST" or name == open_op or _produces(name):
+                    continue
+                path_phs = _ph(op.path)
+                req = op.request_fields or {}
+                is_rate = any(rate_like.search(f) for f in req)
+                if handle in path_phs and is_rate and overlay_op is None:
+                    overlay_op = name
+                elif handle in path_phs and not is_rate and close_op is None:
+                    close_op = name
+                elif handle in req and handle not in path_phs and terminal is None:
+                    terminal = name
+            if overlay_op and close_op and terminal:
+                lifecycle = (handle, open_op, overlay_op, close_op, terminal)
+                break
+        if lifecycle is None:
+            return None
+        handle, open_op, overlay_op, close_op, terminal = lifecycle
+
+        def _fields_for(op_name: str, ctx: dict[str, Any]) -> dict[str, Any]:
+            spec = b.op(op_name)
+            out: dict[str, Any] = {}
+            for f in (spec.request_fields or {}) if spec else {}:
+                if f in ctx:
+                    out[f] = ctx[f]
+                elif rate_like.search(f):
+                    out[f] = 0   # the zero-rate credit overlay (a basis-requiring / re-deriving target is unaffected)
+            return out
+
+        async def _call(S: CustomerSession, opn: str, ctx: dict[str, Any], label: str) -> CallResult:
+            spec = b.op(opn)
+            pp = {ph: ctx[ph] for ph in _ph(spec.path) if ph in ctx} if spec else {}
+            return await S.call(opn, label=label, path_params=pp, fields=_fields_for(opn, ctx))
+
+        harvest_ops = [n for n, o in b.operations.items() if o.method == "GET" and n != "return_flow"]
+
+        async def assemble(label: str) -> tuple[CustomerSession | None, OracleObservation | None]:
+            try:
+                S = await self.prov.acquire(label)
+            except IdentityPoolExhausted:
+                return None, None
+            if (await self.oracle.check(S, feature, oracle_id=f"U:recon:{label}:pre")).outcome != "denied":
+                return None, None
+            ctx: dict[str, Any] = {}
+            deny = {t for t in (getattr(S, "_token", None),) if isinstance(t, str) and t}
+            for g in harvest_ops:
+                r = await S.call(g, label=f"U:recon:{label}:recon:{g}")
+                self._harvest(r.body, ctx, deny)
+                self._harvest_headers(r.headers, ctx, deny)
+            if self._recon_use_lifecycle:
+                r = await _call(S, open_op, ctx, f"U:recon:{label}:open")
+                if not (r.status and 200 <= r.status < 300):
+                    return S, None
+                self._harvest(r.body, ctx, deny)
+                self._harvest_headers(r.headers, ctx, deny)
+            if handle not in ctx:
+                return S, None  # the period/resource handle was not minted on the declared surface
+            if self._recon_use_sequence:
+                if self._recon_use_overlay:
+                    await _call(S, overlay_op, ctx, f"U:recon:{label}:overlay")   # credit the period while OPEN
+                if self._recon_use_lifecycle:
+                    await _call(S, close_op, ctx, f"U:recon:{label}:close")        # then SEAL it
+            else:
+                # ablation: seal first, then overlay -> a closed period rejects the overlay, so nothing is locked in.
+                if self._recon_use_lifecycle:
+                    await _call(S, close_op, ctx, f"U:recon:{label}:close")
+                if self._recon_use_overlay:
+                    await _call(S, overlay_op, ctx, f"U:recon:{label}:overlay")
+            cr = await _call(S, terminal, ctx, f"U:recon:{label}:reconcile")       # then SETTLE
+            if not (cr.status and 200 <= cr.status < 300):
+                return S, None
+            self._harvest(cr.body, ctx, deny)
+            return S, await self.oracle.check(S, feature, oracle_id=f"U:recon:{label}:post")
+
+        try:
+            S, scen = await assemble("u_recon")
+            if scen is None or scen.outcome != "allowed":
+                return None
+            _S2, repro = await assemble("u_recon_repro")
+        except IdentityPoolExhausted:
+            return None
+        if repro is None or repro.outcome != "allowed":
+            return None
+        decision, _, _ = await self._confirm(hyp="PBB-U", cs=cs, feature=feature, scenario=scen, qualifying=False, discriminating=cs.positive_ok, repro=repro)
+        if not decision.confirmed:
+            return None
+        ids = _clean([*cs.artifact_ids, *scen.artifact_ids, *repro.artifact_ids])
+        return self._finding("PBB-U", Verdict.CONFIRMED_P0, "high",
+                             f"A never-paid identity USED the paid feature after driving a stateful reconciliation lifecycle "
+                             f"'{open_op}'->'{overlay_op}'(rate=0)->'{close_op}'->'{terminal}': a client-declared zero-rate credit "
+                             f"overlay on an open billing period, locked in by the close, was trusted by settlement reconciliation as "
+                             f"the authoritative net due (<=0) and finalised an enterprise grant with no captured payment; a clean "
+                             f"session reproduced it. Internal cause: UNKNOWN.",
+                             artifacts=ids, token=decision.token,
+                             metrics={"handle": handle, "lifecycle": [open_op, overlay_op, close_op, terminal],
+                                      "overlay_rate": 0, "order": "overlay->close->reconcile"},
+                             payment_state="no qualifying payment was made at any step",
+                             actual_state="feature allowed after reconciling a closed period whose unbacked zero-rate overlay was trusted as net due",
+                             entitlement_state="granted",
+                             server_side_oracle=f"{scen.oracle_id}: outcome=allowed, discriminating={cs.positive_ok}",
+                             limitations=["Found by a bounded reconciliation-lifecycle composer: an open->overlay->close->reconcile lifecycle derived from the declared surface (a produced handle, a rate-bearing overlay and a seal op on it, and a terminal that consumes it), driven overlay-before-close-before-reconcile. A reconciliation that re-derives the authoritative amount from real captured bases, defers an unbacked overlay on close, or requires a real settlement basis to finalise is out of scope (reported as a gap, not ruled out)."])
+
     async def _exp_u(self, cs: ControlState) -> Finding:
         hyp = "PBB-U"
         if (blocked := self._precondition(cs, hyp)) is not None:
@@ -1692,6 +1872,8 @@ class PureBlackBoxEngine:
             return converged
         if self._enable_fabric_probe and (fabricked := await self._fabric_probe(cs)) is not None:
             return fabricked
+        if self._enable_reconciliation_probe and (reconciled := await self._reconciliation_probe(cs)) is not None:
+            return reconciled
         artifacts: list[str | None] = []
         divergences: list[str] = []
         tested: dict[str, str] = {}

@@ -30,9 +30,18 @@ Use it only where you are authorised. You are responsible for operating within y
 
 ## Status
 
-- **Engine**: `PureBlackBoxEngine` — role-agnostic, FAIL-CLOSED, confirmation-gated. 17 capstone bosses beaten
-  (depth 4 → 22, plus the opaque multi-branch apex NYX and the enterprise apex ABRAXAS), 21 solvable randomized
+- **Engine**: `PureBlackBoxEngine` — role-agnostic, FAIL-CLOSED, confirmation-gated. 18 capstone bosses beaten
+  (depth 4 → 22, plus the opaque multi-branch apex NYX, the enterprise apex ABRAXAS and the reconciliation apex PLEROMA), 21 solvable randomized
   held-out families at 6/6 (0 false-confirms, 0 clean false-positives), plus two honest boundaries correctly refused.
+- `2026-11-13` — **reconciliation apex boss PLEROMA**: keeps ABRAXAS's entire enterprise/sovereign perimeter
+  implemented correctly (every signed-JWS / device-attestation / payment-versus-payment atomic / zero-knowledge
+  per-meter proof / convergence route an unforgeable dead-end that never grants) + the uniform anti-RE shell
+  (~99.9% errors, 0 grants under a 3,000-probe sweep) — and still falls, to the asynchronous multi-authority
+  usage-metering + entitlement-reconciliation gap (Orb query-based billing + read-path overlay + closed-period
+  catch-up; Microsoft base-blind metering; Stripe Entitlements): a client-declared zero-rate credit overlay, locked
+  in by the period close, is trusted by settlement reconciliation and finalizes enterprise with no captured payment.
+  Forced the **B52 reconciliation-gap probe** (resource-lifecycle reconstruction + aggregate credit overlay +
+  seal-before-settle ordering). See `docs/PLEROMA_BOSS_CYCLE.md`.
 - `2026-11-13` — **enterprise apex boss ABRAXAS**: every big-platform control implemented correctly (App Store-style
   signed-JWS, Play Integrity / App Attest-style device attestation, Stripe Radar / 3DS step-up, scoped keys,
   idempotency, server-side amount) + a uniform constant-shape anti-RE shell (~99.9% errors, 0 grants under a
@@ -80,9 +89,13 @@ hard-coded path.
 | 20 | Interleaved multi-endpoint TOCTOU race (lower rates inside the settlement's check-then-act window) | ABRAXAS (ablated) |
 | 21 | Ranked multi-candidate convergence search with backtracking (past a honeytoken decoy mesh) | ABRAXAS (ablated) |
 | 22 | Fresh-challenge late binding (acquire a short-lived step-up nonce last, not up-front) | ABRAXAS (ablated) |
+| 23 | Resource-lifecycle reconstruction (open → overlay → close → settle a stateful period handle) | PLEROMA (ablated) |
+| 24 | Aggregate credit-overlay reasoning (zero a whole-period net due, not a single capability) | PLEROMA (ablated) |
+| 25 | Seal-before-settle ordering (overlay while open, then close to lock it in, then reconcile) | PLEROMA (ablated) |
 
 Capabilities 16–18 (the **B49 convergence family**) are verified on the **NYX** capstone; capabilities 19–22 (the
-**B50 settlement-fabric family**) on the **ABRAXAS** enterprise capstone — each with per-flaw controls and
+**B50 settlement-fabric family**) on the **ABRAXAS** enterprise capstone; capabilities 23–25 (the **B52
+reconciliation-gap family**) on the **PLEROMA** reconciliation capstone — each with per-flaw controls and
 per-capability ablations: each capability is individually load-bearing (disable DAG scheduling → dependent mints
 fire before their inputs → miss; sequential amend → the stale-attestation check turns it away → miss; single
 candidate → it commits to the decoy → miss; fetch the challenge early → it expires → miss), and the all-correct
@@ -181,6 +194,7 @@ flaw must drop it to 0 (each flaw load-bearing), with the all-correct variant yi
 | **Chronos** | **22** | **double forge prefix + a DEEP in-chain TOCTOU race (prefix-then-burst)** | **3,451** |
 | **NYX** | **quorum** | **opaque errors (~99.9%, 0 grants) + a freshness-windowed 3-capability quorum (schema-driven, synchronised concurrent mint)** | **993** |
 | **ABRAXAS** | **enterprise** | **full big-platform guard set implemented correctly (signed-JWS, device attestation, 3DS step-up, scoped keys) + uniform anti-RE shell (~99.9%, 0 grants) + a dependency-ordered mint DAG + a TOCTOU settlement window + a honeytoken decoy mesh + a short-lived step-up challenge** | **~1,921** |
+| **PLEROMA** | **reconcile** | **the entire ABRAXAS perimeter implemented correctly (every signed/attested/PvP/ZK/convergence route an unforgeable dead-end that never grants) + uniform anti-RE shell (~99.9%, 0 grants) + an asynchronous multi-authority usage-metering + reconciliation gap: a client-declared zero-rate credit overlay, locked in by the period close, trusted by settlement reconciliation and finalized with no captured payment** | **1,324** |
 
 Guardrails (re-verified every change): enterprise-hard population detection **1.0** / false-positive **0.0**;
 purity audit **0 violations**; offline suite **831 passed / 0 failed** (3 errored only because optional DB/web
