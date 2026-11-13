@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+build/
+dist/
+
+# Node / dashboard
+node_modules/
+dashboard/dist/
+dashboard/.vite/
+dashboard/out/
+
+# OS / archive cruft
+.DS_Store
+__MACOSX/
+Thumbs.db
+*.swp
+
+# Env / secrets / runtime
+.env
+.env.*
+!.env.example
+*.log
+*.sqlite
+*.sqlite3

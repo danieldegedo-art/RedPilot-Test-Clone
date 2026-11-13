@@ -1,0 +1,212 @@
+{
+ "base_flaw_buried_in_decoys_detection": "4/4",
+ "counts": {
+  "FP": 0,
+  "MISS": 0,
+  "TN": 7,
+  "TP": 12
+ },
+ "elapsed_s": 89.7,
+ "false_positive_rate": 0.0,
+ "generated_at": "2026-11-13T01:52:21+00:00",
+ "novel_channel_detection": "8/8",
+ "population": 19,
+ "rows": [
+  {
+   "base_p0": false,
+   "bypass_present": true,
+   "calls": 78,
+   "engine_confirmed": [
+    "PBB-U"
+   ],
+   "name": "novel:grant_via_header+decoys",
+   "novel_channel": true,
+   "outcome": "TP"
+  },
+  {
+   "base_p0": false,
+   "bypass_present": true,
+   "calls": 78,
+   "engine_confirmed": [
+    "PBB-U"
+   ],
+   "name": "novel:grant_via_header+clean",
+   "novel_channel": true,
+   "outcome": "TP"
+  },
+  {
+   "base_p0": false,
+   "bypass_present": true,
+   "calls": 86,
+   "engine_confirmed": [
+    "PBB-U"
+   ],
+   "name": "novel:grant_via_query+decoys",
+   "novel_channel": true,
+   "outcome": "TP"
+  },
+  {
+   "base_p0": false,
+   "bypass_present": true,
+   "calls": 86,
+   "engine_confirmed": [
+    "PBB-U"
+   ],
+   "name": "novel:grant_via_query+clean",
+   "novel_channel": true,
+   "outcome": "TP"
+  },
+  {
+   "base_p0": false,
+   "bypass_present": true,
+   "calls": 82,
+   "engine_confirmed": [
+    "PBB-U"
+   ],
+   "name": "novel:unsigned_grant_token+decoys",
+   "novel_channel": true,
+   "outcome": "TP"
+  },
+  {
+   "base_p0": false,
+   "bypass_present": true,
+   "calls": 82,
+   "engine_confirmed": [
+    "PBB-U"
+   ],
+   "name": "novel:unsigned_grant_token+clean",
+   "novel_channel": true,
+   "outcome": "TP"
+  },
+  {
+   "base_p0": false,
+   "bypass_present": true,
+   "calls": 97,
+   "engine_confirmed": [
+    "PBB-U"
+   ],
+   "name": "novel:hidden_comp_endpoint+decoys",
+   "novel_channel": true,
+   "outcome": "TP"
+  },
+  {
+   "base_p0": false,
+   "bypass_present": true,
+   "calls": 97,
+   "engine_confirmed": [
+    "PBB-U"
+   ],
+   "name": "novel:hidden_comp_endpoint+clean",
+   "novel_channel": true,
+   "outcome": "TP"
+  },
+  {
+   "base_p0": false,
+   "bypass_present": false,
+   "calls": 125,
+   "engine_confirmed": [],
+   "name": "decoy_only:all",
+   "novel_channel": false,
+   "outcome": "TN"
+  },
+  {
+   "base_p0": false,
+   "bypass_present": false,
+   "calls": 125,
+   "engine_confirmed": [],
+   "name": "decoy_only:shadow",
+   "novel_channel": false,
+   "outcome": "TN"
+  },
+  {
+   "base_p0": false,
+   "bypass_present": false,
+   "calls": 125,
+   "engine_confirmed": [],
+   "name": "decoy_only:badge",
+   "novel_channel": false,
+   "outcome": "TN"
+  },
+  {
+   "base_p0": false,
+   "bypass_present": false,
+   "calls": 125,
+   "engine_confirmed": [],
+   "name": "decoy_only:cosmetic",
+   "novel_channel": false,
+   "outcome": "TN"
+  },
+  {
+   "base_p0": true,
+   "bypass_present": true,
+   "calls": 127,
+   "engine_confirmed": [
+    "PBB-U"
+   ],
+   "name": "buried:return_trusts_status_claim",
+   "novel_channel": false,
+   "outcome": "TP"
+  },
+  {
+   "base_p0": true,
+   "bypass_present": true,
+   "calls": 127,
+   "engine_confirmed": [
+    "PBB-G"
+   ],
+   "name": "buried:tenant_claim_trusted",
+   "novel_channel": false,
+   "outcome": "TP"
+  },
+  {
+   "base_p0": true,
+   "bypass_present": true,
+   "calls": 127,
+   "engine_confirmed": [
+    "PBB-X"
+   ],
+   "name": "buried:payment_owner_unchecked",
+   "novel_channel": false,
+   "outcome": "TP"
+  },
+  {
+   "base_p0": true,
+   "bypass_present": true,
+   "calls": 141,
+   "engine_confirmed": [
+    "PBB-C"
+   ],
+   "name": "buried:replay_grants_again",
+   "novel_channel": false,
+   "outcome": "TP"
+  },
+  {
+   "base_p0": false,
+   "bypass_present": false,
+   "calls": 125,
+   "engine_confirmed": [],
+   "name": "clean+decoys",
+   "novel_channel": false,
+   "outcome": "TN"
+  },
+  {
+   "base_p0": false,
+   "bypass_present": false,
+   "calls": 125,
+   "engine_confirmed": [],
+   "name": "clean+badge+cosmetic",
+   "novel_channel": false,
+   "outcome": "TN"
+  },
+  {
+   "base_p0": false,
+   "bypass_present": false,
+   "calls": 128,
+   "engine_confirmed": [],
+   "name": "within_sla+decoys",
+   "novel_channel": false,
+   "outcome": "TN"
+  }
+ ],
+ "target_detection_rate": 1.0
+}
