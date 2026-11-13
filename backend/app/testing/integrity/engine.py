@@ -203,7 +203,9 @@ class PureBlackBoxEngine:
                  clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
                  prioritizer: PrioritizerFn | None = None, enable_channel_probe: bool = False, enable_chain_probe: bool = False, find_fast: bool = False,
                  enable_race_probe: bool = False, race_burst: int = 10, enable_convergence_probe: bool = False,
-                 convergence_use_schema: bool = True, convergence_concurrent: bool = True) -> None:
+                 convergence_use_schema: bool = True, convergence_concurrent: bool = True,
+                 enable_fabric_probe: bool = False, fabric_use_dag: bool = True, fabric_use_race: bool = True,
+                 fabric_multi_candidate: bool = True, fabric_fresh_challenge: bool = True) -> None:
         self._prioritizer = prioritizer  # ZR-003/ZR-012: None keeps the static EXPERIMENT_ORDER, exactly as before
         # B45 recon-breadth + B46 chain-composition: FAIL-CLOSED. Off unless an authorised caller enables them; when off, the probes are no-ops and behaviour is identical to before.
         self._enable_channel_probe = enable_channel_probe
@@ -231,6 +233,36 @@ class PureBlackBoxEngine:
         # the capabilities sequentially (so a same-window freshness quorum can no longer be met).
         self._convergence_use_schema = convergence_use_schema
         self._convergence_concurrent = convergence_concurrent
+        # B50 settlement-fabric probe: OPT-IN (off by default). A STRICT superset of the B49 convergence probe for
+        # targets whose no-payment bypass is gated behind THREE further load-bearing hard axes that B49 cannot
+        # cross (each axis a class public analyses report autonomous web agents struggle with, in the payment
+        # domain): (1) a DEPENDENCY-ORDERED mint DAG -- later attestations consume earlier branches' capabilities,
+        # so a flat simultaneous burst fires dependent mints before their inputs exist; (2) a check-then-act
+        # settlement window -- the only route to a $0 net is to lower the capabilities' rates (a declared amend op)
+        # INSIDE the validate->capture gap, an interleaved multi-endpoint race a sequential assembler cannot win;
+        # (3) a higher-fan-in DECOY convergence step that correctly recomputes server-side and never grants, which
+        # starves a composer that greedily commits to the single max-fan-in step. The three new capabilities are
+        # each individually load-bearing and each ablatable below. Confirmation is UNCHANGED (the real oracle must
+        # flip + an independent clean-session reproduction through the ConfirmationGate), it stays on the declared
+        # surface and uses only harvested / brief-declared black-box values, so a correctly-implemented target
+        # (server-recomputed amount, atomic capture, real paid basis) yields no false positive. FAIL-CLOSED: a
+        # no-op when off; behaviour is identical to before.
+        self._enable_fabric_probe = enable_fabric_probe
+        # Three capability switches (default to the capable behaviour; flipped only by ablation harnesses to PROVE
+        # each new capability is individually load-bearing). ``_fabric_use_dag`` False schedules the mints as a flat
+        # two-layer burst (ignoring cross-branch capability dependencies), exactly like B49, so the DAG depth busts
+        # it. ``_fabric_use_race`` False lowers the rates SEQUENTIALLY (amend-then-activate) instead of interleaving
+        # them into the capture window, so the stale-attestation check turns it away. ``_fabric_multi_candidate``
+        # False commits to the single highest-fan-in convergence candidate (the decoy), so the real lower-fan-in
+        # step is never reached.
+        self._fabric_use_dag = fabric_use_dag
+        self._fabric_use_race = fabric_use_race
+        self._fabric_multi_candidate = fabric_multi_candidate
+        # ``_fabric_fresh_challenge`` False treats a short-lived step-up challenge input as an ordinary DAG
+        # producer (fetched up-front in a dependency layer), so a target whose challenge expires faster than the
+        # attestation DAG takes to build turns it away; True acquires such a challenge LATE -- immediately before
+        # the terminal step, inside the same burst -- so it is still fresh at settlement.
+        self._fabric_fresh_challenge = fabric_fresh_challenge
         # B47 find-fast: opt-in triage mode -- stop after the first CONFIRMED_P0 (fewer calls). OFF by default, so a full assessment still runs every class and nothing changes.
         self._find_fast = find_fast
         if not getattr(http, "stateless", False):
@@ -1377,6 +1409,275 @@ class PureBlackBoxEngine:
                              server_side_oracle=f"{scen.oracle_id}: outcome=allowed, discriminating={cs.positive_ok}",
                              limitations=[f"Found by a bounded multi-branch convergence composer: {len(plans)} declared sub-chains whose outputs the brief maps (response_fields) to the terminal step's declared inputs (request_fields), minted as a {len(plans)}x simultaneous burst within the guard's token-bucket burst capacity. A convergence step whose inputs are not externally derivable from the declared surface, needs more branches than are declared, or whose quorum is correctly atomic/server-recomputed is out of scope (reported as a gap, not ruled out)."])
 
+    async def _fabric_probe(self, cs: ControlState) -> Finding | None:
+        """B50 settlement-fabric composer (BOUNDED, FAIL-CLOSED): a strict superset of _convergence_probe that can
+        cross three further hard axes -- a DEPENDENCY-ORDERED mint DAG, a check-then-act capture window, and a
+        higher-fan-in DECOY convergence step. It issues only DECLARED operations and uses only harvested /
+        brief-declared black-box values; confirmation is unchanged (the real oracle must flip for a never-paid
+        identity, reproduced in a clean session), so a correctly-implemented target yields no false positive.
+
+          G1 -- TOPOLOGICAL ANTICHAIN SCHEDULING. For a convergence candidate, the required capabilities are
+                resolved TRANSITIVELY from the declared schema: a mint op's path placeholders AND its request_fields
+                that are themselves produced capabilities (cross-branch inputs) become prerequisites. The op set is
+                layered by dependency (Kahn) and each layer is fired CONCURRENTLY, so cross-branch inputs exist
+                before the mints that consume them AND the terminal capabilities land in one freshness window. (A
+                flat simultaneous burst -- _fabric_use_dag False -- fires dependent mints before their inputs.)
+          G2 -- INTERLEAVED MULTI-ENDPOINT RACE. If the terminal step is refused at the honest quoted rate and a
+                declared rate-mutating op applies to the consumed capabilities, the terminal op and the rate
+                reductions are fired as one SIMULTANEOUS burst, so the reductions land inside the terminal's
+                check-then-act window. (Sequential reduction -- _fabric_use_race False -- is turned away by the
+                stale-attestation check.)
+          G3 -- RANKED MULTI-CANDIDATE SEARCH. Convergence candidates are ranked by fan-in and tried in order with
+                bounded backtracking, so a higher-fan-in decoy that never grants does not starve the real,
+                lower-fan-in step. (Single-candidate -- _fabric_multi_candidate False -- commits to the decoy.)
+          G4 -- FRESH-CHALLENGE LATE BINDING. A terminal input produced by a dependency-free, challenge-named op is
+                treated as a SHORT-LIVED step-up challenge and acquired LAST -- immediately before the terminal (and
+                re-acquired before the race burst) -- rather than up-front in a DAG layer, so a challenge that
+                expires faster than the attestation DAG takes to build is still valid at settlement.
+                (Fetched-early -- _fabric_fresh_challenge False -- it expires and the terminal is refused.)"""
+        if not self._enable_fabric_probe:
+            return None
+        import re as _re
+        b, feature = self.brief, self.brief.primary_feature()
+        if feature is None or not cs.setup_ok or not cs.positive_ok or not cs.negative_ok or cs.open_feature or cs.global_leak:
+            return None
+        rate_like = _re.compile(r"amount|rate|price|qty|quantit|total|value|cost|units|seats|\bnet|balance|subtotal", _re.I)
+
+        # producers: logical output name -> the op that produces it (from declared response_fields).
+        producers: dict[str, str] = {}
+        for name, op in b.operations.items():
+            for logical in (op.response_fields or {}):
+                producers.setdefault(logical, name)
+        if not producers:
+            return None
+
+        def _placeholders(path: str) -> list[str]:
+            return _re.findall(r"\{(\w+)\}", path)
+
+        # convergence CANDIDATES: declared ops whose request_fields include >= 2 capabilities produced by OTHER ops.
+        candidates: list[tuple[str, list[str]]] = []
+        for name, op in b.operations.items():
+            caps = [f for f in (op.request_fields or {}) if f in producers and producers[f] != name]
+            if len(caps) >= 2:
+                candidates.append((name, caps))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda t: len(t[1]), reverse=True)  # highest fan-in first (a decoy tends to sit here)
+        candidates = candidates[:1] if not self._fabric_multi_candidate else candidates[:4]
+
+        # the rate-mutating ("amend") op: POST, exactly one path placeholder, carries a rate-like field, produces
+        # no capability and consumes none -- a single-target adjustment the race abuses. Declared-surface only.
+        amend_op = amend_ph = amend_field = None
+        for name, op in b.operations.items():
+            phs = _placeholders(op.path)
+            if op.method != "POST" or len(phs) != 1:
+                continue
+            if any(f in producers for f in (op.response_fields or {})):
+                continue
+            rfields = [f for f in (op.request_fields or {}) if rate_like.search(f)]
+            if rfields and not any(f in producers for f in (op.request_fields or {})):
+                amend_op, amend_ph, amend_field = name, phs[0], rfields[0]
+                break
+
+        chal_like = _re.compile(r"nonce|challenge|otp|step[_-]?up|fresh|\bchal\b|token", _re.I)
+
+        def _is_rate_bearing(logical: str) -> bool:
+            """A produced capability whose minting op carries a rate-like field -- one the amend op can lower."""
+            pr = producers.get(logical)
+            spec = b.op(pr) if pr else None
+            return bool(spec and any(rate_like.search(f) for f in (spec.request_fields or {})))
+
+        def _is_challenge(logical: str) -> bool:
+            """A SHORT-LIVED step-up input: produced by a dependency-free, non-rate op and named like a nonce /
+            challenge. With G4 on it is acquired LATE (just before the terminal); with G4 off it is left in the DAG
+            (fetched up-front in a dependency layer, so a short-lived one expires before the terminal)."""
+            pr = producers.get(logical)
+            spec = b.op(pr) if pr else None
+            if spec is None or _placeholders(spec.path):
+                return False
+            if any(f in producers for f in (spec.request_fields or {})):
+                return False
+            if any(rate_like.search(f) for f in (spec.request_fields or {})):
+                return False
+            return bool(chal_like.search(logical))
+
+        harvest_ops = [n for n, o in b.operations.items() if o.method == "GET" and n != "return_flow"]
+
+        def _op_deps(opname: str) -> set[str] | None:
+            """Direct op-prerequisites: producers of the op's path placeholders, plus (when DAG-aware) producers of
+            its request_fields that are capabilities from other ops."""
+            spec = b.op(opname)
+            if spec is None:
+                return None
+            deps: set[str] = set()
+            for ph in _placeholders(spec.path):
+                pr = producers.get(ph)
+                if pr is None:
+                    return None  # a path input we cannot produce from the declared surface -> out of scope
+                deps.add(pr)
+            if self._fabric_use_dag:
+                for f in (spec.request_fields or {}):
+                    if f in producers and producers[f] != opname:
+                        deps.add(producers[f])
+            return deps
+
+        def _layers(conv_caps: list[str]) -> list[list[str]] | None:
+            """Transitive closure of the producer ops for the candidate's capabilities, layered by dependency."""
+            seeds = [producers.get(c) for c in conv_caps]
+            if any(s is None for s in seeds):
+                return None
+            need: set[str] = set()
+            depmap: dict[str, set[str]] = {}
+            work = list(seeds)
+            while work:
+                o = work.pop()
+                if o in need:
+                    continue
+                d = _op_deps(o)
+                if d is None:
+                    return None
+                need.add(o)
+                depmap[o] = d
+                work.extend(x for x in d if x not in need)
+            layers: list[list[str]] = []
+            done: set[str] = set()
+            remaining = set(need)
+            while remaining:
+                layer = sorted(o for o in remaining if depmap[o] <= done)
+                if not layer:
+                    return None  # a cycle or an underivable dependency
+                layers.append(layer)
+                done |= set(layer)
+                remaining -= set(layer)
+            return layers
+
+        def _fields_for(op_name: str, ctx: dict[str, Any]) -> dict[str, Any]:
+            spec = b.op(op_name)
+            out: dict[str, Any] = {}
+            for f in (spec.request_fields or {}) if spec else {}:
+                if f in ctx:
+                    out[f] = ctx[f]           # a harvested id (a produced capability) or the echoed quoted rate
+                elif rate_like.search(f):
+                    out[f] = 0                # an unknown numeric: the zero adversarial value (a recomputing target is unaffected)
+            return out
+
+        async def assemble(label: str, conv_name: str, conv_caps: list[str], dag_caps: list[str],
+                           challenge_inputs: list[str], amend_caps: list[str], layers: list[list[str]]
+                           ) -> tuple[CustomerSession | None, OracleObservation | None]:
+            try:
+                S = await self.prov.acquire(label)
+            except IdentityPoolExhausted:
+                return None, None
+            if (await self.oracle.check(S, feature, oracle_id=f"U:fabric:{label}:pre")).outcome != "denied":
+                return None, None
+            ctx: dict[str, Any] = {}
+            deny = {t for t in (getattr(S, "_token", None),) if isinstance(t, str) and t}
+            for g in harvest_ops:
+                r = await S.call(g, label=f"U:fabric:{label}:recon:{g}")
+                self._harvest(r.body, ctx, deny)
+                self._harvest_headers(r.headers, ctx, deny)
+
+            async def _one(opn: str) -> CallResult:
+                spec = b.op(opn)
+                pp = {ph: ctx[ph] for ph in _placeholders(spec.path) if ph in ctx} if spec else {}
+                return await S.call(opn, label=f"U:fabric:{label}:mint:{opn}", path_params=pp, fields=_fields_for(opn, ctx))
+
+            # G1: fire each dependency layer CONCURRENTLY, harvesting outputs before the next layer consumes them.
+            for layer in layers:
+                results = await asyncio.gather(*[_one(o) for o in layer], return_exceptions=True)
+                for r in results:
+                    if isinstance(r, BaseException) or not (r.status and 200 <= r.status < 300):
+                        return S, None
+                    self._harvest(r.body, ctx, deny)
+                    self._harvest_headers(r.headers, ctx, deny)
+            if not all(c in ctx for c in dag_caps):  # challenge inputs are fetched LATE, below
+                return S, None
+
+            async def _fetch_challenges() -> None:
+                # G4: acquire each short-lived step-up challenge IMMEDIATELY before the terminal, so it is still
+                # fresh at settlement (a scheduler that fetched it up-front in a DAG layer would let it expire).
+                for ch in challenge_inputs:
+                    pr = producers.get(ch)
+                    if pr is None:
+                        continue
+                    r = await S.call(pr, label=f"U:fabric:{label}:challenge:{pr}")
+                    self._harvest(r.body, ctx, deny)
+                    self._harvest_headers(r.headers, ctx, deny)
+
+            async def _converge() -> CallResult:
+                return await S.call(conv_name, label=f"U:fabric:{label}:activate", fields=_fields_for(conv_name, ctx))
+
+            await _fetch_challenges()
+            if not all(c in ctx for c in conv_caps):
+                return S, None
+            cr = await _converge()
+            if not (cr.status and 200 <= cr.status < 300) and amend_op is not None and amend_caps:
+                targets = [ctx[c] for c in amend_caps if c in ctx]
+                if len(targets) == len(amend_caps):
+                    async def _amend(ref: Any) -> CallResult:
+                        return await S.call(amend_op, label=f"U:fabric:{label}:amend", path_params={amend_ph: ref}, fields={amend_field: 0})
+                    if self._fabric_use_race:
+                        # G2: fire the terminal op and the rate reductions simultaneously -> the reductions land
+                        # inside the terminal's check-then-act window. Re-acquire the challenge first so it is fresh.
+                        await _fetch_challenges()
+                        burst = await asyncio.gather(_converge(), *[_amend(t) for t in targets], return_exceptions=True)
+                        cr = burst[0] if not isinstance(burst[0], BaseException) else cr
+                    else:
+                        for t in targets:  # ablation: sequential reduction, rejected by the stale-attestation check
+                            try:
+                                await _amend(t)
+                            except BaseException:  # noqa: BLE001
+                                return S, None
+                        await _fetch_challenges()
+                        cr = await _converge()
+            if not (cr.status and 200 <= cr.status < 300):
+                return S, None
+            self._harvest(cr.body, ctx, deny)
+            return S, await self.oracle.check(S, feature, oracle_id=f"U:fabric:{label}:post")
+
+        # G3: try the ranked candidates in order; a decoy never flips the oracle, so we backtrack to the real one.
+        for conv_name, conv_caps in candidates:
+            challenge_inputs = [c for c in conv_caps if self._fabric_fresh_challenge and _is_challenge(c)]
+            dag_caps = [c for c in conv_caps if c not in challenge_inputs]
+            amend_caps = [c for c in conv_caps if _is_rate_bearing(c)]
+            layers = _layers(dag_caps)
+            if layers is None:
+                continue
+            try:
+                args = (conv_name, conv_caps, dag_caps, challenge_inputs, amend_caps, layers)
+                S, scen = await assemble("u_fabric", *args)
+                if scen is None or scen.outcome != "allowed":
+                    continue
+                _S2, repro = await assemble("u_fabric_repro", *args)
+            except IdentityPoolExhausted:
+                return None
+            if repro is None or repro.outcome != "allowed":
+                continue
+            decision, _, _ = await self._confirm(hyp="PBB-U", cs=cs, feature=feature, scenario=scen, qualifying=False, discriminating=cs.positive_ok, repro=repro)
+            if not decision.confirmed:
+                continue
+            ids = _clean([*cs.artifact_ids, *scen.artifact_ids, *repro.artifact_ids])
+            raced = amend_op is not None and bool(amend_caps)
+            late = bool(challenge_inputs)
+            layer_desc = " | ".join("+".join(l) for l in layers)
+            return self._finding("PBB-U", Verdict.CONFIRMED_P0, "high",
+                                 f"A never-paid identity USED the paid feature after composing a dependency-ordered capability DAG and converging a {len(conv_caps)}-input quorum at '{conv_name}'"
+                                 + (f", lowering the quorum's attested rates to zero as a SIMULTANEOUS burst interleaved into the settlement's check-then-act window (an amend/activate race)" if raced else "")
+                                 + (f", and acquiring a fresh short-lived step-up challenge ({'+'.join(challenge_inputs)}) LATE -- immediately before the settlement -- so it had not expired" if late else "")
+                                 + f"; a clean session reproduced it. Internal cause: UNKNOWN.",
+                                 artifacts=ids, token=decision.token,
+                                 metrics={"convergence_step": conv_name, "capabilities": list(conv_caps), "dag_layers": layers,
+                                          "candidates_considered": [c for c, _ in candidates], "race_used": bool(raced and self._fabric_use_race),
+                                          "late_challenge": late, "challenge_inputs": list(challenge_inputs)},
+                                 payment_state="no qualifying payment was made at any step",
+                                 actual_state=f"feature allowed after converging {conv_caps} at {conv_name} via a dependency-ordered DAG"
+                                              + (" and a check-then-act amend race" if raced else "")
+                                              + (" with a late-bound step-up challenge" if late else ""),
+                                 entitlement_state="granted",
+                                 server_side_oracle=f"{scen.oracle_id}: outcome=allowed, discriminating={cs.positive_ok}",
+                                 limitations=[f"Found by a bounded settlement-fabric composer: the capability DAG ({layer_desc}) is derived from the brief's declared response_fields/request_fields, fired layer-concurrently; any declared rate-adjustment op was raced into the terminal step's check-then-act window; any short-lived step-up challenge was acquired just before the terminal. A convergence whose inputs are not externally derivable from the declared surface, or whose capture is atomic / server-recomputed / step-up-bound to a real payment, is out of scope (reported as a gap, not ruled out)."])
+        return None
+
     async def _exp_u(self, cs: ControlState) -> Finding:
         hyp = "PBB-U"
         if (blocked := self._precondition(cs, hyp)) is not None:
@@ -1389,6 +1690,8 @@ class PureBlackBoxEngine:
             return chained
         if self._enable_convergence_probe and (converged := await self._convergence_probe(cs)) is not None:
             return converged
+        if self._enable_fabric_probe and (fabricked := await self._fabric_probe(cs)) is not None:
+            return fabricked
         artifacts: list[str | None] = []
         divergences: list[str] = []
         tested: dict[str, str] = {}

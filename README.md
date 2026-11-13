@@ -30,9 +30,16 @@ Use it only where you are authorised. You are responsible for operating within y
 
 ## Status
 
-- **Engine**: `PureBlackBoxEngine` — role-agnostic, FAIL-CLOSED, confirmation-gated. 16 capstone bosses beaten
-  (depth 4 → 22, plus the opaque multi-branch apex NYX), 21 solvable randomized held-out families at 6/6 (0
-  false-confirms, 0 clean false-positives), plus two honest boundaries correctly refused.
+- **Engine**: `PureBlackBoxEngine` — role-agnostic, FAIL-CLOSED, confirmation-gated. 17 capstone bosses beaten
+  (depth 4 → 22, plus the opaque multi-branch apex NYX and the enterprise apex ABRAXAS), 21 solvable randomized
+  held-out families at 6/6 (0 false-confirms, 0 clean false-positives), plus two honest boundaries correctly refused.
+- `2026-11-13` — **enterprise apex boss ABRAXAS**: every big-platform control implemented correctly (App Store-style
+  signed-JWS, Play Integrity / App Attest-style device attestation, Stripe Radar / 3DS step-up, scoped keys,
+  idempotency, server-side amount) + a uniform constant-shape anti-RE shell (~99.9% errors, 0 grants under a
+  3,000-probe sweep) — and it still falls, to a business-logic composition behind four orthogonal axes: a
+  dependency-ordered mint DAG, a TOCTOU settlement window, a honeytoken decoy mesh, and a short-lived step-up
+  challenge. Forced the **B50 settlement-fabric probe** (DAG antichain scheduling + interleaved multi-endpoint race
+  + ranked multi-candidate backtracking + fresh-challenge late-binding). See `docs/ABRAXAS_BOSS_CYCLE.md`.
 - `2026-11-13` — apex boss **NYX**: opaque errors (~99.9% errors, 0 grants under a 3,000-probe sweep) + a
   freshness-windowed 3-capability quorum, with every Stripe guard implemented correctly. Forced the B49
   convergence probe (schema-driven field satisfaction + multi-branch assembly + synchronised concurrent minting).
@@ -69,11 +76,18 @@ hard-coded path.
 | 16 | Schema-driven field satisfaction under opaque errors (the target never names a field) | NYX (ablated) |
 | 17 | Multi-branch sub-chain assembly + convergence detection (many paths → one quorum) | NYX (ablated) |
 | 18 | Freshness-synchronised concurrent minting (a same-window quorum a sequential spine busts) | NYX (ablated) |
+| 19 | Topological antichain scheduling of a dependency-ordered mint DAG (cross-branch capability inputs) | ABRAXAS (ablated) |
+| 20 | Interleaved multi-endpoint TOCTOU race (lower rates inside the settlement's check-then-act window) | ABRAXAS (ablated) |
+| 21 | Ranked multi-candidate convergence search with backtracking (past a honeytoken decoy mesh) | ABRAXAS (ablated) |
+| 22 | Fresh-challenge late binding (acquire a short-lived step-up nonce last, not up-front) | ABRAXAS (ablated) |
 
-Capabilities 16–18 (the **B49 convergence family**) are verified on the **NYX** capstone with per-flaw controls and
-per-capability ablations: each is individually load-bearing (disable schema-satisfaction → miss; mint sequentially
-→ miss), and the all-correct variant yields 0 (no false positive). They are general (brief-schema-driven, not
-hard-coded to NYX); a randomized held-out family for them is a documented follow-up.
+Capabilities 16–18 (the **B49 convergence family**) are verified on the **NYX** capstone; capabilities 19–22 (the
+**B50 settlement-fabric family**) on the **ABRAXAS** enterprise capstone — each with per-flaw controls and
+per-capability ablations: each capability is individually load-bearing (disable DAG scheduling → dependent mints
+fire before their inputs → miss; sequential amend → the stale-attestation check turns it away → miss; single
+candidate → it commits to the decoy → miss; fetch the challenge early → it expires → miss), and the all-correct
+variant yields 0 (no false positive). They are general (brief-schema-driven, not hard-coded to a boss); a
+randomized held-out family for them is a documented follow-up.
 
 Provider-model families from real per-provider research (not signing variants): **keymanagement** (un-authz'd
 detokenize / AES-at-rest angle) 6/6, **mandate** (GoCardless bank-debit) 6/6, **dunning** (Chargebee/Recurly state
@@ -166,6 +180,7 @@ flaw must drop it to 0 (each flaw load-bearing), with the all-correct variant yi
 | Pangaea | 20 | double callback hop + numeric business-logic + cross-tenant BOLA | 2,479 |
 | **Chronos** | **22** | **double forge prefix + a DEEP in-chain TOCTOU race (prefix-then-burst)** | **3,451** |
 | **NYX** | **quorum** | **opaque errors (~99.9%, 0 grants) + a freshness-windowed 3-capability quorum (schema-driven, synchronised concurrent mint)** | **993** |
+| **ABRAXAS** | **enterprise** | **full big-platform guard set implemented correctly (signed-JWS, device attestation, 3DS step-up, scoped keys) + uniform anti-RE shell (~99.9%, 0 grants) + a dependency-ordered mint DAG + a TOCTOU settlement window + a honeytoken decoy mesh + a short-lived step-up challenge** | **~1,921** |
 
 Guardrails (re-verified every change): enterprise-hard population detection **1.0** / false-positive **0.0**;
 purity audit **0 violations**; offline suite **831 passed / 0 failed** (3 errored only because optional DB/web
@@ -196,7 +211,10 @@ pip install "cryptography>=42,<46"
 cd backend
 export PYTHONPATH="tests/verification_infrastructure/shims:tests/verification_infrastructure:."
 
-# the newest capstone (NYX — opaque errors + a freshness-windowed multi-branch quorum) with full controls:
+# the newest capstone (ABRAXAS — the enterprise apex: full guard set + four orthogonal hard axes) with full controls:
+python3 tests/verification_infrastructure/hardened_benchmark/run_abraxas.py --controls
+
+# the prior apex (NYX — opaque errors + a freshness-windowed multi-branch quorum):
 python3 tests/verification_infrastructure/hardened_benchmark/run_nyx.py --controls
 
 # any other boss:
@@ -247,11 +265,12 @@ docker-compose.yml       optional API + Postgres orchestration (not needed for t
 docs/
   BENCHMARK_SCORECARD.md pure-benchmark scorecard (consumed by the purity test suite)
   NYX_BOSS_CYCLE.md      the NYX Harder-Boss→MISS→fix→FIND→Upgrade cycle (boss + B49 convergence probe)
+  ABRAXAS_BOSS_CYCLE.md  the ABRAXAS enterprise-apex cycle (boss + B50 settlement-fabric probe; big-platform hardening researched)
 backend/
   app/                   the engine, agent layer, and enterprise-controls safety spine
   benchmark/             the LLM-replacement layer and scoring (no live AI)
   tests/verification_infrastructure/
-    hardened_benchmark/  the 16 bosses (boss_*.py / run_*.py) and the randomized held-out families (gauntlet_*)
+    hardened_benchmark/  the 17 bosses (boss_*.py / run_*.py) and the randomized held-out families (gauntlet_*)
     shims/               stub httpx / pydantic so the benchmark needs no web stack
   requirements.txt       full-platform dependencies (optional; the benchmark needs only `cryptography`)
   requirements-dev.txt   test-runner dependencies (optional)
