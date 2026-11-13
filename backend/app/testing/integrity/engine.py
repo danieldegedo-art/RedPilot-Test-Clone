@@ -202,7 +202,8 @@ class PureBlackBoxEngine:
     def __init__(self, http: QAHttpClient, brief: ExecutionBrief, *, base_url: str, ledger: EvidenceLedgerHandle | None = None,
                  clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
                  prioritizer: PrioritizerFn | None = None, enable_channel_probe: bool = False, enable_chain_probe: bool = False, find_fast: bool = False,
-                 enable_race_probe: bool = False, race_burst: int = 10) -> None:
+                 enable_race_probe: bool = False, race_burst: int = 10, enable_convergence_probe: bool = False,
+                 convergence_use_schema: bool = True, convergence_concurrent: bool = True) -> None:
         self._prioritizer = prioritizer  # ZR-003/ZR-012: None keeps the static EXPERIMENT_ORDER, exactly as before
         # B45 recon-breadth + B46 chain-composition: FAIL-CLOSED. Off unless an authorised caller enables them; when off, the probes are no-ops and behaviour is identical to before.
         self._enable_channel_probe = enable_channel_probe
@@ -214,6 +215,22 @@ class PureBlackBoxEngine:
         # is never beaten. This converts the documented 'race 0/4' boundary into a bounded, honest capability.
         self._enable_race_probe = enable_race_probe
         self._race_burst = max(2, min(int(race_burst), 24))
+        # B49 multi-branch convergence probe: OPT-IN (off by default). When on, the engine composes SEVERAL
+        # independent sub-chains whose outputs CONVERGE at one terminal step, satisfying each step's required
+        # inputs from the AUTHORISED brief's declared surface (request_fields / response_fields) instead of relying
+        # on the target to NAME a missing field in its error body -- so an opaque-error ("never names a field")
+        # target no longer blinds field learning. The capability-minting steps are fired as a BOUNDED SIMULTANEOUS
+        # burst so a freshness-windowed quorum (caps that must be minted in one short window) is satisfied, which a
+        # sequential spine cannot do. Confirmation is unchanged: the real oracle must flip + an independent
+        # reproduction. It stays on the declared surface and uses only harvested / brief-declared black-box values,
+        # so a correctly-implemented target yields no false positive. FAIL-CLOSED: a no-op when off.
+        self._enable_convergence_probe = enable_convergence_probe
+        # Two capability switches (default to the capable behaviour; flipped only by ablation harnesses to PROVE each
+        # new capability is individually load-bearing). ``_convergence_use_schema`` False disables the brief-schema
+        # field satisfaction (so an opaque target can no longer be driven); ``_convergence_concurrent`` False mints
+        # the capabilities sequentially (so a same-window freshness quorum can no longer be met).
+        self._convergence_use_schema = convergence_use_schema
+        self._convergence_concurrent = convergence_concurrent
         # B47 find-fast: opt-in triage mode -- stop after the first CONFIRMED_P0 (fewer calls). OFF by default, so a full assessment still runs every class and nothing changes.
         self._find_fast = find_fast
         if not getattr(http, "stateless", False):
@@ -1202,6 +1219,164 @@ class PureBlackBoxEngine:
                                          limitations=[f"Found by a bounded concurrency probe ({self._race_burst} simultaneous requests, within the guard's token-bucket burst capacity); a correctly-atomic limit (unique constraint / row lock) is unbeaten and reported as a gap, not ruled out."])
         return None
 
+    async def _convergence_probe(self, cs: ControlState) -> Finding | None:
+        """B49 multi-branch convergence (BOUNDED, FAIL-CLOSED): find a terminal step that CONVERGES several
+        independent capabilities, build each capability's sub-chain from the AUTHORISED brief's declared schema
+        (so an opaque, 'never names a field' target cannot blind field learning), MINT the capabilities as a
+        bounded SIMULTANEOUS burst (so a freshness-windowed quorum is satisfied where a sequential spine busts the
+        window), converge, and raise PBB-U CONFIRMED_P0 only when a never-paid identity USES the feature, reproduced
+        in a clean session. It issues only DECLARED operations and uses only harvested / brief-declared black-box
+        values, so a correctly-implemented target (server-recomputed amount, real paid basis, atomic quorum) yields
+        no false positive.
+
+        WHY THIS IS A NEW CAPABILITY (not reachable by _chain_probe's single guided spine):
+          (1) SCHEMA-DRIVEN field satisfaction -- required inputs come from the brief's declared ``request_fields``
+              (and path placeholders), not from the server naming a missing field. An opaque-error target that
+              answers a generic 422 with no ``field`` collapses _chain_probe's error-driven learning; here it does
+              not, because the authorised API reference already lists the parameter names.
+          (2) MULTI-BRANCH assembly + CONVERGENCE -- K independent sub-chains, each producing one capability named in
+              the terminal step's inputs, mapped via the brief's declared ``response_fields``.
+          (3) FRESHNESS-SYNCHRONISED minting -- the capability-producing steps are fired concurrently (one window),
+              so a quorum requiring same-window freshness is met; a sequential spine mints them too far apart."""
+        if not self._enable_convergence_probe:
+            return None
+        import re as _re
+        b, feature = self.brief, self.brief.primary_feature()
+        if feature is None or not cs.setup_ok or not cs.positive_ok or not cs.negative_ok or cs.open_feature or cs.global_leak:
+            return None
+
+        # (A) DECLARED-SCHEMA GRAPH. producers: logical output name -> the op that produces it (from response_fields).
+        producers: dict[str, str] = {}
+        for name, op in b.operations.items():
+            for logical in (op.response_fields or {}):
+                producers.setdefault(logical, name)
+        if not producers:
+            return None
+        # convergence op: the declared op whose required inputs include the MOST capabilities produced by OTHER ops.
+        conv_name: str | None = None
+        conv_caps: list[str] = []
+        for name, op in b.operations.items():
+            needed = [f for f in (op.request_fields or {}) if f in producers and producers[f] != name]
+            if len(needed) > len(conv_caps) and len(needed) >= 2:
+                conv_name, conv_caps = name, needed
+        if conv_name is None:
+            return None
+        harvest_ops = [n for n, o in b.operations.items() if o.method == "GET" and n != "return_flow"]
+        _rate_like = _re.compile(r"amount|rate|price|qty|quantit|total|value|cost|units|seats|\bnet|balance|subtotal", _re.I)
+
+        # (B) Per-capability sub-chain plan: the mint op that produces the cap, plus any prerequisite "open" op that
+        #     produces a path placeholder the mint op needs. Bounded to the declared producers (no guessing).
+        def _plan(cap: str) -> tuple[str, list[str]] | None:
+            mint = producers.get(cap)
+            if mint is None:
+                return None
+            spec = b.op(mint)
+            if spec is None:
+                return None
+            prereqs: list[str] = []
+            for ph in _re.findall(r"\{(\w+)\}", spec.path):
+                pre = producers.get(ph)
+                if pre is None or pre == mint:
+                    return None  # a path input we cannot produce from the declared surface -> out of scope
+                prereqs.append(pre)
+            return mint, prereqs
+
+        plans: list[tuple[str, str, list[str]]] = []  # (cap, mint_op, [open_ops])
+        for cap in conv_caps:
+            pl = _plan(cap)
+            if pl is None:
+                return None
+            plans.append((cap, pl[0], pl[1]))
+
+        def _fields_for(op_name: str, ctx: dict[str, Any]) -> dict[str, Any]:
+            """Satisfy a declared step's request_fields from the brief schema: a produced id from ctx (by name),
+            else a ZERO-RATE adversarial value for a price/rate/amount field (the Intigriti numeric class -- a
+            server that recomputes is unaffected), else a same-named harvested value if present."""
+            if not self._convergence_use_schema:
+                return {}  # ablation: without schema-driven satisfaction, an opaque-rejected field cannot be filled
+            spec = b.op(op_name)
+            out: dict[str, Any] = {}
+            for f in (spec.request_fields or {}) if spec else {}:
+                if f in ctx:
+                    out[f] = ctx[f]
+                elif _rate_like.search(f):
+                    out[f] = 0
+            return out
+
+        async def assemble(label: str) -> tuple[CustomerSession | None, OracleObservation | None]:
+            try:
+                S = await self.prov.acquire(label)
+            except IdentityPoolExhausted:
+                return None, None
+            if (await self.oracle.check(S, feature, oracle_id=f"U:converge:{label}:pre")).outcome != "denied":
+                return None, None
+            ctx: dict[str, Any] = {}
+            deny = {t for t in (getattr(S, "_token", None),) if isinstance(t, str) and t}
+            for g in harvest_ops:
+                r = await S.call(g, label=f"U:converge:{label}:recon:{g}")
+                self._harvest(r.body, ctx, deny)
+                self._harvest_headers(r.headers, ctx, deny)
+            # open every branch's prerequisites (fast, sequential), harvesting each handle into ctx
+            for _cap, _mint, opens in plans:
+                for o in opens:
+                    r = await S.call(o, label=f"U:converge:{label}:open:{o}")
+                    if not (r.status and 200 <= r.status < 300):
+                        return S, None
+                    self._harvest(r.body, ctx, deny)
+                    self._harvest_headers(r.headers, ctx, deny)
+
+            async def _mint(cap: str, mint_op: str) -> CallResult:
+                spec = b.op(mint_op)
+                pp = {ph: ctx[ph] for ph in _re.findall(r"\{(\w+)\}", spec.path) if ph in ctx} if spec else {}
+                return await S.call(mint_op, label=f"U:converge:{label}:mint:{mint_op}", path_params=pp, fields=_fields_for(mint_op, ctx))
+
+            # FRESHNESS-SYNCHRONISED: fire the capability mints simultaneously so a same-window quorum is satisfied.
+            # (Ablation: _convergence_concurrent False mints them sequentially, which busts a freshness window.)
+            if self._convergence_concurrent:
+                results = await asyncio.gather(*[_mint(cap, mint) for cap, mint, _ in plans], return_exceptions=True)
+            else:
+                results = []
+                for cap, mint, _ in plans:
+                    try:
+                        results.append(await _mint(cap, mint))
+                    except BaseException as exc:  # noqa: BLE001
+                        results.append(exc)
+            for r in results:
+                if isinstance(r, BaseException):
+                    return S, None
+                self._harvest(r.body, ctx, deny)
+                self._harvest_headers(r.headers, ctx, deny)
+            if not all(cap in ctx for cap in conv_caps):
+                return S, None  # a capability was not minted (e.g. a branch gate is correctly closed)
+            # CONVERGE
+            cr = await S.call(conv_name, label=f"U:converge:{label}:finalize", fields=_fields_for(conv_name, ctx))
+            if not (cr.status and 200 <= cr.status < 300):
+                return S, None
+            self._harvest(cr.body, ctx, deny)
+            return S, await self.oracle.check(S, feature, oracle_id=f"U:converge:{label}:post")
+
+        try:
+            S, scen = await assemble("u_converge")
+            if scen is None or scen.outcome != "allowed":
+                return None
+            _S2, repro = await assemble("u_converge_repro")
+        except IdentityPoolExhausted:
+            return None
+        if repro is None or repro.outcome != "allowed":
+            return None
+        decision, _, _ = await self._confirm(hyp="PBB-U", cs=cs, feature=feature, scenario=scen, qualifying=False, discriminating=cs.positive_ok, repro=repro)
+        if not decision.confirmed:
+            return None
+        ids = _clean([*cs.artifact_ids, *scen.artifact_ids, *repro.artifact_ids])
+        branch_desc = "; ".join(f"{'->'.join([*opens, mint])}=>{cap}" for cap, mint, opens in plans)
+        return self._finding("PBB-U", Verdict.CONFIRMED_P0, "high",
+                             f"A never-paid identity USED the paid feature after converging a {len(plans)}-capability quorum at '{conv_name}' ({branch_desc}), with the capability mints issued as a {len(plans)}x SIMULTANEOUS burst to satisfy a same-window freshness quorum; a clean session reproduced it. Internal cause: UNKNOWN.",
+                             artifacts=ids, token=decision.token,
+                             metrics={"convergence_step": conv_name, "capabilities": list(conv_caps), "branches": [{"capability": cap, "sub_chain": [*opens, mint]} for cap, mint, opens in plans], "mint_concurrency": len(plans)},
+                             payment_state="no qualifying payment was made at any step", actual_state=f"feature allowed after converging {conv_caps} at {conv_name}", entitlement_state="granted",
+                             server_side_oracle=f"{scen.oracle_id}: outcome=allowed, discriminating={cs.positive_ok}",
+                             limitations=[f"Found by a bounded multi-branch convergence composer: {len(plans)} declared sub-chains whose outputs the brief maps (response_fields) to the terminal step's declared inputs (request_fields), minted as a {len(plans)}x simultaneous burst within the guard's token-bucket burst capacity. A convergence step whose inputs are not externally derivable from the declared surface, needs more branches than are declared, or whose quorum is correctly atomic/server-recomputed is out of scope (reported as a gap, not ruled out)."])
+
     async def _exp_u(self, cs: ControlState) -> Finding:
         hyp = "PBB-U"
         if (blocked := self._precondition(cs, hyp)) is not None:
@@ -1212,6 +1387,8 @@ class PureBlackBoxEngine:
             return chan
         if self._enable_chain_probe and (chained := await self._chain_probe(cs)) is not None:
             return chained
+        if self._enable_convergence_probe and (converged := await self._convergence_probe(cs)) is not None:
+            return converged
         artifacts: list[str | None] = []
         divergences: list[str] = []
         tested: dict[str, str] = {}
