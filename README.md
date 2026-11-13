@@ -30,9 +30,13 @@ Use it only where you are authorised. You are responsible for operating within y
 
 ## Status
 
-- **Engine**: `PureBlackBoxEngine` — role-agnostic, FAIL-CLOSED, confirmation-gated. 15 capstone bosses beaten
-  (depth 4 → 22), 21 solvable randomized held-out families at 6/6 (0 false-confirms, 0 clean false-positives),
-  plus two honest boundaries correctly refused.
+- **Engine**: `PureBlackBoxEngine` — role-agnostic, FAIL-CLOSED, confirmation-gated. 16 capstone bosses beaten
+  (depth 4 → 22, plus the opaque multi-branch apex NYX), 21 solvable randomized held-out families at 6/6 (0
+  false-confirms, 0 clean false-positives), plus two honest boundaries correctly refused.
+- `2026-11-13` — apex boss **NYX**: opaque errors (~99.9% errors, 0 grants under a 3,000-probe sweep) + a
+  freshness-windowed 3-capability quorum, with every Stripe guard implemented correctly. Forced the B49
+  convergence probe (schema-driven field satisfaction + multi-branch assembly + synchronised concurrent minting).
+  See `docs/NYX_BOSS_CYCLE.md`.
 - `2026-11-13` — depth-22 boss **Chronos**: a DEEP in-chain TOCTOU race (prefix-then-burst) folded into the chain.
 - `2026-11-07` — depth-20 boss **Pangaea**: numeric business-logic + cross-tenant BOLA capabilities.
 - `2026-11-07` — depth-18 **Cosmos** (async-callback correlation binding); depth-16 **Olympus** (SSRF relay signing).
@@ -62,6 +66,14 @@ hard-coded path.
 | 13 | Multi-identity / cross-tenant BOLA (victim-response harvest + fallback sweep) | bola2 6/6 |
 | 14 | Bounded concurrency / TOCTOU burst (shallow limit-overrun) | raceburst 6/6 |
 | 15 | **Deep in-chain TOCTOU** (establish the prefix, then burst the terminal one-shot) | deeprace 6/6 |
+| 16 | Schema-driven field satisfaction under opaque errors (the target never names a field) | NYX (ablated) |
+| 17 | Multi-branch sub-chain assembly + convergence detection (many paths → one quorum) | NYX (ablated) |
+| 18 | Freshness-synchronised concurrent minting (a same-window quorum a sequential spine busts) | NYX (ablated) |
+
+Capabilities 16–18 (the **B49 convergence family**) are verified on the **NYX** capstone with per-flaw controls and
+per-capability ablations: each is individually load-bearing (disable schema-satisfaction → miss; mint sequentially
+→ miss), and the all-correct variant yields 0 (no false positive). They are general (brief-schema-driven, not
+hard-coded to NYX); a randomized held-out family for them is a documented follow-up.
 
 Provider-model families from real per-provider research (not signing variants): **keymanagement** (un-authz'd
 detokenize / AES-at-rest angle) 6/6, **mandate** (GoCardless bank-debit) 6/6, **dunning** (Chargebee/Recurly state
@@ -90,7 +102,11 @@ The chain engine composes the declared, individually-harmless primitives into a 
 forward search grows one ordered spine; iterative error-driven field learning satisfies each server-named input
 (ids, nonces, digests, signatures) from harvested or legitimately-constructed values; and a bounded, opt-in
 concurrency probe overruns check-then-act limits — including a **deep** TOCTOU that first re-establishes the
-discovered prefix on a fresh identity, then bursts the terminal one-shot with that prefix's context.
+discovered prefix on a fresh identity, then bursts the terminal one-shot with that prefix's context. A further
+opt-in, FAIL-CLOSED **convergence probe** (B49) composes SEVERAL independent sub-chains whose outputs converge at a
+single terminal step: it satisfies each step's inputs from the authorised brief's declared schema — so an opaque
+target that never names a field no longer blinds learning — and mints the required capabilities as a synchronised
+concurrent burst, so a same-window freshness quorum is met where a sequential spine busts it.
 
 ---
 
@@ -129,8 +145,8 @@ the only third-party runtime import of the core (standard client crypto for Ed25
 ## Boss coverage
 
 Each boss is a synthetic, correctly-defended paywall with exactly one honest reachable path; the engine must FIND
-the no-payment chain, and removing any single flaw must drop it to 0 (each flaw load-bearing), with the all-correct
-variant yielding 0 after an exhaustive search. All counts are measured by running the code.
+the no-payment chain (NYX: converge a multi-branch quorum rather than grow a single spine), and removing any single
+flaw must drop it to 0 (each flaw load-bearing), with the all-correct variant yielding 0 after an exhaustive search. All counts are measured by running the code.
 
 | Boss | Depth | Signature challenge | Calls |
 |---|---|---|---|
@@ -149,6 +165,7 @@ variant yielding 0 after an exhaustive search. All counts are measured by runnin
 | Cosmos | 18 | service mesh + forged async webhook callback (correlation-bound) | 1,751 |
 | Pangaea | 20 | double callback hop + numeric business-logic + cross-tenant BOLA | 2,479 |
 | **Chronos** | **22** | **double forge prefix + a DEEP in-chain TOCTOU race (prefix-then-burst)** | **3,451** |
+| **NYX** | **quorum** | **opaque errors (~99.9%, 0 grants) + a freshness-windowed 3-capability quorum (schema-driven, synchronised concurrent mint)** | **993** |
 
 Guardrails (re-verified every change): enterprise-hard population detection **1.0** / false-positive **0.0**;
 purity audit **0 violations**; offline suite **831 passed / 0 failed** (3 errored only because optional DB/web
@@ -179,10 +196,11 @@ pip install "cryptography>=42,<46"
 cd backend
 export PYTHONPATH="tests/verification_infrastructure/shims:tests/verification_infrastructure:."
 
-# the newest capstone (depth-22, deep in-chain TOCTOU) with per-flaw controls:
-python3 tests/verification_infrastructure/hardened_benchmark/run_chronos.py --controls
+# the newest capstone (NYX — opaque errors + a freshness-windowed multi-branch quorum) with full controls:
+python3 tests/verification_infrastructure/hardened_benchmark/run_nyx.py --controls
 
 # any other boss:
+python3 tests/verification_infrastructure/hardened_benchmark/run_chronos.py --controls
 python3 tests/verification_infrastructure/hardened_benchmark/run_pangaea.py --controls
 python3 tests/verification_infrastructure/hardened_benchmark/run_cosmos.py
 
@@ -222,17 +240,18 @@ light.) Skip this section entirely unless you specifically want the HTTP API —
 ## Repository layout
 
 ```
-README.md               this file (the only prose document)
+README.md               this file (top-level prose; see docs/ for the scorecards and the NYX cycle)
 run-benchmark.sh         one-command benchmark runner
 docker-compose.yml       optional API + Postgres orchestration (not needed for the benchmark)
 .gitignore
 docs/
   BENCHMARK_SCORECARD.md pure-benchmark scorecard (consumed by the purity test suite)
+  NYX_BOSS_CYCLE.md      the NYX Harder-Boss→MISS→fix→FIND→Upgrade cycle (boss + B49 convergence probe)
 backend/
   app/                   the engine, agent layer, and enterprise-controls safety spine
   benchmark/             the LLM-replacement layer and scoring (no live AI)
   tests/verification_infrastructure/
-    hardened_benchmark/  the 15 bosses (boss_*.py / run_*.py) and the randomized held-out families (gauntlet_*)
+    hardened_benchmark/  the 16 bosses (boss_*.py / run_*.py) and the randomized held-out families (gauntlet_*)
     shims/               stub httpx / pydantic so the benchmark needs no web stack
   requirements.txt       full-platform dependencies (optional; the benchmark needs only `cryptography`)
   requirements-dev.txt   test-runner dependencies (optional)
