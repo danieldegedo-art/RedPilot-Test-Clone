@@ -2,7 +2,7 @@
 #
 # run-benchmark.sh -- one-command runner for the RedPilot black-box benchmark.
 #
-#   ./run-benchmark.sh                 # the newest capstone (PLEROMA, the reconciliation apex)
+#   ./run-benchmark.sh                 # the newest capstone (DEMIURGE, the federation apex)
 #   ./run-benchmark.sh <boss>          # a single boss, e.g. ./run-benchmark.sh pangaea
 #   ./run-benchmark.sh <boss> --controls
 #   ./run-benchmark.sh families        # every randomized held-out family
@@ -19,7 +19,7 @@ export PYTHONPATH="tests/verification_infrastructure/shims:tests/verification_in
 HB="tests/verification_infrastructure/hardened_benchmark"
 PY="${PYTHON:-python3}"
 
-BOSSES=(boss helios obsidian citadel aegis vault obelisk rampart leviathan sentinel pantheon olympus cosmos pangaea chronos nyx abraxas pleroma)
+BOSSES=(boss helios obsidian citadel aegis vault obelisk rampart leviathan sentinel pantheon olympus cosmos pangaea chronos nyx abraxas pleroma demiurge)
 
 if ! "$PY" -c "import cryptography" 2>/dev/null; then
   echo "error: the 'cryptography' package is required. Install it with:  pip install cryptography" >&2
@@ -29,7 +29,7 @@ fi
 one() { echo; echo "==== boss: $1 ===="; "$PY" "$HB/run_$1.py" "${@:2}"; }
 families() { for f in "$HB"/gauntlet_families*.py "$HB"/gauntlet_providers.py; do echo; echo "---- $(basename "$f") ----"; "$PY" "$f"; done; }
 
-case "${1:-pleroma}" in
+case "${1:-demiurge}" in
   list)     printf '%s\n' "${BOSSES[@]}" ;;
   families) families ;;
   all)      for b in "${BOSSES[@]}"; do one "$b"; done; families ;;   # finds + families; add --controls per boss for the load-bearing proof

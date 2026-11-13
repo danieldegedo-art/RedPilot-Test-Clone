@@ -30,9 +30,18 @@ Use it only where you are authorised. You are responsible for operating within y
 
 ## Status
 
-- **Engine**: `PureBlackBoxEngine` — role-agnostic, FAIL-CLOSED, confirmation-gated. 18 capstone bosses beaten
-  (depth 4 → 22, plus the opaque multi-branch apex NYX, the enterprise apex ABRAXAS and the reconciliation apex PLEROMA), 21 solvable randomized
-  held-out families at 6/6 (0 false-confirms, 0 clean false-positives), plus two honest boundaries correctly refused.
+- **Engine**: `PureBlackBoxEngine` — role-agnostic, FAIL-CLOSED, confirmation-gated. 19 capstone bosses beaten
+  (depth 4 → 22, plus the opaque multi-branch apex NYX, the enterprise apex ABRAXAS, the reconciliation apex PLEROMA
+  and the **federation apex DEMIURGE**), 21 solvable randomized held-out families at 6/6 (0 false-confirms, 0 clean
+  false-positives), plus two honest boundaries correctly refused.
+- `2026-11-13` — **federation apex boss DEMIURGE**: the first boss that is a DISTRIBUTED FEDERATION (one edge fronting
+  eight archon services, all implemented correctly; the archon surface is UNDECLARED, advertised only in the public
+  reference; 99.87% errors / 0 grants under a 3,000-probe sweep). The one load-bearing no-payment ENTERPRISE bypass is
+  a CONFUSED DEPUTY across four trust edges, carried by an opaque packed correlation token whose MAC does not cover its
+  basis region. The current engine cleanly MISSES even when handed every archon op (structural: two produced roots + a
+  cross-service credit + an opaque token). Forced **four new capability CLASSES** — B53 undeclared-operation discovery,
+  B54 differential packed-token field inference, B55 cross-service trust-graph composition, B56 orchestration-as-
+  execution — each individually load-bearing, with no false positive and no regression. See `docs/DEMIURGE_BOSS_CYCLE.md`.
 - `2026-11-13` — **reconciliation apex boss PLEROMA**: keeps ABRAXAS's entire enterprise/sovereign perimeter
   implemented correctly (every signed-JWS / device-attestation / payment-versus-payment atomic / zero-knowledge
   per-meter proof / convergence route an unforgeable dead-end that never grants) + the uniform anti-RE shell
@@ -92,6 +101,16 @@ hard-coded path.
 | 23 | Resource-lifecycle reconstruction (open → overlay → close → settle a stateful period handle) | PLEROMA (ablated) |
 | 24 | Aggregate credit-overlay reasoning (zero a whole-period net due, not a single capability) | PLEROMA (ablated) |
 | 25 | Seal-before-settle ordering (overlay while open, then close to lock it in, then reconcile) | PLEROMA (ablated) |
+| 26 | Undeclared-operation discovery (synthesize the archon surface from the edge's public reference) | DEMIURGE (ablated) |
+| 27 | Opaque packed-token field inference (differential diffing to locate + forge an unsigned basis field) | DEMIURGE (ablated) |
+| 28 | Cross-service trust-graph composition (a confused-deputy order across services, no single one wrong) | DEMIURGE (ablated) |
+| 29 | Orchestration-as-execution across a federation (hold cross-service state; late-bind a fresh step-up) | DEMIURGE (ablated) |
+
+Capabilities 26–29 (the **DEMIURGE federation family**) are verified on the **DEMIURGE** capstone, each individually
+ablated (disable discovery → the archon surface is never synthesised → miss; disable token RE → the honest token
+carries zero credit → miss; disable trust-graph → the cross-service order is not composed → miss; disable
+orchestration → the fresh step-up is not late-bound → miss), with all-correct → no false positive. A randomized
+held-out `demiurge` family is a documented follow-up (as the B49/B50/B52 families were before theirs).
 
 Capabilities 16–18 (the **B49 convergence family**) are verified on the **NYX** capstone; capabilities 19–22 (the
 **B50 settlement-fabric family**) on the **ABRAXAS** enterprise capstone; capabilities 23–25 (the **B52
