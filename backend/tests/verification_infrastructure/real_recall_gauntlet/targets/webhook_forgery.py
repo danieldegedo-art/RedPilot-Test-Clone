@@ -62,7 +62,9 @@ def make(scheme, flaw_on, path_log=None):
     return Target(scheme, flaw_on=flaw_on, plan_names=PLANS, prices=PRICES, path_log=path_log)
 
 
-def brief(base_url, scheme):
+def brief(base_url, scheme, declare_glue=False):
+    # The provider-webhook endpoint is NOT customer-facing, so it is not in a customer recon
+    # trace; declaring glue here is a no-op. (The engine would not forge it under RoE anyway.)
     return spine_brief(base_url, scheme, plan_names=PLANS, prices=PRICES)
 
 

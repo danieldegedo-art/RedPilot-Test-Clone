@@ -211,6 +211,7 @@ class PureBlackBoxEngine:
                  enable_federation: bool = False, fed_use_discovery: bool = True, fed_use_token_re: bool = True,
                  fed_use_trust_graph: bool = True, fed_use_orchestration: bool = True,
                  fed_use_analogy: bool = True, fed_use_infogain: bool = True,
+                 enable_behavior_probe: bool = False,
                  disabled_agents: frozenset[str] = frozenset()) -> None:
         self._prioritizer = prioritizer  # ZR-003/ZR-012: None keeps the static EXPERIMENT_ORDER, exactly as before
         # B45 recon-breadth + B46 chain-composition: FAIL-CLOSED. Off unless an authorised caller enables them; when off, the probes are no-ops and behaviour is identical to before.
@@ -326,6 +327,17 @@ class PureBlackBoxEngine:
         # not run). ``disabled_agents`` is the ablation lever that proves which roster agents are genuinely
         # load-bearing for a federation find (honestly: one per distinct capability, not the whole roster).
         self._disabled_agents = frozenset(disabled_agents)
+        # B60 behavior-based discovery probe: OPT-IN (off by default). "Discovery by behaviour, not name."
+        # Instead of binding roles from operation NAMES, it treats every DECLARED operation that is not a
+        # canonical-flow role or a feature as a candidate, drives it with benign/known values, and raises a
+        # CONFIRMED_P0 ONLY when the real Protected-Feature Oracle shows an entitlement it should not: a
+        # NEVER-PAID identity using a paid feature (PBB-U), or a BASIC payer reaching the TOP tier (PBB-F).
+        # Operation ROLES are inferred behaviourally (call it, watch the oracle flip); only field-filling uses
+        # the brief's recon field labels. Confirmation is UNCHANGED (control denied + scenario allowed + clean-
+        # session reproduction through the ConfirmationGate), it issues only DECLARED operations with harvested/
+        # brief-declared values, so a correctly-implemented glue route (grants nothing to the unpaid / rejects a
+        # terminal-state mutation) yields no false positive. FAIL-CLOSED: a no-op when off.
+        self._enable_behavior_probe = enable_behavior_probe
         # B47 find-fast: opt-in triage mode -- stop after the first CONFIRMED_P0 (fewer calls). OFF by default, so a full assessment still runs every class and nothing changes.
         self._find_fast = find_fast
         if not getattr(http, "stateless", False):
@@ -2100,6 +2112,139 @@ class PureBlackBoxEngine:
                                           "unbacked credits on close, or requires a real captured basis to finalise is "
                                           "out of scope (reported as a gap, not ruled out)."])
 
+    # ----------------------------------------------------------------------------- B60 behavior-based discovery
+    _CANONICAL_OPS = frozenset({"signup", "plans", "account", "start_checkout", "sandbox_pay",
+                                "return_flow", "subscription_view", "request_refund"})
+
+    def _behavior_candidate_ops(self) -> list[Any]:
+        """Declared operations that are NOT a canonical-flow role and NOT a protected feature.
+        These are the glue-code operations whose ROLE the engine must infer by behaviour."""
+        feats = {f.path for f in self.brief.features.values()}
+        out = []
+        for name, op in self.brief.operations.items():
+            if name in self._CANONICAL_OPS or op.path in feats:
+                continue
+            out.append(op)
+        return out
+
+    def _behavior_fill_variants(self, op: Any, ctx: dict[str, Any]) -> list[tuple[dict, dict]]:
+        """A bounded set of (path_params, fields) to drive a candidate op with benign/known values.
+        Values come from a known pool (the top-plan name, the session's own ids, benign scalars); a
+        light type-hint on the brief's RECON field label picks a plausible value. No secret/id guessing."""
+        logicals = list(op.request_fields.keys()) or list(getattr(op, "response_fields", {}).keys())
+
+        def typed(logical: str) -> Any:
+            s = logical.lower()
+            if any(k in s for k in ("id", "ref", "order", "payment", "cart", "token", "handle")):
+                return ctx.get("payment_id")
+            if any(k in s for k in ("plan", "tier", "sku", "product", "offering")):
+                return ctx.get("top_plan")
+            if any(k in s for k in ("amount", "sum", "value", "price", "fee", "cost", "qty", "quantity")):
+                return 1
+            if any(k in s for k in ("currency", "ccy")):
+                return "USD"
+            if any(k in s for k in ("status", "state", "result", "outcome", "phase")):
+                return "success"
+            return True
+
+        bodies: list[dict] = [{}]
+        if logicals:
+            bodies.append({lg: typed(lg) for lg in logicals})
+            for v in (ctx.get("top_plan"), 1, True, "success"):
+                bodies.append({lg: v for lg in logicals})
+        # dedupe (preserve order)
+        seen: list[dict] = []
+        for b in bodies:
+            if b not in seen:
+                seen.append(b)
+        placeholders = [seg[1:-1] for seg in op.path.split("/") if seg.startswith("{") and seg.endswith("}")]
+        pp = {ph: ctx.get("payment_id") for ph in placeholders}
+        return [(pp, b) for b in seen]
+
+    async def _behavior_grant_probe(self, cs: ControlState) -> Finding | None:
+        """A NEVER-PAID identity reaches a paid feature through a discovered (role-inferred) operation."""
+        if not self._enable_behavior_probe:
+            return None
+        feature, tier = self.brief.primary_feature(), self.brief.tier_feature()
+        if feature is None or not cs.setup_ok or not cs.positive_ok or not cs.negative_ok or cs.open_feature or cs.global_leak:
+            return None
+        cands = self._behavior_candidate_ops()
+        if not cands:
+            return None
+        ctx = {"top_plan": self.brief.priciest_plan, "payment_id": None}
+        checks = [(feature, cs.positive_ok)] + ([(tier, cs.tier_positive_ok)] if tier is not None and cs.tier_positive_ok else [])
+        for op in cands:
+            for pp, fields in self._behavior_fill_variants(op, ctx):
+                if self._stop_reason() is not None:
+                    return None
+                try:
+                    K = await self.prov.acquire("beh_grant")
+                except IdentityPoolExhausted:
+                    return None
+                if (await self.oracle.check(K, feature, oracle_id=f"BEH:grant:{op.name}:pre")).outcome != "denied":
+                    continue  # fixture must start denied
+                await K.call(op.name, path_params=pp or None, fields=fields or None, label=f"BEH:grant:{op.name}")
+                for feat, disc in checks:
+                    scen = await self.oracle.check(K, feat, oracle_id=f"BEH:grant:{op.name}:post")
+                    if scen.outcome != "allowed":
+                        continue
+                    repro = await self.oracle.check(K.clean_copy(), feat, oracle_id=f"BEH:grant:{op.name}:repro")
+                    decision, _, _ = await self._confirm(hyp="PBB-U", cs=cs, feature=feat, scenario=scen, qualifying=False, discriminating=disc, repro=repro)
+                    if decision.confirmed:
+                        ids = _clean([*cs.artifact_ids, *scen.artifact_ids, *repro.artifact_ids])
+                        return self._finding("PBB-U", Verdict.CONFIRMED_P0, "high",
+                                             f"A never-paid identity USED a paid feature after calling the discovered operation {op.name!r} (role inferred by behaviour, not name); a clean session reproduced it and the clean control stayed denied. Internal cause: UNKNOWN.",
+                                             artifacts=ids, token=decision.token,
+                                             metrics={"discovered_op": op.name, "op_path": op.path, "discovery": "behavioral", "feature": feat.feature_id},
+                                             payment_state="no qualifying payment", actual_state=f"feature allowed after {op.name}", entitlement_state="granted",
+                                             server_side_oracle=f"{scen.oracle_id}: outcome=allowed, discriminating={disc}",
+                                             limitations=["Found by behaviour-based discovery over DECLARED operations; a grant that needs an undiscoverable secret value (e.g. a valid coupon code) is not reached by this step."])
+        return None
+
+    async def _behavior_escalate_probe(self, cs: ControlState) -> Finding | None:
+        """A BASIC payer reaches the TOP tier through a discovered (role-inferred) operation, without paying the top price."""
+        if not self._enable_behavior_probe:
+            return None
+        tier = self.brief.tier_feature()
+        if tier is None or len(self.brief.plans) < 2 or not cs.setup_ok or not cs.positive_ok or not cs.negative_ok or cs.open_feature or cs.global_leak or not cs.tier_positive_ok:
+            return None
+        cands = self._behavior_candidate_ops()
+        if not cands:
+            return None
+        try:
+            V = await self.prov.acquire("beh_esc")
+        except IdentityPoolExhausted:
+            return None
+        if (await self.oracle.check(V, tier, oracle_id="BEH:esc:pre")).outcome != "denied":
+            return None
+        pay = await self._pay(V, plan=self.brief.cheapest_plan, outcome_key="success", label="BEH:esc:pay")
+        if pay.payment_id is None or not pay.reached_sandbox:
+            return None
+        await self._return_flow(V, pay.payment_id, label="BEH:esc:return", claim_status=self.brief.return_status_values["success"])
+        if (await self.oracle.check(V, tier, oracle_id="BEH:esc:mid")).outcome == "allowed":
+            return None  # already at tier after a basic payment == plan_not_enforced, handled by _exp_f's own channel
+        ctx = {"top_plan": self.brief.priciest_plan, "payment_id": pay.payment_id, "tenant_id": V.tenant_id}
+        for op in cands:
+            for pp, fields in self._behavior_fill_variants(op, ctx):
+                if self._stop_reason() is not None:
+                    return None
+                await V.call(op.name, path_params=pp or None, fields=fields or None, label=f"BEH:esc:{op.name}")
+                scen = await self.oracle.check(V, tier, oracle_id=f"BEH:esc:{op.name}:post")
+                if scen.outcome != "allowed":
+                    continue
+                repro = await self.oracle.check(V.clean_copy(), tier, oracle_id=f"BEH:esc:{op.name}:repro")
+                decision, _, _ = await self._confirm(hyp="PBB-F", cs=cs, feature=tier, scenario=scen, qualifying=False, discriminating=cs.tier_positive_ok, repro=repro)
+                if decision.confirmed:
+                    ids = _clean([*cs.artifact_ids, *scen.artifact_ids, *repro.artifact_ids])
+                    return self._finding("PBB-F", Verdict.CONFIRMED_P0, "high",
+                                         f"A basic-plan payer reached the TOP-tier feature through the discovered operation {op.name!r} (role inferred by behaviour) without paying the top price; a clean session reproduced it and the clean control stayed denied. Internal cause: UNKNOWN.",
+                                         artifacts=ids, token=decision.token,
+                                         metrics={"discovered_op": op.name, "op_path": op.path, "discovery": "behavioral"},
+                                         payment_state="paid cheapest plan only", actual_state=f"top-tier feature allowed after {op.name}", entitlement_state="granted",
+                                         server_side_oracle=f"{scen.oracle_id}: outcome=allowed, discriminating={cs.tier_positive_ok}",
+                                         limitations=["Found by behaviour-based discovery over DECLARED operations."])
+        return None
+
     async def _exp_u(self, cs: ControlState) -> Finding:
         hyp = "PBB-U"
         if (blocked := self._precondition(cs, hyp)) is not None:
@@ -2118,6 +2263,8 @@ class PureBlackBoxEngine:
             return reconciled
         if self._enable_federation and (federated := await self._federation_probe(cs)) is not None:
             return federated
+        if self._enable_behavior_probe and (behaved := await self._behavior_grant_probe(cs)) is not None:
+            return behaved
         artifacts: list[str | None] = []
         divergences: list[str] = []
         tested: dict[str, str] = {}
@@ -2180,6 +2327,8 @@ class PureBlackBoxEngine:
             return self._finding(hyp, Verdict.BLOCKED, "high", "Plan binding needs at least two plans and a protected feature gated by the most expensive plan.", reasons=["brief_lacks_tier_feature"])
         if (blocked := self._precondition(cs, hyp, needs_tier=True)) is not None:
             return blocked
+        if self._enable_behavior_probe and (behaved := await self._behavior_escalate_probe(cs)) is not None:
+            return behaved
         cheapest_price = b.plans[b.cheapest_plan].get(b.primary_currency)
         top_price = b.plans[b.priciest_plan].get(b.primary_currency)
         artifacts: list[str | None] = list(cs.artifact_ids)

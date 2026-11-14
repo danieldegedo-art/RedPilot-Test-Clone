@@ -47,8 +47,16 @@ def make(scheme, flaw_on, path_log=None):
     return Target(scheme, flaw_on=flaw_on, plan_names=PLANS, prices=PRICES, path_log=path_log)
 
 
-def brief(base_url, scheme):
-    return spine_brief(base_url, scheme, plan_names=PLANS, prices=PRICES)
+def glue_ops(scheme):
+    return {"op_amend": {"method": "POST", "path": scheme.custom(_ROUTES, "amend"),
+                        "observed_via": "product_ui",
+                        "request_fields": {"order_ref": scheme.one(_IDF, "amend_id"),
+                                           "plan": scheme.one(_PLANF, "amend_plan")}}}
+
+
+def brief(base_url, scheme, declare_glue=False):
+    return spine_brief(base_url, scheme, plan_names=PLANS, prices=PRICES,
+                       extra_ops=glue_ops(scheme) if declare_glue else None)
 
 
 async def probe_truth(scheme, flaw_on):

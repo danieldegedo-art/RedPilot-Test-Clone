@@ -21,11 +21,12 @@ import os
 import sys
 
 import manifest as MAN
-from harness import run_engine_blind
+from harness import PHASE2_ENGINE_PROBES, TODAY_ENGINE_PROBES, run_engine_blind
 from surface import Scheme
 
 
-async def run_instance(family: str, seed: int, split: str, scope: str) -> dict:
+async def run_instance(family: str, seed: int, split: str, scope: str, *,
+                       declare_glue: bool, probes: dict) -> dict:
     M = importlib.import_module(f"targets.{family}")
     rec: dict = {"family": family, "seed": seed, "split": split, "scope": scope,
                  "advisory": MAN.PROVENANCE[family]["advisory"], "class": MAN.PROVENANCE[family]["engine_class"]}
@@ -45,7 +46,7 @@ async def run_instance(family: str, seed: int, split: str, scope: str) -> dict:
     async def handle(method, path, body, headers):
         return await tgt.handle(method, path, body, headers)
 
-    rr_on = await run_engine_blind(lambda base: M.brief(base, scheme), handle, path_log=plog)
+    rr_on = await run_engine_blind(lambda base: M.brief(base, scheme, declare_glue=declare_glue), handle, path_log=plog, probes=probes)
     rec["engine_confirmed_flaw_on"] = rr_on.confirmed
     rec["engine_calls"] = rr_on.stats.get("customer_level_calls")
     rec["internal_hits"] = tgt.internal_hits  # purity: must be 0
@@ -57,7 +58,7 @@ async def run_instance(family: str, seed: int, split: str, scope: str) -> dict:
     async def handle2(method, path, body, headers):
         return await tgt2.handle(method, path, body, headers)
 
-    rr_off = await run_engine_blind(lambda base: M.brief(base, scheme2), handle2)
+    rr_off = await run_engine_blind(lambda base: M.brief(base, scheme2, declare_glue=declare_glue), handle2, probes=probes)
     rec["engine_confirmed_patched"] = rr_off.confirmed
     rec["internal_hits"] += tgt2.internal_hits
 
@@ -101,13 +102,19 @@ def aggregate(records: list[dict], split: str) -> dict:
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--split", choices=["test", "dev", "all"], default="all")
+    ap.add_argument("--recon", choices=["sparse", "full"], default="sparse",
+                    help="sparse: core payment flow only; full: also declare customer-facing glue routes (realistic recon)")
+    ap.add_argument("--engine", choices=["today", "phase2"], default="today",
+                    help="today: all shipped probes; phase2: + behavior-based discovery probe")
     ap.add_argument("--json", default=None)
     args = ap.parse_args()
 
+    declare_glue = args.recon == "full"
+    probes = PHASE2_ENGINE_PROBES if args.engine == "phase2" else TODAY_ENGINE_PROBES
     insts = {"test": MAN.TEST, "dev": MAN.DEV, "all": MAN.ALL}[args.split]
-    records = [await run_instance(*i) for i in insts]
+    records = [await run_instance(*i, declare_glue=declare_glue, probes=probes) for i in insts]
 
-    print("== Real-Glue-Code Recall Gauntlet (engine run BLIND over a real socket) ==\n")
+    print(f"== Real-Glue-Code Recall Gauntlet (BLIND, real socket) -- recon={args.recon} engine={args.engine} ==\n")
     hdr = f"{'family':24s} {'seed':>4s} {'split':5s} {'scope':9s} {'truth':5s} {'pos':4s} {'neg':3s}  confirmed(flaw_on)"
     print(hdr)
     print("-" * len(hdr))

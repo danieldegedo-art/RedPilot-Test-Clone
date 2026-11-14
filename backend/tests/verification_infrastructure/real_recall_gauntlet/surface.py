@@ -48,36 +48,38 @@ _FIELDS: dict[str, list[str]] = {
 
 
 class Scheme:
-    """Resolved surface for one (family, seed). ``route(role)`` and ``field(name)`` are stable."""
+    """Resolved surface for one (family, seed). ``route(role)`` and ``field(name)`` are stable.
+
+    Each string is drawn from a key-DERIVED RNG (``random.Random(f"{family}:{seed}:{key}")``),
+    so generation is ORDER-INDEPENDENT: any Scheme instance for the same (family, seed) yields
+    the same string for a given key no matter the call order, and the brief, the target and
+    the truth prober agree even when built from separate instances. Truly deterministic
+    anonymisation per (family, seed) -- the property the sealed DEV/TEST split relies on.
+    """
 
     def __init__(self, family: str, seed: int) -> None:
-        self._r = random.Random(f"{family}:{seed}")
         self.family = family
         self.seed = seed
-        self.prefix = f"/{self._r.choice(_PREFIX)}{self._r.randint(1, 9)}/v{self._r.randint(1, 3)}"
-        self._routes: dict[str, str] = {}
-        self._fields: dict[str, str] = {}
+        self._base = f"{family}:{seed}"
+        self.prefix = self._prefix()
+
+    def _rng(self, key: str) -> random.Random:
+        return random.Random(f"{self._base}:{key}")
+
+    def _prefix(self) -> str:
+        r = self._rng("__prefix__")
+        return f"/{r.choice(_PREFIX)}{r.randint(1, 9)}/v{r.randint(1, 3)}"
 
     def route(self, role: str, *, extra: str = "") -> str:
-        if role not in self._routes:
-            verb = self._r.choice(_VERBS[role]) if role in _VERBS else role
-            self._routes[role] = f"{self.prefix}/{verb}"
-        return self._routes[role] + extra
+        verb = self._rng(f"route:{role}").choice(_VERBS[role]) if role in _VERBS else role
+        return f"{self.prefix}/{verb}" + extra
 
     def field(self, name: str) -> str:
-        if name not in self._fields:
-            self._fields[name] = self._r.choice(_FIELDS[name]) if name in _FIELDS else name
-        return self._fields[name]
+        return self._rng(f"field:{name}").choice(_FIELDS[name]) if name in _FIELDS else name
 
     def custom(self, pool: list[str], tag: str) -> str:
         """A glue-code-specific route segment (no canonical role), chosen deterministically."""
-        key = f"custom:{tag}"
-        if key not in self._routes:
-            self._routes[key] = f"{self.prefix}/{self._r.choice(pool)}"
-        return self._routes[key]
+        return f"{self.prefix}/{self._rng(f'custom:{tag}').choice(pool)}"
 
     def one(self, pool: list[str], tag: str) -> str:
-        key = f"one:{tag}"
-        if key not in self._fields:
-            self._fields[key] = self._r.choice(pool)
-        return self._fields[key]
+        return self._rng(f"one:{tag}").choice(pool)

@@ -42,7 +42,7 @@ def make(scheme, flaw_on, path_log=None):
     return Target(scheme, flaw_on=flaw_on, plan_names=PLANS, prices=PRICES, path_log=path_log)
 
 
-def brief(base_url, scheme):
+def brief(base_url, scheme, declare_glue=False):
     return spine_brief(base_url, scheme, plan_names=PLANS, prices=PRICES, map_tenant=True)
 
 

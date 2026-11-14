@@ -23,7 +23,7 @@ PLANS = ("basic", "pro")
 PRICES = {"basic": {"USD": 9.0, "JPY": 1350.0}, "pro": {"USD": 99.0, "JPY": 14850.0}}
 
 
-def brief(base_url, scheme):
+def brief(base_url, scheme, declare_glue=False):
     return spine_brief(base_url, scheme, plan_names=PLANS, prices=PRICES)
 
 

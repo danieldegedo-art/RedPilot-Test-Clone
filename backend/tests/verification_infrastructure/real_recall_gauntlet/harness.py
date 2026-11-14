@@ -93,12 +93,18 @@ class RunResult:
     reached_paths: set[str] = field(default_factory=set)
 
 
-async def run_engine_blind(brief_factory: Callable[[str], dict[str, Any]], handle: HandleFn, *, path_log: set[str] | None = None) -> RunResult:
-    """Start the target, run TODAY's full engine blind, return the confirmed-P0 set.
+# Phase-2 engine = today's probes + the new behavior-based discovery probe (opt-in, fail-closed).
+PHASE2_ENGINE_PROBES: dict[str, Any] = {**TODAY_ENGINE_PROBES, "enable_behavior_probe": True}
 
-    The engine sees only the brief (built by ``brief_factory(base_url)`` once the port is
-    known) + the base URL. ``path_log`` (optional) is a set the target appends every served
-    path to, so the runner can report real socket coverage.
+
+async def run_engine_blind(brief_factory: Callable[[str], dict[str, Any]], handle: HandleFn, *,
+                           path_log: set[str] | None = None, probes: dict[str, Any] | None = None) -> RunResult:
+    """Start the target, run the engine blind, return the confirmed-P0 set.
+
+    ``probes`` selects the engine capability set (default TODAY_ENGINE_PROBES; pass
+    PHASE2_ENGINE_PROBES to include the behavior probe). The engine sees only the brief
+    (built by ``brief_factory(base_url)`` once the port is known) + the base URL. ``path_log``
+    (optional) is a set the target appends every served path to, for real-socket coverage.
     """
     server, port = await start(handle)
     base = f"http://127.0.0.1:{port}"
@@ -116,7 +122,7 @@ async def run_engine_blind(brief_factory: Callable[[str], dict[str, Any]], handl
             base, brief.limits.timeout_seconds, None, {}, "qa-pure-black-box-engine/1.0",
             max_retries=0, guard=guard, stateless=True,
         )
-        engine = PureBlackBoxEngine(http, brief, base_url=base, **TODAY_ENGINE_PROBES)
+        engine = PureBlackBoxEngine(http, brief, base_url=base, **(probes if probes is not None else TODAY_ENGINE_PROBES))
         result = await engine.run(None)
         confirmed = sorted({f.hypothesis_id for f in result.findings if f.verdict.value == "CONFIRMED_P0"})
         verdicts = {f.hypothesis_id: f.verdict.value for f in result.findings}
