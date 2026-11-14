@@ -563,8 +563,12 @@ HOLDOUT not yet measured — it is the true generalisation test and remains outs
   preserve 0 FP, needs a dedicated bounded probe with its own control) and `gb_bola_object` (a
   cross-subject object-access flaw the UNCHANGED paid-feature gate cannot confirm without a
   cross-subject oracle extension). This is the proven-ceiling checkpoint for the no-gate-change rule.
-- **OUTSTANDING:** the author-blind HOLDOUT — a separate session authored partial targets on branch
-  `claude/redpilot-holdout-blind` but hit the shared-account 5-hour rate limit before finishing;
-  its flaw internals were never inspected by the engine author. Complete it (re-run the sibling
-  after the limit resets), then measure it EXACTLY ONCE at the very end, after all tuning is frozen,
-  and report that number as the headline generalisation result.
+- **OUTSTANDING — author-blind HOLDOUT:** a separate session was spawned to author it, but hit the
+  shared-account 5-hour rate limit **before committing/pushing** (its ephemeral container was
+  reclaimed, so nothing persisted and `claude/redpilot-holdout-blind` is empty). The engine author
+  (this session) inspected no HOLDOUT flaw internals. The HOLDOUT must be regenerated from scratch by
+  a fresh author-blind process once the rate limit resets, then measured **exactly once** at the very
+  end (after all tuning is frozen) and reported as the headline generalisation result. Until then the
+  **sealed TEST** blind lift (0.40 → 0.80, different anonymised seeds, literal-agnostic probes, 0 FP,
+  no regression) stands as the generalisation evidence, with the author-blindness strengthening still
+  to come.
