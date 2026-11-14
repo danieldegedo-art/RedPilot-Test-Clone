@@ -212,6 +212,7 @@ class PureBlackBoxEngine:
                  fed_use_trust_graph: bool = True, fed_use_orchestration: bool = True,
                  fed_use_analogy: bool = True, fed_use_infogain: bool = True,
                  enable_behavior_probe: bool = False, enable_greybox_probe: bool = False,
+                 enable_cold_discovery: bool = False,
                  disabled_agents: frozenset[str] = frozenset()) -> None:
         self._prioritizer = prioritizer  # ZR-003/ZR-012: None keeps the static EXPERIMENT_ORDER, exactly as before
         # B45 recon-breadth + B46 chain-composition: FAIL-CLOSED. Off unless an authorised caller enables them; when off, the probes are no-ops and behaviour is identical to before.
@@ -349,6 +350,16 @@ class PureBlackBoxEngine:
         # Confirmation is the UNCHANGED ConfirmationGate (control denied -> scenario allowed -> clean reproduction),
         # so a correct hardened target (rejects the jump / fails closed / demands real proof) never false-positives.
         self._enable_greybox_probe = enable_greybox_probe
+        # B61 autonomous COLD-START surface discovery: OPT-IN (off by default -> every legacy / grey-box
+        # run is byte-identical; zero regression by construction). It runs ONLY when the brief is COLD
+        # (no declared surface). It reconstructs the surface, roles, plan order and the paid-feature
+        # oracle PURELY from authorized use of the product (its root bootstrap catalog + behaviour),
+        # then hands a reconstructed brief to the UNCHANGED experiments / grey-box probe / ConfirmationGate.
+        # It never forges, never guesses an id/token, never scans non-customer surface (the ScopeGuard
+        # blocks internal/admin paths and the target's internal routes are honeypots).
+        self._enable_cold_discovery = enable_cold_discovery
+        self._base_url = base_url
+        self._cold_discovery_report: dict[str, Any] | None = None
         # B47 find-fast: opt-in triage mode -- stop after the first CONFIRMED_P0 (fewer calls). OFF by default, so a full assessment still runs every class and nothing changes.
         self._find_fast = find_fast
         if not getattr(http, "stateless", False):

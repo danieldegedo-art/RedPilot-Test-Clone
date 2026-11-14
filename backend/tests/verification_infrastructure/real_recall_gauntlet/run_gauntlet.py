@@ -21,22 +21,30 @@ import os
 import sys
 
 import manifest as MAN
+from cold_floor_gate import cold_brief_dict, postcheck as cold_postcheck, precheck as cold_precheck
 from four_rule_gate import FourRuleViolation, postcheck as four_rule_postcheck, precheck as four_rule_precheck
-from harness import GREYBOX_ENGINE_PROBES, PHASE2_ENGINE_PROBES, TODAY_ENGINE_PROBES, run_engine_blind
+from harness import COLD_ENGINE_PROBES, GREYBOX_ENGINE_PROBES, PHASE2_ENGINE_PROBES, TODAY_ENGINE_PROBES, run_engine_blind
 from surface import Scheme
 
 
 async def run_instance(family: str, seed: int, split: str, scope: str, *,
-                       declare_glue: bool, probes: dict) -> dict:
+                       declare_glue: bool, probes: dict, cold: bool = False) -> dict:
     M = importlib.import_module(f"targets.{family}")
-    rec: dict = {"family": family, "seed": seed, "split": split, "scope": scope,
+    rec: dict = {"family": family, "seed": seed, "split": split, "scope": scope, "cold": cold,
                  "advisory": MAN.PROVENANCE[family]["advisory"], "class": MAN.PROVENANCE[family]["engine_class"]}
 
-    # ---- four-rule hard-floor precheck (fail closed) ------------------------------------
-    # Static part: inspect the exact brief the engine will receive (paths/keys/identities are
-    # base-independent). The runtime part (no internal-route hit) is completed after the runs.
-    pre_brief = M.brief("http://127.0.0.1:1", Scheme(family, seed), declare_glue=declare_glue)
-    four_rule_att = four_rule_precheck(pre_brief)
+    # ---- hard-floor precheck (fail closed): cold-floor if cold, else four-rule ----------
+    # Static part: inspect the exact brief the engine will receive. The runtime part (no
+    # internal-route hit) is completed after the runs.
+    if cold:
+        pre_brief = cold_brief_dict("http://127.0.0.1:1")
+        att = cold_precheck(pre_brief)
+    else:
+        pre_brief = M.brief("http://127.0.0.1:1", Scheme(family, seed), declare_glue=declare_glue)
+        att = four_rule_precheck(pre_brief)
+
+    def brief_factory(base, sch):
+        return cold_brief_dict(base) if cold else M.brief(base, sch, declare_glue=declare_glue)
 
     # ---- independent ground truth (flaw on vs patched), engine NOT involved -------------
     truth_on = await M.probe_truth(Scheme(family, seed), True)
@@ -53,7 +61,7 @@ async def run_instance(family: str, seed: int, split: str, scope: str, *,
     async def handle(method, path, body, headers):
         return await tgt.handle(method, path, body, headers)
 
-    rr_on = await run_engine_blind(lambda base: M.brief(base, scheme, declare_glue=declare_glue), handle, path_log=plog, probes=probes)
+    rr_on = await run_engine_blind(lambda base: brief_factory(base, scheme), handle, path_log=plog, probes=probes, cold=cold)
     rec["engine_confirmed_flaw_on"] = rr_on.confirmed
     rec["engine_calls"] = rr_on.stats.get("customer_level_calls")
     rec["internal_hits"] = tgt.internal_hits  # purity: must be 0
@@ -65,7 +73,7 @@ async def run_instance(family: str, seed: int, split: str, scope: str, *,
     async def handle2(method, path, body, headers):
         return await tgt2.handle(method, path, body, headers)
 
-    rr_off = await run_engine_blind(lambda base: M.brief(base, scheme2, declare_glue=declare_glue), handle2, probes=probes)
+    rr_off = await run_engine_blind(lambda base: brief_factory(base, scheme2), handle2, probes=probes, cold=cold)
     rec["engine_confirmed_patched"] = rr_off.confirmed
     rec["internal_hits"] += tgt2.internal_hits
 
@@ -78,8 +86,8 @@ async def run_instance(family: str, seed: int, split: str, scope: str, *,
         rec["positive_outcome"] = "TP" if found_on else "FN"
     rec["negative_outcome"] = "FP" if found_off else "TN"
 
-    # ---- four-rule hard-floor postcheck (completes rule 1 at runtime; fail closed) ------
-    rec["four_rule"] = four_rule_postcheck(four_rule_att, rec["internal_hits"])
+    # ---- hard-floor postcheck (completes the runtime rule; fail closed) -----------------
+    rec["cold_floor" if cold else "four_rule"] = (cold_postcheck if cold else four_rule_postcheck)(att, rec["internal_hits"])
     return rec
 
 
@@ -112,21 +120,31 @@ def aggregate(records: list[dict], split: str) -> dict:
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--split", choices=["test", "dev", "all"], default="all")
-    ap.add_argument("--recon", choices=["sparse", "full"], default="sparse",
-                    help="sparse: core payment flow only; full: also declare customer-facing glue routes (realistic recon)")
-    ap.add_argument("--engine", choices=["today", "phase2", "greybox"], default="today",
-                    help="today: all shipped probes; phase2: + behavior probe; greybox: + B60 grey-box sequencing probe")
+    ap.add_argument("--recon", choices=["sparse", "full", "cold"], default="sparse",
+                    help="sparse: core payment flow only; full: also declare customer glue routes (grey-box); "
+                         "cold: DOMAIN ONLY -- no surface handed in (COLD CROWN black-box; engine must discover it)")
+    ap.add_argument("--engine", choices=["today", "phase2", "greybox", "cold"], default="today",
+                    help="today: all shipped probes; phase2: + behavior probe; greybox: + B60 grey-box probe; "
+                         "cold: + B61 autonomous cold-start surface discovery")
     ap.add_argument("--corpus", choices=["legacy", "hardened"], default="legacy",
-                    help="legacy: the original gauntlet; hardened: the enterprise-hardened grey-box tranche")
+                    help="legacy: the original gauntlet; hardened: the enterprise-hardened tranche")
+    ap.add_argument("--only", default=None, help="comma-separated family name(s) to run (fast iteration)")
+    ap.add_argument("--seed", type=int, default=None, help="restrict to a single seed (fast iteration)")
     ap.add_argument("--json", default=None)
     args = ap.parse_args()
 
     global MAN
     MAN = importlib.import_module("manifest_hardened" if args.corpus == "hardened" else "manifest")
+    cold = args.recon == "cold"
     declare_glue = args.recon == "full"
-    probes = {"greybox": GREYBOX_ENGINE_PROBES, "phase2": PHASE2_ENGINE_PROBES, "today": TODAY_ENGINE_PROBES}[args.engine]
+    probes = {"cold": COLD_ENGINE_PROBES, "greybox": GREYBOX_ENGINE_PROBES, "phase2": PHASE2_ENGINE_PROBES, "today": TODAY_ENGINE_PROBES}[args.engine]
     insts = {"test": MAN.TEST, "dev": MAN.DEV, "all": MAN.ALL}[args.split]
-    records = [await run_instance(*i, declare_glue=declare_glue, probes=probes) for i in insts]
+    if args.only:
+        want = set(args.only.split(","))
+        insts = [i for i in insts if i[0] in want]
+    if args.seed is not None:
+        insts = [i for i in insts if i[1] == args.seed]
+    records = [await run_instance(*i, declare_glue=declare_glue, probes=probes, cold=cold) for i in insts]
 
     print(f"== Real-Glue-Code Recall Gauntlet (BLIND, real socket) -- recon={args.recon} engine={args.engine} ==\n")
     hdr = f"{'family':24s} {'seed':>4s} {'split':5s} {'scope':9s} {'truth':5s} {'pos':4s} {'neg':3s}  confirmed(flaw_on)"

@@ -27,6 +27,10 @@ _CLAIMF = ["owns", "license_id", "wallet", "holder", "serial"]
 
 
 class Target(HardenedCommerce):
+    def _glue_catalog(self):
+        return [{"method": "POST", "path": self.s.custom(_CLAIM_ROUTES, "h_claim"),
+                 "fields": [self.s.one(_CHAL_FIELDS, "h_chal_field"), self.s.one(_CLAIMF, "h_claim_field")]}]
+
     async def extra(self, method, path, body, ident, q):
         route = self.s.custom(_CLAIM_ROUTES, "h_claim")
         if method == "POST" and path == route:

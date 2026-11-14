@@ -27,6 +27,11 @@ _SHADOW_ROUTES = ["v1/report", "legacy/export", "old/analytics", "deprecated/rep
 
 
 class Target(HardenedCommerce):
+    def _glue_catalog(self):
+        # The deprecated route IS advertised (improper inventory is the point), but WITHOUT a
+        # 'deprecated' flag -- the engine must infer it is an alternate path by behaviour.
+        return [{"method": "GET", "path": self.s.custom(_SHADOW_ROUTES, "h_shadow"), "fields": []}]
+
     async def extra(self, method, path, body, ident, q):
         route = self.s.custom(_SHADOW_ROUTES, "h_shadow")
         if method == "GET" and path == route:

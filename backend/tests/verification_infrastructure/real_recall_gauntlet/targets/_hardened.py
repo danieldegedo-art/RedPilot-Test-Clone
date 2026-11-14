@@ -102,6 +102,40 @@ class HardenedCommerce(BaseCommerce):
             return p
         return None
 
+    # ---- cold-discovery affordance (method+path+request-field wire-names; NO semantic labels) --
+    def _glue_catalog(self) -> list[dict]:
+        """A family's own glue routes, as the product bootstrap would advertise them: method, path,
+        and the request field WIRE-names a form exposes. No role/oracle/flaw label. Default: none
+        (families with glue-code routes override this). The privileged/abusable field and a route's
+        'deprecated' nature are NOT advertised -- those stay for the engine to infer."""
+        return []
+
+    def _route_catalog(self) -> list[dict]:
+        S, F = self.s, self.s.field
+        auth = S.custom(_AUTHORIZE_ROUTES, "h_authorize")
+        chal = S.custom(_CHALLENGE_ROUTES, "h_challenge")
+        conf = S.custom(_CONFIRM_ROUTES, "h_confirm")
+        routes: list[dict] = [
+            {"method": "POST", "path": S.route("signup"), "fields": []},
+            {"method": "GET", "path": S.route("plans"), "fields": []},
+            {"method": "GET", "path": S.route("account"), "fields": []},
+            {"method": "GET", "path": S.route("subscription"), "fields": []},
+            {"method": "POST", "path": S.route("checkout"), "fields": [F("plan"), F("currency"), F("amount")]},
+            {"method": "POST", "path": auth + "/{id}", "fields": []},
+            {"method": "POST", "path": S.route("pay") + "/{id}", "fields": ["outcome"]},
+            {"method": "GET", "path": S.route("return"), "fields": [F("payment_id"), F("status")]},
+            {"method": "POST", "path": S.route("refund"), "fields": [F("payment_id")]},
+            {"method": "POST", "path": chal, "fields": []},
+            {"method": "POST", "path": conf, "fields": [self.s.one(_IDEM_FIELDS, "h_idem"), self.s.one(_REF_FIELDS, "h_ref")]},
+            {"method": "POST", "path": S.route("feature_basic"), "fields": []},
+            {"method": "GET", "path": S.route("feature_tier"), "fields": []},
+            {"method": "POST", "path": S.route("feature_quota"), "fields": []},
+        ]
+        routes.extend(self._glue_catalog())
+        # Neutral, role-free order (by path) so the catalog cannot leak role by position.
+        routes.sort(key=lambda r: (r["path"], r["method"]))
+        return routes
+
     # ---- the hardened grey-box spine --------------------------------------------------------
     async def handle(self, method: str, raw_path: str, body: Any, headers: dict) -> tuple:
         parsed = urlparse(raw_path)
@@ -118,6 +152,18 @@ class HardenedCommerce(BaseCommerce):
             return 404, {"error": "not_found"}
 
         S, F = self.s, self.s.field
+
+        # ---- product bootstrap (COLD black-box surface-discovery affordance) ----------------
+        # A customer-reachable app-bootstrap the product serves to its OWN clients at the root:
+        # the catalog of customer routes (method + path + the request field WIRE-names a browser's
+        # forms/network traffic expose) -- and NOTHING else: no role/oracle label, no requires_plan,
+        # no proof_field, no privileged field, no deprecated flag, no flaw/advisory hint. It is
+        # served IDENTICALLY by flaw_on and patched (ordinary product behaviour, byte-for-byte the
+        # same across the twins -> never a flaw hint, cannot move the 0-FP property), and it adds no
+        # route the grey-box surface did not already imply. It lets a COLD engine learn the surface
+        # by authorized use of the product itself; roles/oracles/the flaw stay for it to infer.
+        if method == "GET" and path in ("/", S.prefix, S.prefix + "/"):
+            return 200, {"product": "commerce", "routes": self._route_catalog()}
 
         # ---- public (pre-auth) --------------------------------------------------------------
         if method == "POST" and path == S.route("signup"):

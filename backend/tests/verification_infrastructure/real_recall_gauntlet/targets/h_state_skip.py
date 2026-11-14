@@ -27,6 +27,10 @@ _ORDER_SEQ = ("created", "in_progress", "payment", "complete")
 
 
 class Target(HardenedCommerce):
+    def _glue_catalog(self):
+        return [{"method": "POST", "path": self.s.custom(_ORDER_ROUTES, "h_state"),
+                 "fields": [self.s.field("payment_id"), self.s.one(_STATE_FIELDS, "h_state_field")]}]
+
     async def extra(self, method, path, body, ident, q):
         route = self.s.custom(_ORDER_ROUTES, "h_state")
         if method == "POST" and path == route:

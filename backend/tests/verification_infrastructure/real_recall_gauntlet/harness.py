@@ -27,7 +27,7 @@ from reference_target import _TrackedServer, _read_http_request
 
 from app.enterprise_controls.scope import ScopeGuard, ScopePolicy
 from app.testing.http_client import QAHttpClient
-from app.testing.integrity.brief import ExecutionBrief
+from app.testing.integrity.brief import ExecutionBrief, Limits
 from app.testing.integrity.engine import PureBlackBoxEngine
 
 # "Today's full engine": every shipped probe ON. Federation included (it is a shipped,
@@ -100,9 +100,42 @@ PHASE2_ENGINE_PROBES: dict[str, Any] = {**TODAY_ENGINE_PROBES, "enable_behavior_
 # capability developed for the ENTERPRISE-HARDENED tranche; default-OFF so legacy runs are identical.
 GREYBOX_ENGINE_PROBES: dict[str, Any] = {**PHASE2_ENGINE_PROBES, "enable_greybox_probe": True}
 
+# COLD engine = grey-box + the B61 autonomous cold-start surface-discovery pre-pass (opt-in,
+# fail-closed). On a COLD brief (no declared surface) it reconstructs the surface by authorized use
+# of the product, then runs the UNCHANGED experiments + grey-box probe through the UNCHANGED gate.
+# Default-OFF so every legacy / grey-box run is byte-identical.
+COLD_ENGINE_PROBES: dict[str, Any] = {**GREYBOX_ENGINE_PROBES, "enable_cold_discovery": True}
+
+
+def build_cold_brief(d: dict[str, Any]) -> ExecutionBrief:
+    """Construct the COLD ExecutionBrief directly (bypassing from_dict, which requires a declared
+    surface/features/plans). A cold brief is DOMAIN-ONLY: empty operations/features/plans/identities.
+    This is safe -- the engine's _establish_controls returns early when primary_feature() is None, so
+    the pre-upgrade cold run craters to 0 by construction. The cold_floor_gate asserts the emptiness
+    first; discovery (when enabled) later rebuilds a FULL brief through from_dict so every discovered
+    route still passes the purity gates."""
+    lim = d.get("limits", {})
+    return ExecutionBrief(
+        authorization_ref=str(d["authorization_ref"]), authorized_by=str(d["authorized_by"]),
+        environment=str(d["environment"]), target_kind=str(d.get("target_kind", "controlled_benchmark")),
+        allowed_hosts=tuple(d["allowed_hosts"]), operations={}, features={}, plans={},
+        primary_currency=str(d.get("primary_currency", "USD")),
+        sandbox_outcomes={"success": "success", "decline": "declined", "cancel": "cancelled"},
+        return_status_values={"success": "success"}, identities={},
+        limits=Limits(
+            max_requests=int(lim.get("max_requests", 5000)),
+            max_requests_per_second=float(lim.get("max_requests_per_second", 50.0)),
+            revocation_poll_schedule_s=tuple(float(x) for x in lim.get("revocation_poll_schedule_s", (0.0, 0.1, 0.3))),
+            revocation_sla_seconds=(float(lim["revocation_sla_seconds"]) if lim.get("revocation_sla_seconds") is not None else None),
+            quota_probe_cap=int(lim.get("quota_probe_cap", 6)), timeout_seconds=float(lim.get("timeout_seconds", 10.0)),
+        ),
+        declared_paid_features=(), allow_signup=bool(d.get("allow_signup", True)), tokens={},
+    )
+
 
 async def run_engine_blind(brief_factory: Callable[[str], dict[str, Any]], handle: HandleFn, *,
-                           path_log: set[str] | None = None, probes: dict[str, Any] | None = None) -> RunResult:
+                           path_log: set[str] | None = None, probes: dict[str, Any] | None = None,
+                           cold: bool = False) -> RunResult:
     """Start the target, run the engine blind, return the confirmed-P0 set.
 
     ``probes`` selects the engine capability set (default TODAY_ENGINE_PROBES; pass
@@ -114,7 +147,7 @@ async def run_engine_blind(brief_factory: Callable[[str], dict[str, Any]], handl
     base = f"http://127.0.0.1:{port}"
     http = None
     try:
-        brief = ExecutionBrief.from_dict(brief_factory(base), env={})
+        brief = build_cold_brief(brief_factory(base)) if cold else ExecutionBrief.from_dict(brief_factory(base), env={})
         guard = ScopeGuard(
             ScopePolicy.for_environment(
                 base,

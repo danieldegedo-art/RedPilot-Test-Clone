@@ -27,6 +27,10 @@ _FEDREF_FIELDS = ["receipt", "payment_ref", "settlement_id", "gateway_ref", "ord
 
 
 class Target(HardenedCommerce):
+    def _glue_catalog(self):
+        return [{"method": "POST", "path": self.s.custom(_FED_ROUTES, "h_fed"),
+                 "fields": [self.s.one(_FEDREF_FIELDS, "h_fedref")]}]
+
     async def extra(self, method, path, body, ident, q):
         route = self.s.custom(_FED_ROUTES, "h_fed")
         if method == "POST" and path == route:

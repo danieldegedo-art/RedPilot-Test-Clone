@@ -28,6 +28,12 @@ _SAFE_FIELDS = ["display_name", "nickname", "label", "handle", "title"]
 
 
 class Target(HardenedCommerce):
+    def _glue_catalog(self):
+        # Only the documented safe field is advertised; the privileged 'plan' field is NOT in the
+        # catalog -- the engine must discover it by harvesting it from a legit response (never a hint).
+        return [{"method": "POST", "path": self.s.custom(_PROFILE_ROUTES, "h_profile"),
+                 "fields": [self.s.one(_SAFE_FIELDS, "h_safe")]}]
+
     async def extra(self, method, path, body, ident, q):
         route = self.s.custom(_PROFILE_ROUTES, "h_profile")
         if method == "POST" and path == route:

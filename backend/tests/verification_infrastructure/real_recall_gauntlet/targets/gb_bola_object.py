@@ -32,6 +32,11 @@ class Target(HardenedCommerce):
         super().__init__(*a, **k)
         self._objects: dict[str, dict] = {}
 
+    def _glue_catalog(self):
+        base = self.s.custom(_OBJ_ROUTES, "h_obj")
+        return [{"method": "POST", "path": base, "fields": []},
+                {"method": "GET", "path": base + "/{id}", "fields": []}]
+
     async def extra(self, method, path, body, ident, q):
         base = self.s.custom(_OBJ_ROUTES, "h_obj")
         tid = ident["tenant"]

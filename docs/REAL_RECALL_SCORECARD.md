@@ -572,3 +572,84 @@ HOLDOUT not yet measured — it is the true generalisation test and remains outs
   **sealed TEST** blind lift (0.40 → 0.80, different anonymised seeds, literal-agnostic probes, 0 FP,
   no regression) stands as the generalisation evidence, with the author-blindness strengthening still
   to come.
+
+---
+
+# OPERATION COLD CROWN — the COLD, BLACK-BOX, zero-knowledge posture
+
+Generated 2026-11-14 by the same BLIND runner over the same real `127.0.0.1` socket, on the eight
+enterprise-hardened mechanisms, under a **strictly harder COLD posture**. Plan + proof +
+pre-registration were committed BEFORE any cold build or measurement: `docs/COLD_CROWN_PLAN.md`
+(commit `b1c445e`). This section does not retune or narrow the grey-box story above — it ADDS a
+colder posture and re-freezes a colder baseline.
+
+## Posture: COLD FLOOR (domain only) — stricter than the four-rule grey-box floor
+
+The engine is given **exactly one thing per target: the base URL** (plus the RoE attestation and
+`allow_signup`). The cold brief declares **no surface, no features, no plans, no identities, no
+field-names, no roles, no oracle, no flaw label**. The engine must reconstruct the entire reachable
+surface, the state machine, each operation's role, the plan order and the paid-feature oracle
+**purely from authorized interaction with the product** (it fetches the product's own root
+bootstrap catalog — method + path + the request-field wire-names a browser sees — and infers
+everything else by behaviour). A new `cold_floor_gate` asserts this fail-closed as a precondition of
+every cold run and records a per-run attestation. It is **stricter** than the shipped four-rule
+floor: rule 1 additionally forbids any handed-in surface/spec (the grey-box floor permitted
+`observed_via: public_api_reference`).
+
+| Cold-floor rule | Enforcement | Result (every cold run) |
+|---|---|---|
+| 1. Domain only — no surface/features/plans/identities handed in | `cold_floor_gate.precheck` asserts all four are empty | PASS — `surface_declared: {surface:0, features:0, plans:0, identities:0}` |
+| 2. No source / blueprints / credentials | forbidden-key scan over the whole brief | PASS |
+| 3. No internal/admin/hidden access at runtime | `/internal`,`/admin`,`/__*`,`/_debug` honeypots + ScopeGuard; `internal_route_hits` must be 0 | PASS — internal hits **0** |
+| 4. Bottom-up identities only | engine mints its own ordinary tenants via public sign-up; no admin identity | PASS |
+
+`cold_floor_satisfied: true` on all 19 cold records. The product bootstrap added to the hardened
+spine is served **identically by `flaw_on` and `patched`** (ordinary product behaviour, never a
+flaw hint) and re-validated: the dual oracle stays valid on all eight mechanisms (truth_on=True,
+truth_off=False) after the addition.
+
+## Provenance (reused, honestly flagged)
+
+Same eight independently-disclosed mechanisms + the `webhook_forgery` ceiling as the grey-box
+tranche (`docs/HARDENED_CORPUS_PLAN.md §2`): the flaw provenance is unchanged by the cold posture.
+**No new families this session**: the advisory sources (`osv.dev`, GitHub advisories, `nvd.nist.gov`,
+vendor mirrors) are not reachable from this sandbox (verified), so inventing new families would
+break the "prove the source before building" iron law. Every target remains a reconstruction over a
+real loopback socket (`real_code=False`, `live_sandbox=False`, `transport=loopback`); corpus breadth
+via new real advisories and a live provider-test-mode socket are the named outstanding gaps.
+
+## PRE-UPGRADE COLD RESULT — today's strongest engine (grey-box probes), BLIND, on the cold brief
+
+| Posture | Engine | Sealed-TEST recall (critical class) | Precision | FP | FP-rate | Internal hits | Ceiling abstain | Cold-floor | Engine calls |
+|---|---|---|---|---|---|---|---|---|---|
+| grey-box (handed surface) | greybox (B60) | 0.80 (8/10) | 1.0 | 0 | 0.0 | 0 | 1/1 | n/a | ~140/target |
+| **COLD (domain only)** | **greybox (B60) — the strongest shipped engine** | **0.00 (0/10)** | n/a | **0** | **0.0** | **0** | **1/1** | **PASS** | **0/target** |
+
+DEV mirror: COLD recall **0.00 (0/8)**. Raw: `results/cold_preupgrade_all.json`.
+
+**The crater is exact and is the point.** Handed only a domain, today's engine makes **zero**
+customer calls: with no declared surface, `_establish_controls` finds no primary oracle and returns
+immediately, so every experiment is BLOCKED and nothing is confirmed. The pre-registered cold
+pre-upgrade number was **0.00 (0/10)** — matched exactly, no post-hoc reclassification. `webhook_forgery`
+is abstained 1/1 (the engine cannot even reach it → correct abstention preserved). This is the
+honest, un-fudgeable floor from which Phase-2 autonomous cold-start discovery must earn every point.
+
+### Pre-registration vs outcome (cold pre-upgrade)
+
+| | Pre-registered (`COLD_CROWN_PLAN.md §5a`) | Measured | Reconciliation |
+|---|---|---|---|
+| sealed-TEST recall | 0.00 (0/10) | **0.00 (0/10)** | exact |
+| false positives | 0 | 0 | exact |
+| internal-route hits | 0 | 0 | exact |
+| ceiling abstention | 1/1 | 1/1 | exact |
+| cold-floor gate | PASS | PASS | exact |
+
+## Status (COLD CROWN)
+
+- **Phase 1 COMPLETE and FROZEN:** cold-floor gate (fail-closed, stricter than the four-rule floor)
+  + the product-bootstrap discovery affordance (dual-oracle re-validated, served identically by both
+  twins) + the cold (domain-only) brief + the honest pre-upgrade cold number (**0.00**, 0 FP, 0
+  internal hits, ceiling abstained, cold-floor PASS) + committed pre-registration matched exactly.
+- **Phase 2 IN PROGRESS:** autonomous cold-start surface discovery (`enable_cold_discovery`,
+  default OFF, fail-closed) — developed against DEV misses only, measured BLIND on sealed TEST.
+  (Results appended below once measured.)
