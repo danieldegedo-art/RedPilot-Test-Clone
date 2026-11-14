@@ -398,6 +398,15 @@ outstanding provenance gaps.
 |---|---|---|---|---|---|---|---|---|
 | black-box (sparse) | today (all shipped probes) | **0.20 (2/10)** | 1.0 | 0 | 0.0 | 0 | 1/1 | PASS |
 | **grey-box (published spec)** | today (all shipped probes) | **0.40 (4/10)** | 1.0 | 0 | 0.0 | 0 | 1/1 | PASS |
+| grey-box (published spec) | the shipped **behaviour probe** (`phase2`) | **0.40 (4/10)** | 1.0 | 0 | 0.0 | 0 | 1/1 | PASS |
+
+The shipped behaviour probe (the legacy Phase-2 capability) gives **no lift** on the hardened set
+(0.40 → 0.40) and **0 FP** — it was developed on the legacy canonical surface and does not reach
+the six hardened misses (each needs a capability it lacks: terminal-state value enumeration,
+challenge→claim sequencing, a self-owned-ref precondition, an alternate-path/proof-field oracle, a
+cross-tenant object differential, or bounded idempotency-replay). So the hardened baseline is a
+genuine plateau for the existing engine: **grey-box 0.40 / black-box 0.20**, and any rise must be
+EARNED by new, flag-gated, fail-closed capability (Phase 2). Raw: `results/hardened_phase2_all.json`.
 
 DEV mirror (grey-box, consistency check, not the headline): recall 0.25 (2/8), precision 1.0, FP 0.
 
