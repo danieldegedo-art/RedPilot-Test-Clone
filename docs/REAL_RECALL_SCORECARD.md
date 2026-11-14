@@ -15,12 +15,15 @@ glue routes) lifts today's engine 0.40 → 0.50, and the new **behaviour-based d
 capability lifts it **0.50 → 0.70 on identical briefs** — earned on held-out glue code,
 including a flaw **class the engine was never shown** (`proof_of_control`), with no regression.
 
-**Harder baseline (2026-11-14):** a NEW **enterprise-hardened, grey-box** corpus re-froze the bar.
-Today's engine on the sealed hardened TEST set scores **0.40 grey-box / 0.20 black-box** (down from
-0.70 on the simple corpus — the honest cost of hardening), at **0 false positives, 0 internal-route
-hits**, correct RoE-ceiling abstention, and the four-rule hard floor PASS on every run. See
-**§PHASE 1-HARDENED (GREY-BOX)** at the end and `docs/HARDENED_CORPUS_PLAN.md` (committed before
-measurement).
+**Harder baseline + earned lift (2026-11-14):** a NEW **enterprise-hardened, grey-box** corpus
+re-froze the bar. Today's engine on the sealed hardened TEST set scored **0.40 grey-box / 0.20
+black-box** (down from 0.70 on the simple corpus — the honest cost of hardening). One new
+flag-gated, fail-closed capability (the **B60 grey-box sequencing probe**), developed against DEV
+misses only and measured **BLIND** on the sealed TEST, then raised it **0.40 → 0.70 (7/10)** — at
+**0 false positives, 0 internal-route hits**, correct RoE-ceiling abstention, four-rule PASS on
+every run, and **no regression**. Three TEST misses remain, each with a named next capability. See
+**§PHASE 1-HARDENED (GREY-BOX)** and **§PHASE 2 earned lift** at the end, and
+`docs/HARDENED_CORPUS_PLAN.md` (committed before measurement).
 
 ---
 
@@ -399,14 +402,55 @@ outstanding provenance gaps.
 | black-box (sparse) | today (all shipped probes) | **0.20 (2/10)** | 1.0 | 0 | 0.0 | 0 | 1/1 | PASS |
 | **grey-box (published spec)** | today (all shipped probes) | **0.40 (4/10)** | 1.0 | 0 | 0.0 | 0 | 1/1 | PASS |
 | grey-box (published spec) | the shipped **behaviour probe** (`phase2`) | **0.40 (4/10)** | 1.0 | 0 | 0.0 | 0 | 1/1 | PASS |
+| grey-box (published spec) | **+ B60 grey-box sequencing probe (`greybox`, Phase 2)** | **0.70 (7/10)** | 1.0 | 0 | 0.0 | 0 | 1/1 | PASS |
 
 The shipped behaviour probe (the legacy Phase-2 capability) gives **no lift** on the hardened set
 (0.40 → 0.40) and **0 FP** — it was developed on the legacy canonical surface and does not reach
 the six hardened misses (each needs a capability it lacks: terminal-state value enumeration,
 challenge→claim sequencing, a self-owned-ref precondition, an alternate-path/proof-field oracle, a
-cross-tenant object differential, or bounded idempotency-replay). So the hardened baseline is a
-genuine plateau for the existing engine: **grey-box 0.40 / black-box 0.20**, and any rise must be
-EARNED by new, flag-gated, fail-closed capability (Phase 2). Raw: `results/hardened_phase2_all.json`.
+cross-tenant object differential, or bounded idempotency-replay). So the pre-upgrade hardened
+baseline is a genuine plateau for the existing engine: **grey-box 0.40 / black-box 0.20**, and any
+rise must be EARNED by new, flag-gated, fail-closed capability. Raw: `results/hardened_phase2_all.json`.
+
+### PHASE 2 earned lift — the B60 grey-box sequencing probe (0.40 → 0.70, blind, 0 FP)
+
+A new engine capability `enable_greybox_probe` (default **OFF** → legacy/benchmark/boss behaviour
+byte-identical; zero regression by construction) generalises the behaviour probe along three
+**literal-agnostic** axes, **developed against DEV misses only**: (a) an **own-order ref
+precondition** (the never-paid identity creates its OWN order so a ref/receipt field is filled with
+the engine's own reference — never a guessed/foreign id); (b) a **semantic terminal-state
+vocabulary** tried on state-labelled fields (`complete`/`active`/`paid`/`settled`/… — engine-
+authored synonyms, not a target literal); (c) a **2-op challenge→consumer dependency** (a step-up
+token is read from its declared producer op and fed into the consumer). Confirmation is the
+UNCHANGED ConfirmationGate.
+
+Measured BLIND on the sealed TEST set (never inspected during development; TEST seeds/strings
+differ from DEV, so no literal transfers): **recall 0.40 → 0.70 (7/10)**, precision 1.0, **FP 0**,
+FP-rate 0, internal hits 0, ceiling abstain 1/1, four-rule PASS. DEV mirror: 0.25 → 0.625 (5/8).
+Raw: `results/hardened_greybox_dev.json`, `results/hardened_greybox_test.json`.
+
+| Family (TEST) | before (today/phase2) | greybox | How it was earned (grey-box, in-RoE) | Real differential? |
+|---|---|---|---|---|
+| `h_state_skip` (503) | FN | **TP** | own order ref + a terminal-state value (`complete`) drives the state-machine skip | yes — gate-confirmed on flaw_on, patched rejects the jump (422) → clean |
+| `h_federated_skip` (504) | FN | **TP** | the engine's OWN unpaid order reference presented to the entitlement-confirm op (no forgery, no foreign id) | yes — patched fails closed (payment not verified) → clean |
+| `h_claim_stepup` (505) | FN | **TP** | a legitimately-solved step-up token (read from its producer op) + a bare claim | yes — patched demands a server-issued proof (403) → clean |
+| already found ×4 | TP | TP | `h_async_auth` ×2, `gb_bopla_massassign` ×2 (unchanged) | yes |
+| `gb_bola_object` (506) | FN | FN | needs a cross-tenant object differential (a second own identity reading the first's object) | — |
+| `gb_shadow_api` (508) | FN | FN | needs an alternate-path/proof-field oracle (a deprecated route returning the protected proof) | — |
+| `h_replay_regrant` (502) | FN | FN | needs a bounded idempotency-replay/over-limit probe | — |
+
+**Adversarial self-review of the three new finds.** Each is CONFIRMED_P0 through the UNCHANGED gate
+on the flaw_on target and produced **nothing** on the patched twin (every `neg=TN`, FP=0), matches
+the independent prober's in-RoE finding, and uses only the engine's own identities/references — no
+forging, guessing, or destructive probe. They are real external differentials, not artifacts. The
+lift generalised from DEV to the sealed TEST (the same three mechanisms, different anonymised
+seeds) — generalisation, not memorisation.
+
+**Updated proven-ceiling scaffolding — the three remaining TEST misses.** None are RoE-barred (the
+RoE ceiling is `webhook_forgery`, abstained 1/1). All three are **unmodeled-but-grey-box-reachable**
+with a named capability: `gb_bola_object` (cross-tenant object-read differential), `gb_shadow_api`
+(alternate-path proof-field oracle), `h_replay_regrant` (idempotency replay/over-limit probe) — the
+next fail-closed, flag-gated increments, each with its own 0-FP control.
 
 DEV mirror (grey-box, consistency check, not the headline): recall 0.25 (2/8), precision 1.0, FP 0.
 
@@ -454,42 +498,53 @@ step-up), `h_replay_regrant` (idempotency-keyed replay/over-limit probe), `h_fed
 `gb_shadow_api` (deprecated/shadow-route differential). This is the pre-upgrade half of the
 proven-ceiling table; Phase 2 turns each into FIND or a demonstrated out-of-reach reason.
 
-## No regression (the mission's hard gate) — verified in this sandbox
+## No regression (the mission's hard gate) — verified in this sandbox, AFTER the Phase-2 engine edit
 
-- **Purity audit:** 483 files audited, **0 violations** (uncovered/stale/forbidden-literals/
-  forbidden-imports/boundary/env-reads/unguarded-http/control-boundary all 0).
+- **Purity audit:** 487 files audited, **0 violations** (uncovered/stale/forbidden-literals/
+  forbidden-imports/boundary/env-reads/unguarded-http/control-boundary all 0) — the new B60 probe
+  code passes every purity gate.
 - **Purity benchmark** (`run_purity_benchmark.py`): detection 1.0, **FP 0, false-assurance 0,
   internal-hits 0**.
-- **Flagship boss DEMIURGE:** clean **MISS → FIND** preserved (CONFIRMED_P0 False with federation
-  OFF, True with the upgraded engine), internal/mesh hits 0.
-- **Additive by construction:** the frozen files (`engine.py`, `brief.py`, `_core.py`, the legacy
-  `manifest.py`, `surface.py`, `harness.py`) are **byte-identical** to the pre-Phase-1 commit; the
-  tranche is new files + a 14-line additive runner flag. The pytest suites (`test_purity_benchmark`
-  11/11, `test_purity_enforcement` 39/39, full 792) could not be re-run here — pytest and
-  sqlalchemy/fastapi are not installed in this sandbox — but the substantive gates above pass and
-  the byte-identical frozen core preserves their behaviour.
+- **Flagship boss DEMIURGE:** clean **MISS → FIND** preserved after the engine edit (CONFIRMED_P0
+  False with federation OFF, True with the upgraded engine), internal/mesh hits 0.
+- **Zero regression by construction:** `engine.py` gained only an additive, **default-OFF** flag
+  (`enable_greybox_probe=False`) plus new methods reachable only when that flag is set, so every
+  existing run (today / phase2 / DEMIURGE / purity benchmark / legacy gauntlet) executes
+  byte-identical behaviour; `brief.py`, `_core.py`, the legacy `manifest.py`, `surface.py` are
+  unchanged, and `harness.py`/`run_gauntlet.py` gained only additive `greybox`-mode wiring. The
+  pytest suites (`test_purity_benchmark` 11/11, `test_purity_enforcement` 39/39, full 792) could
+  not be re-run here (pytest + sqlalchemy/fastapi are not installed in this sandbox), but the
+  substantive gates above pass and the default-OFF flag preserves their behaviour.
 
 ## The honest answer under grey-box: point it at a cold ENTERPRISE-HARDENED domain — the number?
 
-**Pre-upgrade, today's engine, authorized grey-box within the four rules: ~0.40 recall of the
-generalized forbidden-access class on the sealed hardened TEST set (0.20 black-box), at 0 false
-positives, 0 internal hits, correct RoE-ceiling abstention.** That is DOWN from the 0.70 the simple
-canonical corpus shows — the honest cost of hardening — and it is the baseline Phase 2 must raise
-by making the engine genuinely better (never by weakening a target, peeking at TEST/HOLDOUT,
-breaking RoE, or moving goalposts). Confidence in the direction and mechanism (hardening buries the
-flaw; grey-box published-spec recon helps the existing engine on state/property mechanisms; 0 FP;
-no regression) is **high**; confidence in the specific 0.40 is **medium** (8-mechanism corpus,
-reconstructions not original code, loopback not live PSP, author-blind HOLDOUT not yet measured).
+**Pre-upgrade** (today's engine, authorized grey-box within the four rules): **~0.40** recall of the
+generalized forbidden-access class on the sealed hardened TEST set (**0.20 black-box**) — the honest
+cost of hardening, down from 0.70 on the simple canonical corpus. **Post-upgrade** (one new
+flag-gated, fail-closed capability earned against DEV misses and measured BLIND on the sealed TEST):
+**0.70 (7/10)** at **0 false positives, 0 internal hits, correct RoE-ceiling abstention, no
+regression** — the enterprise-hardened number is now back at the simple-corpus level, but on a
+genuinely harder surface and with a stronger evidential bar (four-rule gate, author-blind HOLDOUT
+pending). The three remaining misses are not RoE-barred; each has a named next capability. Confidence
+in the direction and mechanism (hardening buries the flaw; a literal-agnostic grey-box sequencing
+probe genuinely generalises DEV→TEST at 0 FP; no regression) is **high**; confidence in the specific
+0.70 is **medium** (8-mechanism corpus, reconstructions not original code, loopback not live PSP,
+author-blind HOLDOUT not yet measured — it is the true generalisation test and remains outstanding).
 
-## Status (Phase 1-Hardened)
+## Status (Phase 1-Hardened + Phase 2 in progress)
 
-- **COMPLETE and FROZEN:** grey-box hardened corpus (8 real-advisory mechanisms, 6 enforced
+- **Phase 1 COMPLETE and FROZEN:** grey-box hardened corpus (8 real-advisory mechanisms, 6 enforced
   defenses, dual-oracle valid) + four-rule fail-closed gate + DEV/sealed-TEST split + committed
   pre-registration + the honest pre-upgrade number (0.40 grey-box / 0.20 black-box, 0 FP, no
   regression, purity clean, ceiling abstained). TEST never tuned against.
-- **IN PROGRESS:** the author-blind HOLDOUT (separate session; its flaw internals never inspected
-  by the engine author) — to be measured EXACTLY ONCE at the very end of Phase 2.
-- **Phase 2 (not started here):** grow the engine fail-closed / flag-gated against DEV misses only
-  (state-machine inference, async/202, idempotency-replay, cross-service reference-trust, BOLA
-  cross-tenant differential, shadow-route differential), re-measure BLIND on sealed TEST until the
-  critical-class recall plateaus, then run the author-blind HOLDOUT once as the headline.
+- **Phase 2 IN PROGRESS — first earned lift landed:** the B60 grey-box sequencing probe (flag-gated,
+  default-OFF, developed against DEV misses only) lifts sealed-TEST recall **0.40 → 0.70 (7/10)**,
+  BLIND, at 0 FP / 0 internal hits / no regression. Three TEST misses remain, each with a named
+  next fail-closed capability (BOLA cross-tenant object differential; alternate-path proof-field
+  oracle; idempotency replay/over-limit probe). Pursue these against DEV, re-measure BLIND on TEST
+  until recall plateaus and every remaining miss has a demonstrated out-of-reach reason.
+- **OUTSTANDING:** the author-blind HOLDOUT — a separate session authored partial targets on branch
+  `claude/redpilot-holdout-blind` but hit the shared-account 5-hour rate limit before finishing;
+  its flaw internals were never inspected by the engine author. Complete it (re-run the sibling
+  after the limit resets), then measure it EXACTLY ONCE at the very end, after all tuning is frozen,
+  and report that number as the headline generalisation result.
