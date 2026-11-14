@@ -9,9 +9,11 @@ Generated 2026-11-13 (Phase 1) / 2026-11-14 (Phase 2) by
 produced by running the engine BLIND over a real 127.0.0.1 socket). Raw runs under
 `tests/verification_infrastructure/real_recall_gauntlet/results/`.
 
-**Headline:** sealed-TEST recall rose from **0.40 (baseline)** to **0.70 (Phase 2)** at
-**0 false positives**, by adding behaviour-based discovery to the engine — earned on
-held-out glue code, including a flaw **class the engine was never shown**. See §PHASE 2.
+**Headline:** sealed-TEST recall **0.40 → 0.70** at **0 false positives**. Two honest
+components, kept separate in §PHASE 2: richer-but-realistic recon (declaring customer-facing
+glue routes) lifts today's engine 0.40 → 0.50, and the new **behaviour-based discovery**
+capability lifts it **0.50 → 0.70 on identical briefs** — earned on held-out glue code,
+including a flaw **class the engine was never shown** (`proof_of_control`), with no regression.
 
 ---
 
@@ -230,7 +232,7 @@ internal-route hits **0** in *every* row. The `core-flow + behaviour` row proves
 | alt_flow_entitlement | ✅ (chain/channel) | ✅ (also PBB-F) | donation route grants pro to an unpaid identity |
 | **completed_order_mutate** | ❌ | **✅ PBB-F** | basic payer escalates to top tier via the discovered order-amend route — **seen class (DEV), unseen instance** |
 | **proof_of_control** | ❌ | **✅ PBB-U + PBB-F** | unpaid identity granted via the discovered claim route — **HELD-OUT class, absent from DEV** |
-| coupon_reuse / discount_disabled_api | ❌ | ❌ | needs a *valid promo code* (a recon/authorisation input), not an engine capability |
+| coupon_reuse / discount_disabled_api | ❌ | ❌ | needs a dedicated *replay/over-limit* probe + a valid code — the grant probe is the wrong oracle (a legit coupon also grants on first use) |
 | credit_balance_race | ❌ | ❌ | needs a credit balance the black-box flow offers no way to obtain + a concurrency probe |
 
 The Phase-2 delta over the realistic-recon baseline is **+2 flaws** (`completed_order_mutate`,
@@ -262,10 +264,14 @@ operator-supplied scope/credentials (not available in this sandbox).
   sylius/mollie, WooCommerce-Stripe): reachable only by forging a signature — **forbidden by
   RedPilot's RoE**. Correct behaviour is to ABSTAIN; it does (1/1). Not recall misses.
 - **IDOR / id-guessing** (Sylius payment IDOR): RoE forbids id guessing — ceiling.
-- **Coupon / discount lifecycle** (`coupon_reuse`, `discount_disabled_api`): reachable only
-  with a **valid promo code** — a recon/authorisation input the engagement would supply, not an
-  engine capability gap. With such a code the behaviour probe's unpaid-grant check would reach
-  them; without it, honest miss.
+- **Coupon / discount lifecycle** (`coupon_reuse`, `discount_disabled_api`): two things are
+  missing, not one. (1) a **valid promo code** (a recon/authorisation input). (2) even given a
+  code, the unpaid-grant probe is the WRONG oracle here: a *legitimate* single-use coupon also
+  grants an entitlement on its first redemption, so confirming on "an unpaid identity redeemed a
+  code and got access" would **false-positive on the patched target**. Catching these honestly
+  needs a dedicated **replay / over-limit probe** (redeem beyond the coupon's limit, or after it
+  is disabled, and confirm the *extra* grant) with its own FP control — genuine future work. We
+  did NOT bolt this onto the grant probe precisely because it would have cost the 0-FP property.
 - **Credit-balance concurrency race** (`credit_balance_race`): needs both a black-box path to
   *obtain* store credit and a concurrency probe bound to the *discovered* spend route. Genuine
   future capability work; races are also the least reliable to confirm honestly, so we did not
