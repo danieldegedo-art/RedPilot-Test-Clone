@@ -15,6 +15,13 @@ glue routes) lifts today's engine 0.40 → 0.50, and the new **behaviour-based d
 capability lifts it **0.50 → 0.70 on identical briefs** — earned on held-out glue code,
 including a flaw **class the engine was never shown** (`proof_of_control`), with no regression.
 
+**Harder baseline (2026-11-14):** a NEW **enterprise-hardened, grey-box** corpus re-froze the bar.
+Today's engine on the sealed hardened TEST set scores **0.40 grey-box / 0.20 black-box** (down from
+0.70 on the simple corpus — the honest cost of hardening), at **0 false positives, 0 internal-route
+hits**, correct RoE-ceiling abstention, and the four-rule hard floor PASS on every run. See
+**§PHASE 1-HARDENED (GREY-BOX)** at the end and `docs/HARDENED_CORPUS_PLAN.md` (committed before
+measurement).
+
 ---
 
 ## The brutal truth this corpus exists to kill
@@ -324,3 +331,156 @@ PYTHONPATH=$P python3 tests/verification_infrastructure/real_recall_gauntlet/run
 - **Open future work (honest, not blocking):** give the engine a promo-code recon input + a
   grant-replay probe (coupon classes); a credit-obtain + concurrency-on-discovered-op probe
   (credit race); a live provider-test-mode socket run.
+
+---
+
+# PHASE 1-HARDENED (GREY-BOX) — the enterprise-hardened tranche + the honest pre-upgrade number
+
+Generated 2026-11-14 by the same BLIND runner over the same real `127.0.0.1` socket, on a NEW
+**enterprise-hardened, grey-box** corpus (`--corpus hardened`). Plan + proof + pre-registration
+were committed BEFORE any target was built or measured: `docs/HARDENED_CORPUS_PLAN.md`. Raw runs:
+`results/hardened_today_all.json` (grey-box/full recon) and `results/hardened_today_sparse_test.json`
+(black-box/sparse recon). This section does not retune or narrow the simple corpus above — it only
+ADDS a harder corpus and re-freezes a harder baseline.
+
+## Posture: AUTHORIZED GREY-BOX within a four-rule HARD FLOOR
+
+Confirmation is a non-destructive grey-box **differential** (cross-subject / cross-role /
+cross-state / expected-vs-actual) through the **UNCHANGED** `ConfirmationGate` — allowed to use
+authenticated multi-identity sessions and the vendor's PUBLISHED API spec, never a forging,
+guessing, bypass, or destructive probe. The four-rule hard floor is asserted **fail-closed as a
+precondition of every run** (`four_rule_gate.py`) and attested per-run:
+
+| Rule | How it is enforced | Result (every hardened run) |
+|---|---|---|
+| 1. No internal access | `/internal`,`/admin`,`/__*`,`/_debug` are honeypots; any hit fails the run | PASS — internal-route hits **0** |
+| 2. No source code | the engine receives only the `ExecutionBrief` + base URL; brief rejects source/internal-doc provenance (`observed_via` ∈ published/authorized only) | PASS |
+| 3. No network blueprints | the brief declares only customer-facing/published surface + allowed_hosts; blueprint keys rejected | PASS |
+| 4. No admin credentials | the engine signs up its own ordinary synthetic tenants; no admin/root identity | PASS |
+
+`grey_box_within_four_rules: true` on all 19 hardened records.
+
+## Corpus provenance — eight hardened mechanisms, each a real disclosed flaw with a public fix
+
+All reconstructions (not original code — see Limits); each flaw flips **exactly one** check behind
+six genuinely-enforced enterprise defenses; each patched twin is itself a hardened **decoy** (scary
+async/replay/claim/shadow surface, fully correct) and the 0-FP control.
+
+| Family | Kind | Real advisory | Buried flaw (one flipped check) |
+|---|---|---|---|
+| `h_async_auth` | payment | Aimeos **GHSA-v4g2-cm5v-cxv7** | an authorized/non-settled payment treated as captured |
+| `h_replay_regrant` | payment | mppx **GHSA-8mhj-rffc-rcvw / CVE-2026-34210** | idempotency-key reuse re-grants (pay once, replay → extra entitlement) |
+| `h_state_skip` | payment | Solidus **GHSA-qwqm-3jx5-rr8m** | client-supplied target state jumps the order to "complete"/entitled |
+| `h_federated_skip` | payment | OwnPay **GHSA-7wwh-c3v9-fc55** | entitlement side trusts a payment reference without gateway verification |
+| `h_claim_stepup` | payment | mppx-condition-gate **GHSA-jg6q-3qfh-r9f8** (+ Ghost **GHSA-xm43-3m56-w3wf**) | a claim behind a real step-up still grants on an unproven ownership claim |
+| `gb_bola_object` | authz | OpenWISP IPAM **GHSA-x287-5c68-36wp** | one tenant reads another tenant's object (missing ownership check) |
+| `gb_bopla_massassign` | authz | Snipe-IT **GHSA-5448-v74m-7mv7** | mass assignment lets an ordinary caller set the privileged `plan` field |
+| `gb_shadow_api` | authz | DefectDojo **GHSA-9jr7-2hgp-vhp8** | a deprecated/shadow route omits the control the current route enforces |
+| `webhook_forgery` (ceiling) | ceiling | New API **GHSA-xff3-5c9p-2mr4 / CVE-2026-41432** | signature forgery → correct behaviour is ABSTAIN (out of RoE) |
+
+Advisory text was verified via reachable mirrors (wiz.io, gitlab advisories, nvd.nist.gov, corgea,
+solidus.io, Google Groups, GitHub PR pages); the primary GHSA pages and `osv.dev` were not
+reachable from the sandbox network — recorded, not hidden. Every target is a **reconstruction**
+(no original OSS code / no live PSP in this sandbox); real-code and live-socket remain the honest
+outstanding provenance gaps.
+
+## DEV / sealed TEST split (TEST is SEALED — measured, never tuned)
+
+- **DEV** (seeds 401–408): one instance per mechanism.
+- **TEST** (seeds 501–510, sealed; different seeds): the eight mechanisms + two unseen-instance
+  repeats (`h_async_auth` 509, `gb_bopla_massassign` 510) + the `webhook_forgery` 590 ceiling.
+- **HOLDOUT** (author-blind): generated by a separate session; measured EXACTLY ONCE at the very
+  end of Phase 2, after all tuning is frozen (see Status).
+
+## PRE-UPGRADE RESULT — today's engine, BLIND, on the sealed hardened TEST set
+
+| Recon | Engine | Sealed-TEST recall (critical class) | Precision | FP | FP-rate | Internal hits | Ceiling abstain | Four-rule |
+|---|---|---|---|---|---|---|---|---|
+| black-box (sparse) | today (all shipped probes) | **0.20 (2/10)** | 1.0 | 0 | 0.0 | 0 | 1/1 | PASS |
+| **grey-box (published spec)** | today (all shipped probes) | **0.40 (4/10)** | 1.0 | 0 | 0.0 | 0 | 1/1 | PASS |
+
+DEV mirror (grey-box, consistency check, not the headline): recall 0.25 (2/8), precision 1.0, FP 0.
+
+**The drop is real and is the point.** On the simple canonical corpus today's engine scores 0.70;
+on the enterprise-hardened corpus it scores **0.40 grey-box / 0.20 black-box** — the hardening
+genuinely buries the access-without-payment flaw behind webhook/async confirmation, idempotency,
+step-up, server-authoritative pricing, rate limits, and tenant binding. **0 false positives on all
+11 patched/decoy controls, 0 internal-route hits, correct ceiling abstention** in every row.
+
+### Per-target: pre-registration vs outcome (every surprise explained)
+
+| Family (TEST) | Pre-registered (today) | Black-box | Grey-box | Honest reconciliation |
+|---|---|---|---|---|
+| `h_async_auth` | MISS | **TP** | **TP** | Surprise. The `authorize` hold is a documented payment op; the existing convergence/fabric multi-op probe drives checkout→authorize and the oracle flips. Found even black-box → my pre-reg under-rated the shipped multi-op probe on a documented op. A real gate-verified differential (patched clean). |
+| `gb_bopla_massassign` | MISS (likely) | FN | **TP** | Matches "miss (black-box)"; grey-box FIND. Declaring `profile_update` (published spec) + the engine's field-harvesting (it reuses the harvested `plan` field) triggers the mass-assign. The **+0.20 grey-box lift is exactly this** — the posture, not a new capability. |
+| `h_federated_skip` | UNCERTAIN | FN | FN | The shipped federation probe did not reach this reference-trust skip (its mint/token pattern differs). A Phase-2 target. |
+| `h_state_skip` | MISS (likely) | FN | FN | Confirmed miss — no per-order state-machine model; fabric `_amend` did not catch the state jump. |
+| `h_claim_stepup` | MISS (likely) | FN | FN | Confirmed miss — claim route behind a step-up; needs behaviour/alt-flow discovery. |
+| `h_replay_regrant` | MISS | FN | FN | Confirmed miss — needs a replay/over-limit probe keyed on the idempotency credential. |
+| `gb_bola_object` | MISS | FN | FN | Confirmed miss — no cross-tenant object-read differential today. |
+| `gb_shadow_api` | MISS | FN | FN | Confirmed miss — the fixed channel catalog does not match the anonymised shadow route. |
+
+Net: pre-registered ~0.0–0.25; **measured black-box 0.20 (in range); grey-box 0.40 (above range)**.
+The over-performance is one documented effect — grey-box published-spec recon lets the EXISTING
+engine reach two state/property mechanisms — not an engine upgrade. No post-hoc reclassification:
+the pre-registration is in `docs/HARDENED_CORPUS_PLAN.md`, committed before measurement.
+
+### Adversarial self-review of the four finds (real differential, not artifact?)
+
+Each of the four TPs (`h_async_auth`×2, `gb_bopla_massassign`×2) is a CONFIRMED_P0 through the
+UNCHANGED ConfirmationGate on the flaw_on target (control denied → scenario allowed → clean-session
+reproduction) and produced **nothing** on the patched twin (FP=0). Each corresponds exactly to the
+independent prober's in-RoE finding. They are real external differentials, not artifacts. The
+`authorize`-op find is a legitimate grey-box discovery of auth-hold-as-paid; the `profile_update`
+find is a legitimate property-level-authorization (mass-assignment) discovery.
+
+### The six remaining TEST misses — classified (proven ceiling scaffolding)
+
+None are RoE-barred (the RoE ceiling is `webhook_forgery`, correctly abstained 1/1). All six are
+**unmodeled-but-grey-box-reachable** — the in-RoE prober reaches each with the engine's own
+identities/references — i.e. genuine Phase-2 capability targets, each with a named mechanism:
+`h_state_skip` (state-machine inference), `h_claim_stepup` (alt-flow/claim discovery behind a
+step-up), `h_replay_regrant` (idempotency-keyed replay/over-limit probe), `h_federated_skip`
+(cross-service reference-trust probe), `gb_bola_object` (cross-tenant object-read differential),
+`gb_shadow_api` (deprecated/shadow-route differential). This is the pre-upgrade half of the
+proven-ceiling table; Phase 2 turns each into FIND or a demonstrated out-of-reach reason.
+
+## No regression (the mission's hard gate) — verified in this sandbox
+
+- **Purity audit:** 483 files audited, **0 violations** (uncovered/stale/forbidden-literals/
+  forbidden-imports/boundary/env-reads/unguarded-http/control-boundary all 0).
+- **Purity benchmark** (`run_purity_benchmark.py`): detection 1.0, **FP 0, false-assurance 0,
+  internal-hits 0**.
+- **Flagship boss DEMIURGE:** clean **MISS → FIND** preserved (CONFIRMED_P0 False with federation
+  OFF, True with the upgraded engine), internal/mesh hits 0.
+- **Additive by construction:** the frozen files (`engine.py`, `brief.py`, `_core.py`, the legacy
+  `manifest.py`, `surface.py`, `harness.py`) are **byte-identical** to the pre-Phase-1 commit; the
+  tranche is new files + a 14-line additive runner flag. The pytest suites (`test_purity_benchmark`
+  11/11, `test_purity_enforcement` 39/39, full 792) could not be re-run here — pytest and
+  sqlalchemy/fastapi are not installed in this sandbox — but the substantive gates above pass and
+  the byte-identical frozen core preserves their behaviour.
+
+## The honest answer under grey-box: point it at a cold ENTERPRISE-HARDENED domain — the number?
+
+**Pre-upgrade, today's engine, authorized grey-box within the four rules: ~0.40 recall of the
+generalized forbidden-access class on the sealed hardened TEST set (0.20 black-box), at 0 false
+positives, 0 internal hits, correct RoE-ceiling abstention.** That is DOWN from the 0.70 the simple
+canonical corpus shows — the honest cost of hardening — and it is the baseline Phase 2 must raise
+by making the engine genuinely better (never by weakening a target, peeking at TEST/HOLDOUT,
+breaking RoE, or moving goalposts). Confidence in the direction and mechanism (hardening buries the
+flaw; grey-box published-spec recon helps the existing engine on state/property mechanisms; 0 FP;
+no regression) is **high**; confidence in the specific 0.40 is **medium** (8-mechanism corpus,
+reconstructions not original code, loopback not live PSP, author-blind HOLDOUT not yet measured).
+
+## Status (Phase 1-Hardened)
+
+- **COMPLETE and FROZEN:** grey-box hardened corpus (8 real-advisory mechanisms, 6 enforced
+  defenses, dual-oracle valid) + four-rule fail-closed gate + DEV/sealed-TEST split + committed
+  pre-registration + the honest pre-upgrade number (0.40 grey-box / 0.20 black-box, 0 FP, no
+  regression, purity clean, ceiling abstained). TEST never tuned against.
+- **IN PROGRESS:** the author-blind HOLDOUT (separate session; its flaw internals never inspected
+  by the engine author) — to be measured EXACTLY ONCE at the very end of Phase 2.
+- **Phase 2 (not started here):** grow the engine fail-closed / flag-gated against DEV misses only
+  (state-machine inference, async/202, idempotency-replay, cross-service reference-trust, BOLA
+  cross-tenant differential, shadow-route differential), re-measure BLIND on sealed TEST until the
+  critical-class recall plateaus, then run the author-blind HOLDOUT once as the headline.
