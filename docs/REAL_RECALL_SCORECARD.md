@@ -35,10 +35,13 @@ DEV misses only — reconstructs the surface, roles, plan order and the paid-fea
 behaviour and raises sealed-TEST recall **0.00 → 0.80 (8/10)** (blind 0.70, then 0.80 after a general
 reconstruction-bug fix), at **0 false positives, 0 internal-route hits, correct ceiling abstention,
 cold-floor gate PASS, and no regression** — **the SAME recall the grey-box engine reaches when handed
-the full spec**, now earned COLD. The two remaining misses are the two named, unbuilt capabilities
-(cross-subject object oracle; bounded replay/over-limit), neither RoE-barred. See **§OPERATION COLD
-CROWN** and **§COLD CROWN — PHASE 2** at the end, and `docs/COLD_CROWN_PLAN.md` (committed before
-measurement).
+the full spec**, now earned COLD. A second flag-gated capability — a **bounded replay/over-limit
+oracle** (confirms an idempotency-replay re-grant through the UNCHANGED gate, with its own structural
+0-FP control), developed against the DEV replay miss only — then lifts cold sealed-TEST **0.80 → 0.90
+(9/10)** at **0 FP**, **exceeding** the grey-box ceiling. The single remaining miss (`gb_bola_object`)
+has a demonstrated reason — a cross-subject object oracle needs a gate extension the no-change-to-gate
+rule forbids this increment (not RoE-barred, not cold-unreachable). See **§OPERATION COLD CROWN** and
+**§COLD CROWN — PHASE 2** at the end, and `docs/COLD_CROWN_PLAN.md` (committed before measurement).
 
 ---
 
@@ -687,10 +690,12 @@ guesses an id/token, never scans non-customer surface. Developed against **DEV**
 | COLD (domain only) | greybox — no discovery | 0.00 (0/10) | 0.00 | n/a | 0 | 0 | 1/1 | PASS |
 | COLD (domain only) | **+ cold discovery (BLIND, first)** | **0.70 (7/10)** | 0.75 | 1.0 | 0 | 0 | 1/1 | PASS |
 | COLD (domain only) | **+ cold discovery (post dedup fix)** | **0.80 (8/10)** | 0.75 | 1.0 | 0 | 0 | 1/1 | PASS |
+| COLD (domain only) | **+ cold discovery + replay/over-limit (cap. C)** | **0.90 (9/10)** | 0.875 | 1.0 | 0 | 0 | 1/1 | PASS |
 
 Raw: `results/cold_discovery_{dev,test}.json` (blind 0.70/0.75), `results/cold_discovery_postfix_all.json`
-(0.80/0.75). **Cold discovery, handed only a domain, reaches the SAME recall as the grey-box engine
-handed the full published spec — 0.80 (8/10) at 0 FP — on a genuinely harder (strictly colder) posture.**
+(0.80/0.75), `results/cold_discovery_replayC_all.json` (0.90/0.875). **Cold discovery, handed only a
+domain, first reaches the grey-box ceiling (0.80 at 0 FP), and with capability C (bounded
+replay/over-limit) EXCEEDS it at 0.90 (9/10) — on a genuinely harder (strictly colder) posture.**
 
 ### The honest 0.70 → 0.80 (a general bug found by inspecting the one surprise miss)
 The first BLIND sealed-TEST number was **0.70 (7/10)**. Seven of the eight grey-box finds were
@@ -715,14 +720,15 @@ through the fix (no regression).
 | `h_claim_stepup` (505) | TP | **TP** | the step-up producer's response field is harvested → the challenge is resolved → the bare claim grants |
 | `gb_shadow_api` (508) | TP | **TP** | the deprecated route is discovered as an alternate-path candidate; the never-paid identity obtains the tier proof |
 | `gb_bopla_massassign` ×2 (507, 510) | TP | **TP** | the profile update op is discovered (needs the (method,path) dedup fix); the harvested `plan` field is mass-assigned |
-| `gb_bola_object` (506) | FN | **FN** | **capability D not built** — cross-SUBJECT object access; the UNCHANGED paid-feature gate models clean-vs-entitled, not owner-vs-non-owner. NOT RoE-barred. Named. |
-| `h_replay_regrant` (502) | FN | **FN** | **capability C not built** — bounded replay/over-limit on the idempotency-keyed grant op. The shipped over-limit probe (`_exp_c`) replays the RETURN flow, which the hardened spine makes a no-op (grant is server-side on capture). NOT RoE-barred. Named. |
+| `h_replay_regrant` (502) | FN | **TP (capability C)** | the idempotency-keyed grant op is discovered; the engine pays once, applies once, then REPLAYS its own single-use credential against its own settled payment → quota beyond the legitimate limit, gate-confirmed; patched returns the cached result → RULED_OUT (0 FP) |
+| `gb_bola_object` (506) | FN | **FN** | **capability D needs a gate EXTENSION (out of scope for the no-change-to-gate rule), NOT RoE-barred.** Cross-SUBJECT object access: on the flaw target the object is readable by *every* member, so there is **no within-feature policy denial** to serve as the gate's discriminating control (the gate hard-requires `control.outcome == "denied"`). The paid-feature gate models clean-vs-entitled, not owner-vs-non-owner; confirming it honestly needs a cross-subject oracle (a new gate mode), which this increment's no-change-to-gate rule excludes. Demonstrated, not RoE. |
 | `webhook_forgery` (590, ceiling) | abstain | **abstain** | RoE-barred signature forgery → correct abstention 1/1 (the engine cannot reach it cold either) |
 
-The two cold misses are **exactly** the two grey-box misses — the two capabilities the prior session
-deferred (C: bounded replay/over-limit; D: cross-subject object oracle). Cold discovery recovers
-*everything the current engine can find*; it adds no new ceiling of its own. Neither remaining miss
-is a cold-reachability barrier (the in-RoE prober reaches both) — they are unbuilt-capability misses.
+With capability C delivered, cold **exceeds** the frozen grey-box 0.80 at **0.90 (9/10)**. The single
+remaining miss, `gb_bola_object`, is the one capability (D) whose honest confirmation needs a gate
+extension the no-change-to-gate rule forbids this increment — **not** a cold-reachability barrier and
+**not** RoE-barred (the in-RoE prober reaches it with the engine's own two tenants). Every unfound
+instance now has a demonstrated out-of-reach reason — the proven ceiling is complete.
 
 ## Adversarial self-review of the cold finds (real differential, not artifact?)
 
@@ -738,6 +744,18 @@ different anonymised seeds; TEST surface strings differ from DEV, so no literal 
 post-fix 0.80 matches the independently-frozen grey-box ceiling — generalisation and reconstruction
 fidelity, not memorisation.
 
+**Capability C (bounded replay/over-limit) — adversarial self-review.** The `h_replay_regrant` find
+(DEV #402 and sealed TEST #502, PBB-C) is CONFIRMED_P0 through the UNCHANGED gate on flaw_on and
+produced **nothing** on the patched twin (TN, FP=0). The confirmation reuses the existing `_exp_c`
+over-limit pattern: the scenario observation is a quota use **beyond** the single-payment + single
+legitimate-application baseline, and the clean-identity denial is the discriminating control. It uses
+ONLY the engine's own identities, its own settled payment reference, and its own single-use key — no
+forgery, no id/token guessing. Its **own 0-FP control is structural**: a correctly-idempotent op
+returns the cached result on replay, so `n1 == n0` and nothing is confirmed. This is exactly the
+property the prior session protected by deferring the probe — now delivered: the probe ran on **every**
+cold family (every patched twin, and every other family's correct apply-credit op) and confirmed on
+**only** the one genuine over-limit flaw, at 0 FP. It generalised DEV→TEST (different anonymised seeds).
+
 ## No regression (the mission's hard gate) — verified in this sandbox, AFTER the Phase-2 engine edit
 
 - **Purity audit:** 492 files, **0 violations** (uncovered/stale/forbidden-literals/forbidden-imports/
@@ -748,27 +766,32 @@ fidelity, not memorisation.
   False with federation OFF, True with the upgraded engine), internal/mesh hits 0.
 - **Grey-box hardened DEV:** re-measured with the current engine — **0.75 (6/8)**, 0 FP, unchanged.
 - **Zero regression by construction:** `engine.py` gained only the additive, **default-OFF**
-  `enable_cold_discovery` flag + methods reachable only when it is set AND the brief is cold, plus a
-  stats key (`None` when off). Every legacy / grey-box / boss run executes byte-identical behaviour.
+  `enable_cold_discovery` and `enable_replay_probe` flags + methods reachable only when they are set
+  (the replay probe is added to `COLD_ENGINE_PROBES` **only**, not to the grey-box / phase2 / today
+  sets), plus a stats key (`None` when off). Every legacy / grey-box / boss / purity run executes
+  byte-identical behaviour; the grey-box frozen 0.80 is untouched.
 
 ## The honest answer: hand it a COLD domain for a Stripe-class hardened system with ZERO prior knowledge — what's the number, and why believe it?
 
-**0.80 (8/10) recall of the critical server-enforced forbidden-access class, at 0 false positives** —
-the SAME recall as the grey-box engine that is handed the full published spec, achieved COLD: handed
+**0.90 (9/10) recall of the critical server-enforced forbidden-access class, at 0 false positives** —
+**exceeding** the grey-box engine that is handed the full published spec (0.80), achieved COLD: handed
 only a base URL, the engine discovers the surface by using the product (its root bootstrap + the
 responses it gets), signs up its own tenants, infers each operation's role and the paid-feature
-oracle purely from behaviour, and finds the buried flaw behind the enterprise stack (async settle,
-idempotency, step-up, server-authoritative pricing, rate limits, tenant binding, federated confirm).
-The two misses are the two **named, unbuilt capabilities** (cross-subject object oracle; bounded
-replay/over-limit) — not RoE barriers and not cold-reachability barriers. Why believe it: it is
-measured BLIND on a sealed set the engine was not tuned against (the one post-hoc change was a
-general reconstruction-bug fix that reaches a known independent ceiling); it holds across anonymised
-seeds and DEV↔TEST; false positives stayed **0** on every patched/decoy control; the cold-floor gate
-PASSED (domain only, 0 internal hits) on every run; and there is **no regression** on the bosses /
-benchmark / grey-box. Confidence in the DIRECTION and MECHANISM (a cold engine can reconstruct a
-hardened surface by authorized use and reach the grey-box ceiling at 0 FP) is **high**; confidence in
-the specific 0.80 is **medium** (10-instance TEST, reconstructions not original code, loopback not a
-live PSP, author-blind HOLDOUT not yet measured).
+oracle purely from behaviour, finds the buried flaw behind the enterprise stack (async settle,
+idempotency, step-up, server-authoritative pricing, rate limits, tenant binding, federated confirm),
+AND — with the new bounded replay/over-limit oracle — catches the idempotency-replay re-grant too,
+all at 0 FP. The single remaining miss is the one **named capability (D: a cross-subject object
+oracle)** that honestly needs a gate extension this increment's no-change-to-gate rule forbids —
+**not** an RoE barrier and **not** a cold-reachability barrier. Why believe it: the surface discovery
+is measured BLIND on a sealed set the engine was not tuned against (the one post-hoc change was a
+general reconstruction-bug fix that reaches a known independent ceiling); capability C was developed
+against the DEV replay miss only and **generalised** to the sealed TEST instance at a different seed;
+it holds across anonymised seeds and DEV↔TEST; false positives stayed **0** on every patched/decoy
+control and every family; the cold-floor gate PASSED (domain only, 0 internal hits) on every run; and
+there is **no regression** on the bosses / benchmark / grey-box. Confidence in the DIRECTION and
+MECHANISM (a cold engine can reconstruct a hardened surface by authorized use and, at 0 FP, reach and
+exceed the grey-box ceiling) is **high**; confidence in the specific 0.90 is **medium** (10-instance
+TEST, reconstructions not original code, loopback not a live PSP, author-blind HOLDOUT not yet measured).
 
 ## Status (COLD CROWN)
 
@@ -776,13 +799,17 @@ live PSP, author-blind HOLDOUT not yet measured).
   + the product-bootstrap discovery affordance (dual-oracle re-validated, served identically by both
   twins) + the cold (domain-only) brief + the honest pre-upgrade cold number (**0.00**, 0 FP, 0
   internal hits, ceiling abstained, cold-floor PASS) + committed pre-registration matched exactly.
-- **Phase 2 — autonomous cold-start surface discovery COMPLETE:** blind sealed-TEST **0.70 → 0.80**
-  (post a general reconstruction-bug fix), DEV 0.75, **0 FP, 0 internal hits, ceiling abstained 1/1,
-  cold-floor PASS, no regression** — reaching the grey-box ceiling from a domain alone. The two
-  remaining misses are the two deferred capabilities, each demonstrated out of reach (named, not
-  RoE-barred).
-- **Named next (honest, not blocking):** capability **C** (bounded replay/over-limit on the
-  idempotency-keyed grant op — extends the existing `_exp_c` over-limit confirmation, which today
-  replays the no-op return flow); capability **D** (a cross-subject object-access oracle the UNCHANGED
-  gate can express); the **author-blind HOLDOUT** (a separate session authors cold targets this
-  session never inspects, measured once); and a **live provider-test-mode socket**.
+- **Phase 2 — autonomous cold-start surface discovery (capability A) COMPLETE:** blind sealed-TEST
+  **0.70 → 0.80** (post a general reconstruction-bug fix), DEV 0.75 — reaching the grey-box ceiling
+  from a domain alone, 0 FP / 0 internal hits / ceiling abstained 1/1 / cold-floor PASS / no regression.
+- **Phase 2 — capability C (bounded replay/over-limit) COMPLETE:** developed against the DEV replay
+  miss only, it **generalised** to the sealed TEST at a different seed and lifted cold sealed-TEST
+  **0.80 → 0.90 (9/10)** and DEV to 0.875 (7/8), at **0 FP** on every family (its own structural 0-FP
+  control: a correctly-idempotent op returns the cached result on replay). Cold now **exceeds** the
+  frozen grey-box 0.80. The **proven ceiling is complete**: the one remaining miss (`gb_bola_object`)
+  has a demonstrated reason — capability **D** needs a gate extension the no-change-to-gate rule forbids.
+- **Named next (honest, not blocking):** capability **D** (a cross-subject object-access oracle, which
+  requires a new gate mode — out of scope for the no-change-to-gate rule this increment); the
+  **author-blind HOLDOUT** (a separate session authors cold targets this session never inspects,
+  measured once); corpus **breadth** via new real advisories (needs advisory-network access); and a
+  **live provider-test-mode socket**.
