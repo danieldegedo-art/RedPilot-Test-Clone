@@ -2409,7 +2409,12 @@ class PureBlackBoxEngine:
                     return None
                 if (await self.oracle.check(K, F, oracle_id=f"GB:alt:{op.name}:pre")).outcome != "denied":
                     continue  # the current route must deny the never-paid identity (the control)
-                alt = FeatureSpec(feature_id=f"altpath:{op.name}:{F.feature_id}", method=op.method, path=op.path,
+                # Same feature_id as F on purpose: the ENTITLEMENT obtained is F's proof (e.g. the
+                # tier report), merely reached via an alternate route. The gate then sees one
+                # consistent feature with a discriminating control (clean identity DENIED the
+                # feature at its current route) and a scenario (never-paid identity OBTAINED the
+                # feature's proof) -- a real same-feature differential, route reported in metrics.
+                alt = FeatureSpec(feature_id=F.feature_id, method=op.method, path=op.path,
                                   proof_field=F.proof_field, requires_plan=F.requires_plan, consumes_quota=False,
                                   observed_via="public_api_reference", denied_statuses=F.denied_statuses, allowed_statuses=F.allowed_statuses)
                 scen = await self.oracle.check(K, alt, oracle_id=f"GB:alt:{op.name}:post")
