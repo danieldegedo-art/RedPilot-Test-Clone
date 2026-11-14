@@ -2379,6 +2379,55 @@ class PureBlackBoxEngine:
                                              limitations=["Found by grey-box sequencing over DECLARED operations using the engine's own identities/references; a grant needing a foreign subject's id or a forged token is out of RoE and not reached by this step."])
         return None
 
+    async def _greybox_altpath_probe(self, cs: ControlState) -> Finding | None:
+        """Improper-inventory / shadow-API: a NEVER-PAID identity obtains a paid feature's PROOF via
+        a declared alternate/deprecated route that the current (controlled) route denies. The
+        differential is cross-PATH for the same unpaid identity (canonical route denies -> alternate
+        route allows), reproduced in a clean session, through the UNCHANGED gate. A correctly-guarded
+        alternate route (same plan check) denies the unpaid identity, so it never false-positives."""
+        if not self._enable_greybox_probe:
+            return None
+        if not cs.setup_ok or not cs.positive_ok or not cs.negative_ok or cs.open_feature or cs.global_leak:
+            return None
+        feats: list[tuple[FeatureSpec, bool]] = []
+        primary = self.brief.primary_feature()
+        if primary is not None:
+            feats.append((primary, cs.positive_ok))
+        tier = self.brief.tier_feature()
+        if tier is not None and cs.tier_positive_ok:
+            feats.append((tier, cs.tier_positive_ok))
+        alt_ops = [op for op in self._behavior_candidate_ops() if "{" not in op.path and not op.request_fields]
+        if not feats or not alt_ops:
+            return None
+        for F, disc in feats:
+            for op in alt_ops:
+                if self._stop_reason() is not None:
+                    return None
+                try:
+                    K = await self.prov.acquire("gb_alt")
+                except IdentityPoolExhausted:
+                    return None
+                if (await self.oracle.check(K, F, oracle_id=f"GB:alt:{op.name}:pre")).outcome != "denied":
+                    continue  # the current route must deny the never-paid identity (the control)
+                alt = FeatureSpec(feature_id=f"altpath:{op.name}:{F.feature_id}", method=op.method, path=op.path,
+                                  proof_field=F.proof_field, requires_plan=F.requires_plan, consumes_quota=False,
+                                  observed_via="public_api_reference", denied_statuses=F.denied_statuses, allowed_statuses=F.allowed_statuses)
+                scen = await self.oracle.check(K, alt, oracle_id=f"GB:alt:{op.name}:post")
+                if scen.outcome != "allowed":
+                    continue  # the alternate route did not return the paid feature's proof
+                repro = await self.oracle.check(K.clean_copy(), alt, oracle_id=f"GB:alt:{op.name}:repro")
+                decision, _, _ = await self._confirm(hyp="PBB-U", cs=cs, feature=F, scenario=scen, qualifying=False, discriminating=disc, repro=repro)
+                if decision.confirmed:
+                    ids = _clean([*cs.artifact_ids, *scen.artifact_ids, *(repro.artifact_ids if repro else ())])
+                    return self._finding("PBB-U", Verdict.CONFIRMED_P0, "high",
+                                         f"A never-paid identity obtained a paid feature's proof ({F.proof_field!r}) through the alternate/deprecated route {op.name!r} that the current route correctly denies; reproduced in a clean session. Internal cause: UNKNOWN.",
+                                         artifacts=ids, token=decision.token,
+                                         metrics={"discovered_op": op.name, "op_path": op.path, "discovery": "greybox_altpath", "feature": F.feature_id},
+                                         payment_state="no qualifying payment", actual_state=f"paid-feature proof via alternate route {op.name}", entitlement_state="granted",
+                                         server_side_oracle=f"{scen.oracle_id}: outcome=allowed via alternate route, discriminating={disc}",
+                                         limitations=["Found via a DECLARED alternate/deprecated route returning a paid feature's proof; a route absent from the published spec is not probed here."])
+        return None
+
     async def _exp_u(self, cs: ControlState) -> Finding:
         hyp = "PBB-U"
         if (blocked := self._precondition(cs, hyp)) is not None:
@@ -2401,6 +2450,8 @@ class PureBlackBoxEngine:
             return behaved
         if self._enable_greybox_probe and (gbx := await self._greybox_probe(cs)) is not None:
             return gbx
+        if self._enable_greybox_probe and (gba := await self._greybox_altpath_probe(cs)) is not None:
+            return gba
         artifacts: list[str | None] = []
         divergences: list[str] = []
         tested: dict[str, str] = {}
