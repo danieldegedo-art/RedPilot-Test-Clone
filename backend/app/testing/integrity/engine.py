@@ -211,7 +211,7 @@ class PureBlackBoxEngine:
                  enable_federation: bool = False, fed_use_discovery: bool = True, fed_use_token_re: bool = True,
                  fed_use_trust_graph: bool = True, fed_use_orchestration: bool = True,
                  fed_use_analogy: bool = True, fed_use_infogain: bool = True,
-                 enable_behavior_probe: bool = False,
+                 enable_behavior_probe: bool = False, enable_greybox_probe: bool = False,
                  disabled_agents: frozenset[str] = frozenset()) -> None:
         self._prioritizer = prioritizer  # ZR-003/ZR-012: None keeps the static EXPERIMENT_ORDER, exactly as before
         # B45 recon-breadth + B46 chain-composition: FAIL-CLOSED. Off unless an authorised caller enables them; when off, the probes are no-ops and behaviour is identical to before.
@@ -338,6 +338,17 @@ class PureBlackBoxEngine:
         # brief-declared values, so a correctly-implemented glue route (grants nothing to the unpaid / rejects a
         # terminal-state mutation) yields no false positive. FAIL-CLOSED: a no-op when off.
         self._enable_behavior_probe = enable_behavior_probe
+        # B60 grey-box sequencing probe: OPT-IN, FAIL-CLOSED (a no-op when off, so default behaviour is byte-identical).
+        # Generalises the behaviour probe along three literal-agnostic axes the ENTERPRISE-HARDENED surface needs:
+        #   (a) an OWN-ORDER ref precondition  -- the never-paid identity first creates its OWN order (checkout, no pay)
+        #       so a ref/receipt field can be filled with the engine's own reference (never a guessed/foreign id);
+        #   (b) a semantic TERMINAL-STATE vocabulary tried on state-labelled fields (entitled/terminal synonyms,
+        #       engine-authored, not a target literal) so a client-driven state-machine skip is reachable;
+        #   (c) a 2-op CHALLENGE->consumer dependency: a step-up token is obtained from its declared producer op and
+        #       fed into the consumer, so a sensitive op behind a legitimate step-up is still driven honestly.
+        # Confirmation is the UNCHANGED ConfirmationGate (control denied -> scenario allowed -> clean reproduction),
+        # so a correct hardened target (rejects the jump / fails closed / demands real proof) never false-positives.
+        self._enable_greybox_probe = enable_greybox_probe
         # B47 find-fast: opt-in triage mode -- stop after the first CONFIRMED_P0 (fewer calls). OFF by default, so a full assessment still runs every class and nothing changes.
         self._find_fast = find_fast
         if not getattr(http, "stateless", False):
@@ -2245,6 +2256,129 @@ class PureBlackBoxEngine:
                                          limitations=["Found by behaviour-based discovery over DECLARED operations."])
         return None
 
+    # ---- B60 grey-box sequencing probe (OPT-IN, FAIL-CLOSED) --------------------------------
+    _GREYBOX_TERMINAL_STATES = ("complete", "completed", "active", "paid", "settled", "entitled",
+                                "done", "finished", "confirmed", "fulfilled", "approved", "granted")
+    _GREYBOX_CHALLENGE_LABELS = ("challenge", "step_up", "stepup", "step-up", "mfa", "nonce", "attest", "otp", "human")
+    _GREYBOX_REF_LABELS = ("id", "ref", "order", "payment", "cart", "receipt", "settlement", "gateway", "txn", "handle")
+
+    def _greybox_is_challenge(self, logical: str) -> bool:
+        return any(k in logical.lower() for k in self._GREYBOX_CHALLENGE_LABELS)
+
+    def _greybox_is_state(self, logical: str) -> bool:
+        return (not self._greybox_is_challenge(logical)) and any(
+            k in logical.lower() for k in ("state", "status", "phase", "stage", "step", "result", "outcome"))
+
+    async def _greybox_resolve_challenge(self, session: CustomerSession) -> Any:
+        """Obtain a step-up token from its DECLARED producer op (an op whose response carries a
+        challenge-labelled field), so a sensitive op behind a legitimate step-up is driven honestly.
+        No forging: the token is one the server issued to the engine's own identity."""
+        for op in self._behavior_candidate_ops():
+            rfs = getattr(op, "response_fields", {}) or {}
+            for lg in rfs:
+                if self._greybox_is_challenge(lg):
+                    try:
+                        r = await session.call(op.name, label=f"GB:challenge:{op.name}")
+                    except Exception:  # noqa: BLE001
+                        return None
+                    val = op.read(r.body, lg)
+                    if val:
+                        return val
+        return None
+
+    def _greybox_variants(self, op: Any, ctx: dict[str, Any], challenge: Any) -> list[tuple[dict, dict]]:
+        """(path_params, fields) tuples: own-ref for ref/id fields, the terminal-state vocabulary on
+        state fields, a resolved step-up token for challenge fields, benign/known otherwise."""
+        logicals = list(op.request_fields.keys())
+
+        def fill(lg: str) -> Any:
+            s = lg.lower()
+            if self._greybox_is_challenge(lg):
+                return challenge
+            if self._greybox_is_state(lg):
+                return "success"
+            if any(k in s for k in self._GREYBOX_REF_LABELS):
+                return ctx.get("own_ref")
+            if any(k in s for k in ("plan", "tier", "sku", "product", "offering")):
+                return ctx.get("top_plan")
+            if any(k in s for k in ("amount", "sum", "value", "price", "fee", "cost", "qty", "quantity")):
+                return 1
+            if any(k in s for k in ("currency", "ccy")):
+                return "USD"
+            return True
+
+        base = {lg: fill(lg) for lg in logicals}
+        state_fields = [lg for lg in logicals if self._greybox_is_state(lg)]
+        variants: list[dict] = [dict(base)]
+        for sf in state_fields[:1]:  # enumerate terminal-state tokens on the first state field
+            for st in self._GREYBOX_TERMINAL_STATES:
+                v = dict(base)
+                v[sf] = st
+                variants.append(v)
+        placeholders = [seg[1:-1] for seg in op.path.split("/") if seg.startswith("{") and seg.endswith("}")]
+        pp = {ph: ctx.get("own_ref") for ph in placeholders}
+        seen: list[tuple] = []
+        out: list[tuple[dict, dict]] = []
+        for v in variants:
+            key = tuple(sorted((k, str(val)) for k, val in v.items()))
+            if key not in seen:
+                seen.append(key)
+                out.append((pp, v))
+        return out
+
+    async def _greybox_probe(self, cs: ControlState) -> Finding | None:
+        """A NEVER-PAID identity reaches a paid feature through a discovered glue op driven with an
+        own-order reference, a terminal-state value, and/or a legitimately-solved step-up -- the
+        grey-box sequencing the enterprise-hardened surface needs. Confirmed via the UNCHANGED gate."""
+        if not self._enable_greybox_probe:
+            return None
+        feature, tier = self.brief.primary_feature(), self.brief.tier_feature()
+        if feature is None or not cs.setup_ok or not cs.positive_ok or not cs.negative_ok or cs.open_feature or cs.global_leak:
+            return None
+        cands = self._behavior_candidate_ops()
+        if not cands:
+            return None
+        has_checkout = self.brief.op("start_checkout") is not None
+        checks = [(feature, cs.positive_ok)] + ([(tier, cs.tier_positive_ok)] if tier is not None and cs.tier_positive_ok else [])
+        for op in cands:
+            if self._stop_reason() is not None:
+                return None
+            try:
+                K = await self.prov.acquire("gb")
+            except IdentityPoolExhausted:
+                return None
+            if (await self.oracle.check(K, feature, oracle_id=f"GB:{op.name}:pre")).outcome != "denied":
+                continue  # fixture must start denied
+            own_ref = None
+            if has_checkout:  # the engine's OWN order reference (unpaid) -- never a guessed/foreign id
+                co = await K.call("start_checkout", label=f"GB:{op.name}:own_order", fields={"plan": self.brief.cheapest_plan})
+                sp = self.brief.op("start_checkout")
+                own_ref = sp.read(co.body, "payment_id") if sp else None
+            challenge = None
+            if any(self._greybox_is_challenge(lg) for lg in op.request_fields):
+                challenge = await self._greybox_resolve_challenge(K)
+            ctx = {"top_plan": self.brief.priciest_plan, "own_ref": own_ref}
+            for pp, fields in self._greybox_variants(op, ctx, challenge):
+                if self._stop_reason() is not None:
+                    return None
+                await K.call(op.name, path_params=pp or None, fields=fields or None, label=f"GB:{op.name}")
+                for feat, disc in checks:
+                    scen = await self.oracle.check(K, feat, oracle_id=f"GB:{op.name}:post")
+                    if scen.outcome != "allowed":
+                        continue
+                    repro = await self.oracle.check(K.clean_copy(), feat, oracle_id=f"GB:{op.name}:repro")
+                    decision, _, _ = await self._confirm(hyp="PBB-U", cs=cs, feature=feat, scenario=scen, qualifying=False, discriminating=disc, repro=repro)
+                    if decision.confirmed:
+                        ids = _clean([*cs.artifact_ids, *scen.artifact_ids, *repro.artifact_ids])
+                        return self._finding("PBB-U", Verdict.CONFIRMED_P0, "high",
+                                             f"A never-paid identity USED a paid feature after grey-box sequencing through the discovered operation {op.name!r} (own-order reference / terminal-state value / solved step-up, role inferred by behaviour); a clean session reproduced it and the clean control stayed denied. Internal cause: UNKNOWN.",
+                                             artifacts=ids, token=decision.token,
+                                             metrics={"discovered_op": op.name, "op_path": op.path, "discovery": "greybox_sequence", "feature": feat.feature_id},
+                                             payment_state="no qualifying payment", actual_state=f"feature allowed after grey-box sequencing on {op.name}", entitlement_state="granted",
+                                             server_side_oracle=f"{scen.oracle_id}: outcome=allowed, discriminating={disc}",
+                                             limitations=["Found by grey-box sequencing over DECLARED operations using the engine's own identities/references; a grant needing a foreign subject's id or a forged token is out of RoE and not reached by this step."])
+        return None
+
     async def _exp_u(self, cs: ControlState) -> Finding:
         hyp = "PBB-U"
         if (blocked := self._precondition(cs, hyp)) is not None:
@@ -2265,6 +2399,8 @@ class PureBlackBoxEngine:
             return federated
         if self._enable_behavior_probe and (behaved := await self._behavior_grant_probe(cs)) is not None:
             return behaved
+        if self._enable_greybox_probe and (gbx := await self._greybox_probe(cs)) is not None:
+            return gbx
         artifacts: list[str | None] = []
         divergences: list[str] = []
         tested: dict[str, str] = {}

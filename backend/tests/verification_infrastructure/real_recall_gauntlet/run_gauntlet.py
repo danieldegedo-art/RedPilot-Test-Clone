@@ -22,7 +22,7 @@ import sys
 
 import manifest as MAN
 from four_rule_gate import FourRuleViolation, postcheck as four_rule_postcheck, precheck as four_rule_precheck
-from harness import PHASE2_ENGINE_PROBES, TODAY_ENGINE_PROBES, run_engine_blind
+from harness import GREYBOX_ENGINE_PROBES, PHASE2_ENGINE_PROBES, TODAY_ENGINE_PROBES, run_engine_blind
 from surface import Scheme
 
 
@@ -114,8 +114,8 @@ async def main() -> int:
     ap.add_argument("--split", choices=["test", "dev", "all"], default="all")
     ap.add_argument("--recon", choices=["sparse", "full"], default="sparse",
                     help="sparse: core payment flow only; full: also declare customer-facing glue routes (realistic recon)")
-    ap.add_argument("--engine", choices=["today", "phase2"], default="today",
-                    help="today: all shipped probes; phase2: + behavior-based discovery probe")
+    ap.add_argument("--engine", choices=["today", "phase2", "greybox"], default="today",
+                    help="today: all shipped probes; phase2: + behavior probe; greybox: + B60 grey-box sequencing probe")
     ap.add_argument("--corpus", choices=["legacy", "hardened"], default="legacy",
                     help="legacy: the original gauntlet; hardened: the enterprise-hardened grey-box tranche")
     ap.add_argument("--json", default=None)
@@ -124,7 +124,7 @@ async def main() -> int:
     global MAN
     MAN = importlib.import_module("manifest_hardened" if args.corpus == "hardened" else "manifest")
     declare_glue = args.recon == "full"
-    probes = PHASE2_ENGINE_PROBES if args.engine == "phase2" else TODAY_ENGINE_PROBES
+    probes = {"greybox": GREYBOX_ENGINE_PROBES, "phase2": PHASE2_ENGINE_PROBES, "today": TODAY_ENGINE_PROBES}[args.engine]
     insts = {"test": MAN.TEST, "dev": MAN.DEV, "all": MAN.ALL}[args.split]
     records = [await run_instance(*i, declare_glue=declare_glue, probes=probes) for i in insts]
 

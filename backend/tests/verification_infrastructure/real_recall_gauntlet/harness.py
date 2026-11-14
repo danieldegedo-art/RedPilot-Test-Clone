@@ -96,6 +96,10 @@ class RunResult:
 # Phase-2 engine = today's probes + the new behavior-based discovery probe (opt-in, fail-closed).
 PHASE2_ENGINE_PROBES: dict[str, Any] = {**TODAY_ENGINE_PROBES, "enable_behavior_probe": True}
 
+# Grey-box engine = phase-2 + the B60 grey-box sequencing probe (opt-in, fail-closed). This is the
+# capability developed for the ENTERPRISE-HARDENED tranche; default-OFF so legacy runs are identical.
+GREYBOX_ENGINE_PROBES: dict[str, Any] = {**PHASE2_ENGINE_PROBES, "enable_greybox_probe": True}
+
 
 async def run_engine_blind(brief_factory: Callable[[str], dict[str, Any]], handle: HandleFn, *,
                            path_log: set[str] | None = None, probes: dict[str, Any] | None = None) -> RunResult:
