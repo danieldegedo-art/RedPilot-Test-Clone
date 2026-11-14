@@ -42,7 +42,7 @@
       "truth_patched": false,
       "dual_oracle_valid": true,
       "engine_confirmed_flaw_on": [],
-      "engine_calls": 761,
+      "engine_calls": 767,
       "internal_hits": 0,
       "engine_confirmed_patched": [],
       "positive_outcome": "FN",
@@ -223,11 +223,13 @@
       "truth_flaw_on": true,
       "truth_patched": false,
       "dual_oracle_valid": true,
-      "engine_confirmed_flaw_on": [],
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
       "engine_calls": 884,
       "internal_hits": 0,
       "engine_confirmed_patched": [],
-      "positive_outcome": "FN",
+      "positive_outcome": "TP",
       "negative_outcome": "TN",
       "four_rule": {
         "rule1_no_internal_access": "pass",
@@ -338,9 +340,9 @@
     "test": {
       "split": "test",
       "in_scope_positives": 10,
-      "true_positives": 7,
-      "false_negatives": 3,
-      "recall": 0.7,
+      "true_positives": 8,
+      "false_negatives": 2,
+      "recall": 0.8,
       "negatives": 11,
       "false_positives": 0,
       "true_negatives": 11,
