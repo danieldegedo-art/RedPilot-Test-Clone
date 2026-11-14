@@ -212,7 +212,7 @@ class PureBlackBoxEngine:
                  fed_use_trust_graph: bool = True, fed_use_orchestration: bool = True,
                  fed_use_analogy: bool = True, fed_use_infogain: bool = True,
                  enable_behavior_probe: bool = False, enable_greybox_probe: bool = False,
-                 enable_cold_discovery: bool = False,
+                 enable_cold_discovery: bool = False, enable_replay_probe: bool = False,
                  disabled_agents: frozenset[str] = frozenset()) -> None:
         self._prioritizer = prioritizer  # ZR-003/ZR-012: None keeps the static EXPERIMENT_ORDER, exactly as before
         # B45 recon-breadth + B46 chain-composition: FAIL-CLOSED. Off unless an authorised caller enables them; when off, the probes are no-ops and behaviour is identical to before.
@@ -358,6 +358,13 @@ class PureBlackBoxEngine:
         # It never forges, never guesses an id/token, never scans non-customer surface (the ScopeGuard
         # blocks internal/admin paths and the target's internal routes are honeypots).
         self._enable_cold_discovery = enable_cold_discovery
+        # B62 bounded replay / over-limit probe: OPT-IN (off by default, fail-closed). Confirms a grant
+        # BEYOND its legitimate limit (an idempotency-keyed credential REPLAYED re-grants) through the
+        # UNCHANGED gate, reusing the _exp_c over-limit confirmation pattern (a quota use beyond the
+        # single-payment+single-apply baseline, with the clean-identity denial as the discriminating
+        # control). Its own 0-FP control: a correctly-idempotent op returns the cached result on replay,
+        # so a LEGITIMATE first grant never trips it (patched -> n1==n0 -> RULED_OUT).
+        self._enable_replay_probe = enable_replay_probe
         self._base_url = base_url
         self._cold_discovery_report: dict[str, Any] | None = None
         # B47 find-fast: opt-in triage mode -- stop after the first CONFIRMED_P0 (fewer calls). OFF by default, so a full assessment still runs every class and nothing changes.
@@ -2280,6 +2287,9 @@ class PureBlackBoxEngine:
         return (not self._greybox_is_challenge(logical)) and any(
             k in logical.lower() for k in ("state", "status", "phase", "stage", "step", "result", "outcome"))
 
+    def _greybox_is_ref(self, logical: str) -> bool:
+        return any(k in logical.lower() for k in self._GREYBOX_REF_LABELS)
+
     async def _greybox_resolve_challenge(self, session: CustomerSession) -> Any:
         """Obtain a step-up token from its DECLARED producer op (an op whose response carries a
         challenge-labelled field), so a sensitive op behind a legitimate step-up is driven honestly.
@@ -2655,6 +2665,82 @@ class PureBlackBoxEngine:
             arts += o.artifact_ids
         return S, obs, "ok", arts
 
+    async def _replay_quota_run(self, label: str, op: Any, ref_field: str, key_field: str, replays: int,
+                                quota: FeatureSpec, cap: int) -> tuple[CustomerSession | None, list[OracleObservation], str, list[str | None]]:
+        """A single over-limit run against a discovered idempotency-keyed grant op: the engine pays
+        once (its OWN settled payment), applies the credit once, then replays the SAME credential
+        ``replays`` times against its OWN payment reference, then drains the quota feature up to ``cap``.
+        No forgery, no id guessing -- ref is the caller's own settled payment, key is the engine's own."""
+        b = self.brief
+        try:
+            S = await self.prov.acquire(label)
+        except IdentityPoolExhausted:
+            return None, [], "pool_exhausted", []
+        pre = await self.oracle.check(S, quota, oracle_id=f"{label}:pre")
+        arts: list[str | None] = [*pre.artifact_ids]
+        if pre.outcome != "denied":
+            return S, [], "fixture_contaminated", arts
+        pay = await self._pay(S, plan=b.cheapest_plan, outcome_key="success", label=label)
+        arts += pay.artifact_ids()
+        if pay.payment_id is None or not pay.reached_sandbox:
+            return S, [], "setup_failed", arts
+        arts.append((await self._return_flow(S, pay.payment_id, label=f"{label}:return", claim_status=b.return_status_values["success"])).artifact_id)
+        key = f"{label}-replaykey"  # a single-use credential the engine itself chooses; replay must not re-grant
+        for i in range(1 + replays):
+            r = await S.call(op.name, fields={ref_field: pay.payment_id, key_field: key}, label=f"{label}:apply{i}")
+            arts.append(r.artifact_id)
+        obs = await self._consume(S, quota, cap, label)
+        for o in obs:
+            arts += o.artifact_ids
+        return S, obs, "ok", arts
+
+    async def _replay_over_limit_probe(self, cs: ControlState, quota: FeatureSpec) -> Finding | None:
+        """B62: confirm a grant BEYOND its legitimate limit via idempotency-credential replay, through
+        the UNCHANGED gate. 0-FP by its own control: a correctly-idempotent op returns the cached result
+        on replay, so n1==n0 and nothing is confirmed (a legitimate first grant never trips it)."""
+        if not self._enable_replay_probe:
+            return None
+        local_cap = 12  # bounded low-volume over-limit window (> the single-payment + single-apply baseline)
+        cands = [op for op in self._behavior_candidate_ops()
+                 if len(op.request_fields) >= 2 and "{" not in op.path and any(self._greybox_is_ref(lg) for lg in op.request_fields)]
+        for op in cands:
+            logicals = list(op.request_fields.keys())
+            for ref_field in [lg for lg in logicals if self._greybox_is_ref(lg)]:
+                key_fields = [lg for lg in logicals if lg != ref_field]
+                if not key_fields:
+                    continue
+                key_field = key_fields[0]
+                if self._stop_reason() is not None:
+                    return None
+                _Sb, ob, stb, ab = await self._replay_quota_run("rc_base", op, ref_field, key_field, 0, quota, local_cap)
+                n0 = sum(1 for o in ob if o.outcome == "allowed")
+                if stb != "ok" or n0 == 0 or n0 >= local_cap:
+                    continue  # not the grant op here, or quota not bounded within the window
+                _Sr, orr, str_, ar = await self._replay_quota_run("rc_replay", op, ref_field, key_field, 2, quota, local_cap)
+                n1 = sum(1 for o in orr if o.outcome == "allowed")
+                if str_ != "ok" or n1 <= n0 or len(orr) <= n0:
+                    continue  # correctly idempotent (patched) or not a grant op -> no over-limit -> no FP
+                _Sr2, or2, st2, ar2 = await self._replay_quota_run("rc_repro", op, ref_field, key_field, 2, quota, local_cap)
+                if st2 != "ok":
+                    continue
+                n2 = sum(1 for o in or2 if o.outcome == "allowed")
+                scenario = orr[n0]  # the (n0+1)th use: allowed for the replay subject, DENIED for a legitimate baseline
+                repro = or2[n0] if len(or2) > n0 else (or2[-1] if or2 else None)
+                decision, _, _ = await self._confirm(hyp="PBB-C", cs=cs, feature=quota, scenario=scenario, qualifying=False, discriminating=n0 > 0, repro=repro)
+                if decision.confirmed:
+                    ids = _clean([*cs.artifact_ids, *ab, *ar, *ar2])
+                    return self._finding("PBB-C", Verdict.CONFIRMED_P0, "high",
+                                         f"Replaying a single-use idempotency credential on the discovered grant operation {op.name!r} re-granted paid quota BEYOND a single payment + single application ({n1} uses vs {n0} legitimate; independently reproduced to {n2}); the clean control stayed denied. Internal cause: UNKNOWN.",
+                                         artifacts=ids, token=decision.token,
+                                         metrics={"discovered_op": op.name, "op_path": op.path, "discovery": "replay_over_limit",
+                                                  "baseline_uses": n0, "uses_after_replay": n1, "replays": 2, "cap": local_cap},
+                                         payment_state="single qualifying payment + one legitimate application",
+                                         actual_state=f"uses_after_replay={n1} (baseline={n0})",
+                                         entitlement_state=f"{n1} paid uses granted vs {n0} legitimately paid for",
+                                         server_side_oracle=f"{scenario.oracle_id}: outcome=allowed beyond the baseline, discriminating={n0 > 0}",
+                                         limitations=["Found by replaying the engine's OWN single-use credential against its OWN settled payment -- no forgery, no id guessing. A correctly-idempotent op returns the cached result on replay and never trips this (its own 0-FP control)."])
+        return None
+
     async def _exp_c(self, cs: ControlState) -> Finding:
         hyp = "PBB-C"
         b, quota = self.brief, self.brief.quota_feature()
@@ -2688,6 +2774,8 @@ class PureBlackBoxEngine:
                                               identity_tenant_dimension=f"identity={scenario.identity_alias}", commercial_context=f"plan={b.cheapest_plan}, quota_cap={cap}",
                                               payment_state="single payment", actual_state=f"uses_after_replay={n1} (baseline={n0})",
                                               entitlement_state=f"{n1} uses granted vs {n0} paid for", server_side_oracle=f"{scenario.oracle_id}: outcome={scenario.outcome}, discriminating={n0 > 0}")
+        if self._enable_replay_probe and (rp := await self._replay_over_limit_probe(cs, quota)) is not None:
+            return rp  # B62: an idempotency-keyed grant op may re-grant on replay where the return flow does not
         return self._finding(hyp, Verdict.RULED_OUT, "high", f"Under the tested conditions repeating the return flow twice granted nothing beyond the single-payment quota ({n1} <= {n0}).", artifacts=arts, metrics=metrics,
                              limitations=["Limited to 2 sequential return-flow repetitions; concurrent duplicates are NOT tested (unsafe by contract)."])
 

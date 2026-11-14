@@ -104,7 +104,7 @@ GREYBOX_ENGINE_PROBES: dict[str, Any] = {**PHASE2_ENGINE_PROBES, "enable_greybox
 # fail-closed). On a COLD brief (no declared surface) it reconstructs the surface by authorized use
 # of the product, then runs the UNCHANGED experiments + grey-box probe through the UNCHANGED gate.
 # Default-OFF so every legacy / grey-box run is byte-identical.
-COLD_ENGINE_PROBES: dict[str, Any] = {**GREYBOX_ENGINE_PROBES, "enable_cold_discovery": True}
+COLD_ENGINE_PROBES: dict[str, Any] = {**GREYBOX_ENGINE_PROBES, "enable_cold_discovery": True, "enable_replay_probe": True}
 
 
 def build_cold_brief(d: dict[str, Any]) -> ExecutionBrief:
