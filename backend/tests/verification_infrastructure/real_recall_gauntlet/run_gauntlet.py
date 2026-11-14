@@ -128,15 +128,16 @@ async def main() -> int:
     ap.add_argument("--engine", choices=["today", "phase2", "greybox", "cold"], default="today",
                     help="today: all shipped probes; phase2: + behavior probe; greybox: + B60 grey-box probe; "
                          "cold: + B61 autonomous cold-start surface discovery")
-    ap.add_argument("--corpus", choices=["legacy", "hardened"], default="legacy",
-                    help="legacy: the original gauntlet; hardened: the enterprise-hardened tranche")
+    ap.add_argument("--corpus", choices=["legacy", "hardened", "holdout"], default="legacy",
+                    help="legacy: the original gauntlet; hardened: the enterprise-hardened tranche; "
+                         "holdout: an AUTHOR-BLIND tranche authored by a separate session (manifest_holdout)")
     ap.add_argument("--only", default=None, help="comma-separated family name(s) to run (fast iteration)")
     ap.add_argument("--seed", type=int, default=None, help="restrict to a single seed (fast iteration)")
     ap.add_argument("--json", default=None)
     args = ap.parse_args()
 
     global MAN
-    MAN = importlib.import_module("manifest_hardened" if args.corpus == "hardened" else "manifest")
+    MAN = importlib.import_module({"hardened": "manifest_hardened", "holdout": "manifest_holdout"}.get(args.corpus, "manifest"))
     cold = args.recon == "cold"
     declare_glue = args.recon == "full"
     probes = {"cold": COLD_ENGINE_PROBES, "greybox": GREYBOX_ENGINE_PROBES, "phase2": PHASE2_ENGINE_PROBES, "today": TODAY_ENGINE_PROBES}[args.engine]
