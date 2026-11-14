@@ -64,6 +64,8 @@ async def run_instance(family: str, seed: int, split: str, scope: str, *,
     rr_on = await run_engine_blind(lambda base: brief_factory(base, scheme), handle, path_log=plog, probes=probes, cold=cold)
     rec["engine_confirmed_flaw_on"] = rr_on.confirmed
     rec["engine_calls"] = rr_on.stats.get("customer_level_calls")
+    if cold:  # capture the autonomous reconstruction (proves the surface was learned, not handed in)
+        rec["cold_discovery"] = rr_on.stats.get("cold_discovery")
     rec["internal_hits"] = tgt.internal_hits  # purity: must be 0
 
     # ---- engine BLIND on the patched target (false-positive control) --------------------

@@ -1,0 +1,1671 @@
+{
+ "decoy_hints_ignored_all_ruled_out": true,
+ "elapsed_s": 86.7,
+ "generated_at": "2026-11-14T16:21:42+00:00",
+ "legacy_baseline": null,
+ "matrix": {
+  "amount_tamper": {
+   "PBB-C": "ok",
+   "PBB-E": "ok",
+   "PBB-F": "P0",
+   "PBB-G": "ok",
+   "PBB-H": "ok",
+   "PBB-R": "ok",
+   "PBB-U": "ok",
+   "PBB-X": "ok"
+  },
+  "broken_setup": {
+   "PBB-C": "BLK",
+   "PBB-E": "BLK",
+   "PBB-F": "BLK",
+   "PBB-G": "BLK",
+   "PBB-H": "BLK",
+   "PBB-R": "BLK",
+   "PBB-U": "BLK",
+   "PBB-X": "BLK"
+  },
+  "cross_identity_binding": {
+   "PBB-C": "ok",
+   "PBB-E": "ok",
+   "PBB-F": "ok",
+   "PBB-G": "ok",
+   "PBB-H": "ok",
+   "PBB-R": "ok",
+   "PBB-U": "ok",
+   "PBB-X": "P0"
+  },
+  "cross_tenant_binding": {
+   "PBB-C": "ok",
+   "PBB-E": "ok",
+   "PBB-F": "ok",
+   "PBB-G": "P0",
+   "PBB-H": "ok",
+   "PBB-R": "ok",
+   "PBB-U": "ok",
+   "PBB-X": "ok"
+  },
+  "currency_confusion": {
+   "PBB-C": "ok",
+   "PBB-E": "ok",
+   "PBB-F": "ok",
+   "PBB-G": "ok",
+   "PBB-H": "P0",
+   "PBB-R": "ok",
+   "PBB-U": "ok",
+   "PBB-X": "ok"
+  },
+  "failed_payment_grants_access": {
+   "PBB-C": "ok",
+   "PBB-E": "ok",
+   "PBB-F": "ok",
+   "PBB-G": "ok",
+   "PBB-H": "ok",
+   "PBB-R": "ok",
+   "PBB-U": "P0",
+   "PBB-X": "ok"
+  },
+  "fully_fixed": {
+   "PBB-C": "ok",
+   "PBB-E": "ok",
+   "PBB-F": "ok",
+   "PBB-G": "ok",
+   "PBB-H": "ok",
+   "PBB-R": "ok",
+   "PBB-U": "ok",
+   "PBB-X": "ok"
+  },
+  "global_entitlement_leak": {
+   "LEAK": "P0",
+   "PBB-C": "UNK",
+   "PBB-E": "UNK",
+   "PBB-F": "UNK",
+   "PBB-G": "UNK",
+   "PBB-H": "UNK",
+   "PBB-R": "UNK",
+   "PBB-U": "UNK",
+   "PBB-X": "UNK"
+  },
+  "hints_decoy_fixed": {
+   "PBB-C": "ok",
+   "PBB-E": "ok",
+   "PBB-F": "ok",
+   "PBB-G": "ok",
+   "PBB-H": "ok",
+   "PBB-R": "ok",
+   "PBB-U": "ok",
+   "PBB-X": "ok"
+  },
+  "hints_real_flaw": {
+   "PBB-C": "ok",
+   "PBB-E": "ok",
+   "PBB-F": "ok",
+   "PBB-G": "ok",
+   "PBB-H": "ok",
+   "PBB-R": "ok",
+   "PBB-U": "P0",
+   "PBB-X": "ok"
+  },
+  "opaque_async_feature_internal_flaw": {
+   "PBB-C": "UNK",
+   "PBB-E": "UNK",
+   "PBB-F": "UNK",
+   "PBB-G": "UNK",
+   "PBB-H": "UNK",
+   "PBB-R": "UNK",
+   "PBB-U": "UNK",
+   "PBB-X": "UNK"
+  },
+  "open_feature": {
+   "OPEN": "PART",
+   "PBB-C": "UNK",
+   "PBB-E": "PART",
+   "PBB-F": "UNK",
+   "PBB-G": "UNK",
+   "PBB-H": "UNK",
+   "PBB-R": "UNK",
+   "PBB-U": "UNK",
+   "PBB-X": "UNK"
+  },
+  "plan_claim_tamper": {
+   "PBB-C": "ok",
+   "PBB-E": "ok",
+   "PBB-F": "P0",
+   "PBB-G": "ok",
+   "PBB-H": "ok",
+   "PBB-R": "ok",
+   "PBB-U": "ok",
+   "PBB-X": "ok"
+  },
+  "plan_not_enforced": {
+   "PBB-C": "ok",
+   "PBB-E": "ok",
+   "PBB-F": "P0",
+   "PBB-G": "ok",
+   "PBB-H": "ok",
+   "PBB-R": "ok",
+   "PBB-U": "ok",
+   "PBB-X": "ok"
+  },
+  "refund_retention": {
+   "PBB-C": "ok",
+   "PBB-E": "ok",
+   "PBB-F": "ok",
+   "PBB-G": "ok",
+   "PBB-H": "ok",
+   "PBB-R": "P0",
+   "PBB-U": "ok",
+   "PBB-X": "ok"
+  },
+  "replay_duplicate_value": {
+   "PBB-C": "P0",
+   "PBB-E": "ok",
+   "PBB-F": "ok",
+   "PBB-G": "ok",
+   "PBB-H": "ok",
+   "PBB-R": "ok",
+   "PBB-U": "ok",
+   "PBB-X": "ok"
+  },
+  "revocation_lag_beyond_sla": {
+   "PBB-C": "ok",
+   "PBB-E": "ok",
+   "PBB-F": "ok",
+   "PBB-G": "ok",
+   "PBB-H": "ok",
+   "PBB-R": "P0",
+   "PBB-U": "ok",
+   "PBB-X": "ok"
+  },
+  "revocation_lag_within_sla": {
+   "PBB-C": "ok",
+   "PBB-E": "ok",
+   "PBB-F": "ok",
+   "PBB-G": "ok",
+   "PBB-H": "ok",
+   "PBB-R": "ok",
+   "PBB-U": "ok",
+   "PBB-X": "ok"
+  },
+  "ui_only_anomaly": {
+   "PBB-C": "ok",
+   "PBB-E": "PART",
+   "PBB-F": "ok",
+   "PBB-G": "ok",
+   "PBB-H": "ok",
+   "PBB-R": "ok",
+   "PBB-U": "ok",
+   "PBB-X": "ok"
+  },
+  "unprobed_coupon_flaw": {
+   "PBB-C": "ok",
+   "PBB-E": "ok",
+   "PBB-F": "ok",
+   "PBB-G": "ok",
+   "PBB-H": "ok",
+   "PBB-R": "ok",
+   "PBB-U": "ok",
+   "PBB-X": "ok"
+  },
+  "wide_open": {
+   "PBB-C": "P0",
+   "PBB-E": "ok",
+   "PBB-F": "P0",
+   "PBB-G": "P0",
+   "PBB-H": "P0",
+   "PBB-R": "P0",
+   "PBB-U": "P0",
+   "PBB-X": "P0"
+  }
+ },
+ "metamorphic_diffs": [],
+ "metamorphic_hints_on_off_identical": true,
+ "pairs": [
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-U",
+   "outcome": "TN",
+   "scenario": "fully_fixed",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-F",
+   "outcome": "TN",
+   "scenario": "fully_fixed",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-H",
+   "outcome": "TN",
+   "scenario": "fully_fixed",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-C",
+   "outcome": "TN",
+   "scenario": "fully_fixed",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-G",
+   "outcome": "TN",
+   "scenario": "fully_fixed",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-X",
+   "outcome": "TN",
+   "scenario": "fully_fixed",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-R",
+   "outcome": "TN",
+   "scenario": "fully_fixed",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-E",
+   "outcome": "TN",
+   "scenario": "fully_fixed",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-U",
+   "outcome": "TP",
+   "scenario": "failed_payment_grants_access",
+   "truth": "P0",
+   "verdict": "CONFIRMED_P0"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-F",
+   "outcome": "TN",
+   "scenario": "failed_payment_grants_access",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-H",
+   "outcome": "TN",
+   "scenario": "failed_payment_grants_access",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-C",
+   "outcome": "TN",
+   "scenario": "failed_payment_grants_access",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-G",
+   "outcome": "TN",
+   "scenario": "failed_payment_grants_access",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-X",
+   "outcome": "TN",
+   "scenario": "failed_payment_grants_access",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-R",
+   "outcome": "TN",
+   "scenario": "failed_payment_grants_access",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-E",
+   "outcome": "TN",
+   "scenario": "failed_payment_grants_access",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 4,
+   "hypothesis": "PBB-U",
+   "outcome": "DIV_OK",
+   "scenario": "ui_only_anomaly",
+   "truth": "DIV",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-F",
+   "outcome": "TN",
+   "scenario": "ui_only_anomaly",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-H",
+   "outcome": "TN",
+   "scenario": "ui_only_anomaly",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-C",
+   "outcome": "TN",
+   "scenario": "ui_only_anomaly",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-G",
+   "outcome": "TN",
+   "scenario": "ui_only_anomaly",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-X",
+   "outcome": "TN",
+   "scenario": "ui_only_anomaly",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-R",
+   "outcome": "TN",
+   "scenario": "ui_only_anomaly",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 2,
+   "hypothesis": "PBB-E",
+   "outcome": "DIV_OK",
+   "scenario": "ui_only_anomaly",
+   "truth": "DIV",
+   "verdict": "PARTIALLY_VALIDATED_PAYMENT_INTEGRITY_ISSUE"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-U",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "opaque_async_feature_internal_flaw",
+   "truth": "UNK",
+   "verdict": "UNKNOWN"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-F",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "opaque_async_feature_internal_flaw",
+   "truth": "UNK",
+   "verdict": "UNKNOWN"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-H",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "opaque_async_feature_internal_flaw",
+   "truth": "UNK",
+   "verdict": "UNKNOWN"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-C",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "opaque_async_feature_internal_flaw",
+   "truth": "UNK",
+   "verdict": "UNKNOWN"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-G",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "opaque_async_feature_internal_flaw",
+   "truth": "UNK",
+   "verdict": "UNKNOWN"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-X",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "opaque_async_feature_internal_flaw",
+   "truth": "UNK",
+   "verdict": "UNKNOWN"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-R",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "opaque_async_feature_internal_flaw",
+   "truth": "UNK",
+   "verdict": "UNKNOWN"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-E",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "opaque_async_feature_internal_flaw",
+   "truth": "UNK",
+   "verdict": "UNKNOWN"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-U",
+   "outcome": "TN",
+   "scenario": "hints_decoy_fixed",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-F",
+   "outcome": "TN",
+   "scenario": "hints_decoy_fixed",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-H",
+   "outcome": "TN",
+   "scenario": "hints_decoy_fixed",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-C",
+   "outcome": "TN",
+   "scenario": "hints_decoy_fixed",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-G",
+   "outcome": "TN",
+   "scenario": "hints_decoy_fixed",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-X",
+   "outcome": "TN",
+   "scenario": "hints_decoy_fixed",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-R",
+   "outcome": "TN",
+   "scenario": "hints_decoy_fixed",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-E",
+   "outcome": "TN",
+   "scenario": "hints_decoy_fixed",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-U",
+   "outcome": "TP",
+   "scenario": "hints_real_flaw",
+   "truth": "P0",
+   "verdict": "CONFIRMED_P0"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-F",
+   "outcome": "TN",
+   "scenario": "hints_real_flaw",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-H",
+   "outcome": "TN",
+   "scenario": "hints_real_flaw",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-C",
+   "outcome": "TN",
+   "scenario": "hints_real_flaw",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-G",
+   "outcome": "TN",
+   "scenario": "hints_real_flaw",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-X",
+   "outcome": "TN",
+   "scenario": "hints_real_flaw",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-R",
+   "outcome": "TN",
+   "scenario": "hints_real_flaw",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-E",
+   "outcome": "TN",
+   "scenario": "hints_real_flaw",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-U",
+   "outcome": "TN",
+   "scenario": "cross_tenant_binding",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-F",
+   "outcome": "TN",
+   "scenario": "cross_tenant_binding",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-H",
+   "outcome": "TN",
+   "scenario": "cross_tenant_binding",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-C",
+   "outcome": "TN",
+   "scenario": "cross_tenant_binding",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-G",
+   "outcome": "TP",
+   "scenario": "cross_tenant_binding",
+   "truth": "P0",
+   "verdict": "CONFIRMED_P0"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-X",
+   "outcome": "TN",
+   "scenario": "cross_tenant_binding",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-R",
+   "outcome": "TN",
+   "scenario": "cross_tenant_binding",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-E",
+   "outcome": "TN",
+   "scenario": "cross_tenant_binding",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-U",
+   "outcome": "TN",
+   "scenario": "cross_identity_binding",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-F",
+   "outcome": "TN",
+   "scenario": "cross_identity_binding",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-H",
+   "outcome": "TN",
+   "scenario": "cross_identity_binding",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-C",
+   "outcome": "TN",
+   "scenario": "cross_identity_binding",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-G",
+   "outcome": "TN",
+   "scenario": "cross_identity_binding",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-X",
+   "outcome": "TP",
+   "scenario": "cross_identity_binding",
+   "truth": "P0",
+   "verdict": "CONFIRMED_P0"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-R",
+   "outcome": "TN",
+   "scenario": "cross_identity_binding",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-E",
+   "outcome": "TN",
+   "scenario": "cross_identity_binding",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-U",
+   "outcome": "TN",
+   "scenario": "plan_claim_tamper",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-F",
+   "outcome": "TP",
+   "scenario": "plan_claim_tamper",
+   "truth": "P0",
+   "verdict": "CONFIRMED_P0"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-H",
+   "outcome": "TN",
+   "scenario": "plan_claim_tamper",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-C",
+   "outcome": "TN",
+   "scenario": "plan_claim_tamper",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-G",
+   "outcome": "TN",
+   "scenario": "plan_claim_tamper",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-X",
+   "outcome": "TN",
+   "scenario": "plan_claim_tamper",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-R",
+   "outcome": "TN",
+   "scenario": "plan_claim_tamper",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-E",
+   "outcome": "TN",
+   "scenario": "plan_claim_tamper",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-U",
+   "outcome": "TN",
+   "scenario": "amount_tamper",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-F",
+   "outcome": "TP",
+   "scenario": "amount_tamper",
+   "truth": "P0",
+   "verdict": "CONFIRMED_P0"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-H",
+   "outcome": "TN",
+   "scenario": "amount_tamper",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-C",
+   "outcome": "TN",
+   "scenario": "amount_tamper",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-G",
+   "outcome": "TN",
+   "scenario": "amount_tamper",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-X",
+   "outcome": "TN",
+   "scenario": "amount_tamper",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-R",
+   "outcome": "TN",
+   "scenario": "amount_tamper",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-E",
+   "outcome": "TN",
+   "scenario": "amount_tamper",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-U",
+   "outcome": "TN",
+   "scenario": "plan_not_enforced",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-F",
+   "outcome": "TP",
+   "scenario": "plan_not_enforced",
+   "truth": "P0",
+   "verdict": "CONFIRMED_P0"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-H",
+   "outcome": "TN",
+   "scenario": "plan_not_enforced",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-C",
+   "outcome": "TN",
+   "scenario": "plan_not_enforced",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-G",
+   "outcome": "TN",
+   "scenario": "plan_not_enforced",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-X",
+   "outcome": "TN",
+   "scenario": "plan_not_enforced",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-R",
+   "outcome": "TN",
+   "scenario": "plan_not_enforced",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-E",
+   "outcome": "TN",
+   "scenario": "plan_not_enforced",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-U",
+   "outcome": "TN",
+   "scenario": "currency_confusion",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-F",
+   "outcome": "TN",
+   "scenario": "currency_confusion",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-H",
+   "outcome": "TP",
+   "scenario": "currency_confusion",
+   "truth": "P0",
+   "verdict": "CONFIRMED_P0"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-C",
+   "outcome": "TN",
+   "scenario": "currency_confusion",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-G",
+   "outcome": "TN",
+   "scenario": "currency_confusion",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-X",
+   "outcome": "TN",
+   "scenario": "currency_confusion",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-R",
+   "outcome": "TN",
+   "scenario": "currency_confusion",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-E",
+   "outcome": "TN",
+   "scenario": "currency_confusion",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-U",
+   "outcome": "TN",
+   "scenario": "replay_duplicate_value",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-F",
+   "outcome": "TN",
+   "scenario": "replay_duplicate_value",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-H",
+   "outcome": "TN",
+   "scenario": "replay_duplicate_value",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-C",
+   "outcome": "TP",
+   "scenario": "replay_duplicate_value",
+   "truth": "P0",
+   "verdict": "CONFIRMED_P0"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-G",
+   "outcome": "TN",
+   "scenario": "replay_duplicate_value",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-X",
+   "outcome": "TN",
+   "scenario": "replay_duplicate_value",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-R",
+   "outcome": "TN",
+   "scenario": "replay_duplicate_value",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-E",
+   "outcome": "TN",
+   "scenario": "replay_duplicate_value",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-U",
+   "outcome": "TN",
+   "scenario": "refund_retention",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-F",
+   "outcome": "TN",
+   "scenario": "refund_retention",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-H",
+   "outcome": "TN",
+   "scenario": "refund_retention",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-C",
+   "outcome": "TN",
+   "scenario": "refund_retention",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-G",
+   "outcome": "TN",
+   "scenario": "refund_retention",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-X",
+   "outcome": "TN",
+   "scenario": "refund_retention",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-R",
+   "outcome": "TP",
+   "scenario": "refund_retention",
+   "truth": "P0",
+   "verdict": "CONFIRMED_P0"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-E",
+   "outcome": "TN",
+   "scenario": "refund_retention",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-U",
+   "outcome": "TN",
+   "scenario": "revocation_lag_beyond_sla",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-F",
+   "outcome": "TN",
+   "scenario": "revocation_lag_beyond_sla",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-H",
+   "outcome": "TN",
+   "scenario": "revocation_lag_beyond_sla",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-C",
+   "outcome": "TN",
+   "scenario": "revocation_lag_beyond_sla",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-G",
+   "outcome": "TN",
+   "scenario": "revocation_lag_beyond_sla",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-X",
+   "outcome": "TN",
+   "scenario": "revocation_lag_beyond_sla",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-R",
+   "outcome": "TP",
+   "scenario": "revocation_lag_beyond_sla",
+   "truth": "P0",
+   "verdict": "CONFIRMED_P0"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-E",
+   "outcome": "TN",
+   "scenario": "revocation_lag_beyond_sla",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-U",
+   "outcome": "TN",
+   "scenario": "revocation_lag_within_sla",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-F",
+   "outcome": "TN",
+   "scenario": "revocation_lag_within_sla",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-H",
+   "outcome": "TN",
+   "scenario": "revocation_lag_within_sla",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-C",
+   "outcome": "TN",
+   "scenario": "revocation_lag_within_sla",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-G",
+   "outcome": "TN",
+   "scenario": "revocation_lag_within_sla",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-X",
+   "outcome": "TN",
+   "scenario": "revocation_lag_within_sla",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-R",
+   "outcome": "TN",
+   "scenario": "revocation_lag_within_sla",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-E",
+   "outcome": "TN",
+   "scenario": "revocation_lag_within_sla",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-OPEN",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "open_feature",
+   "truth": "UNK",
+   "verdict": "PARTIALLY_VALIDATED_PAYMENT_INTEGRITY_ISSUE"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-U",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "open_feature",
+   "truth": "UNK",
+   "verdict": "UNKNOWN"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-F",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "open_feature",
+   "truth": "UNK",
+   "verdict": "UNKNOWN"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-H",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "open_feature",
+   "truth": "UNK",
+   "verdict": "UNKNOWN"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-C",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "open_feature",
+   "truth": "UNK",
+   "verdict": "UNKNOWN"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-G",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "open_feature",
+   "truth": "UNK",
+   "verdict": "UNKNOWN"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-X",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "open_feature",
+   "truth": "UNK",
+   "verdict": "UNKNOWN"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-R",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "open_feature",
+   "truth": "UNK",
+   "verdict": "UNKNOWN"
+  },
+  {
+   "divergences": 1,
+   "hypothesis": "PBB-E",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "open_feature",
+   "truth": "UNK",
+   "verdict": "PARTIALLY_VALIDATED_PAYMENT_INTEGRITY_ISSUE"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-U",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "broken_setup",
+   "truth": "UNK",
+   "verdict": "BLOCKED"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-F",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "broken_setup",
+   "truth": "UNK",
+   "verdict": "BLOCKED"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-H",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "broken_setup",
+   "truth": "UNK",
+   "verdict": "BLOCKED"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-C",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "broken_setup",
+   "truth": "UNK",
+   "verdict": "BLOCKED"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-G",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "broken_setup",
+   "truth": "UNK",
+   "verdict": "BLOCKED"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-X",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "broken_setup",
+   "truth": "UNK",
+   "verdict": "BLOCKED"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-R",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "broken_setup",
+   "truth": "UNK",
+   "verdict": "BLOCKED"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-E",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "broken_setup",
+   "truth": "UNK",
+   "verdict": "BLOCKED"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-LEAK",
+   "outcome": "TP",
+   "scenario": "global_entitlement_leak",
+   "truth": "P0",
+   "verdict": "CONFIRMED_P0"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-U",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "global_entitlement_leak",
+   "truth": "UNK",
+   "verdict": "UNKNOWN"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-F",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "global_entitlement_leak",
+   "truth": "UNK",
+   "verdict": "UNKNOWN"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-H",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "global_entitlement_leak",
+   "truth": "UNK",
+   "verdict": "UNKNOWN"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-C",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "global_entitlement_leak",
+   "truth": "UNK",
+   "verdict": "UNKNOWN"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-G",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "global_entitlement_leak",
+   "truth": "UNK",
+   "verdict": "UNKNOWN"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-X",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "global_entitlement_leak",
+   "truth": "UNK",
+   "verdict": "UNKNOWN"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-R",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "global_entitlement_leak",
+   "truth": "UNK",
+   "verdict": "UNKNOWN"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-E",
+   "outcome": "HONEST_UNKNOWN",
+   "scenario": "global_entitlement_leak",
+   "truth": "UNK",
+   "verdict": "UNKNOWN"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-U",
+   "outcome": "TN",
+   "scenario": "unprobed_coupon_flaw",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-F",
+   "outcome": "TN",
+   "scenario": "unprobed_coupon_flaw",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-H",
+   "outcome": "TN",
+   "scenario": "unprobed_coupon_flaw",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-C",
+   "outcome": "TN",
+   "scenario": "unprobed_coupon_flaw",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-G",
+   "outcome": "TN",
+   "scenario": "unprobed_coupon_flaw",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-X",
+   "outcome": "TN",
+   "scenario": "unprobed_coupon_flaw",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-R",
+   "outcome": "TN",
+   "scenario": "unprobed_coupon_flaw",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-E",
+   "outcome": "TN",
+   "scenario": "unprobed_coupon_flaw",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-U",
+   "outcome": "TP",
+   "scenario": "wide_open",
+   "truth": "P0",
+   "verdict": "CONFIRMED_P0"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-F",
+   "outcome": "TP",
+   "scenario": "wide_open",
+   "truth": "P0",
+   "verdict": "CONFIRMED_P0"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-H",
+   "outcome": "TP",
+   "scenario": "wide_open",
+   "truth": "P0",
+   "verdict": "CONFIRMED_P0"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-C",
+   "outcome": "TP",
+   "scenario": "wide_open",
+   "truth": "P0",
+   "verdict": "CONFIRMED_P0"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-G",
+   "outcome": "TP",
+   "scenario": "wide_open",
+   "truth": "P0",
+   "verdict": "CONFIRMED_P0"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-X",
+   "outcome": "TP",
+   "scenario": "wide_open",
+   "truth": "P0",
+   "verdict": "CONFIRMED_P0"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-R",
+   "outcome": "TP",
+   "scenario": "wide_open",
+   "truth": "P0",
+   "verdict": "CONFIRMED_P0"
+  },
+  {
+   "divergences": 0,
+   "hypothesis": "PBB-E",
+   "outcome": "TN",
+   "scenario": "wide_open",
+   "truth": "SAFE",
+   "verdict": "RULED_OUT"
+  }
+ ],
+ "regression": {
+  "buggy_details": [
+   "PBB-U (regression_for_confirmed_p0): expected RULED_OUT, got CONFIRMED_P0  <-- REGRESSION",
+   "PBB-F (false_positive_control): expected RULED_OUT, got RULED_OUT",
+   "PBB-H (false_positive_control): expected RULED_OUT, got RULED_OUT",
+   "PBB-C (false_positive_control): expected RULED_OUT, got RULED_OUT",
+   "PBB-G (false_positive_control): expected RULED_OUT, got RULED_OUT",
+   "PBB-X (false_positive_control): expected RULED_OUT, got RULED_OUT",
+   "PBB-R (false_positive_control): expected RULED_OUT, got RULED_OUT",
+   "PBB-E (false_positive_control): expected RULED_OUT, got RULED_OUT"
+  ],
+  "fixed_details": [
+   "PBB-U (regression_for_confirmed_p0): expected RULED_OUT, got RULED_OUT",
+   "PBB-F (false_positive_control): expected RULED_OUT, got RULED_OUT",
+   "PBB-H (false_positive_control): expected RULED_OUT, got RULED_OUT",
+   "PBB-C (false_positive_control): expected RULED_OUT, got RULED_OUT",
+   "PBB-G (false_positive_control): expected RULED_OUT, got RULED_OUT",
+   "PBB-X (false_positive_control): expected RULED_OUT, got RULED_OUT",
+   "PBB-R (false_positive_control): expected RULED_OUT, got RULED_OUT",
+   "PBB-E (false_positive_control): expected RULED_OUT, got RULED_OUT"
+  ],
+  "replay_on_fixed_passes": true,
+  "replay_on_still_buggy_flags_regression": true
+ },
+ "reproducibility": {
+  "detail": {
+   "cross_tenant_binding": true,
+   "failed_payment_grants_access": true,
+   "fully_fixed": true,
+   "refund_retention": true,
+   "replay_duplicate_value": true,
+   "ui_only_anomaly": true
+  },
+  "identical": 6,
+  "scenarios_rerun_3x": 6
+ },
+ "scores": {
+  "blind_spot_flaws_detected": 0,
+  "blind_spot_flaws_listed_as_gap": 1,
+  "blind_spot_flaws_total": 1,
+  "blindness_checks_total": 84,
+  "confirmed_p0_without_external_oracle": 0,
+  "customer_level_calls_total": 1597,
+  "every_artifact_externally_classified": true,
+  "evidence_accepted_total": 1597,
+  "evidence_integrity": {
+   "artifacts": 1597,
+   "bad_classification": 0,
+   "bad_hash": 0,
+   "missing_provenance_fields": 0,
+   "unredacted_identifiers_or_tokens": 0
+  },
+  "evidence_rejected_total": 0,
+  "false_assurance_rate": 0.0,
+  "false_positive_rate": 0.0,
+  "hint_scenarios": 2,
+  "hint_scenarios_where_hints_were_present_and_dropped": 2,
+  "internal_route_hits_total": 0,
+  "missed_as_unknown_rate": 0.0,
+  "oracle_spec_completeness": 1.0,
+  "outcome_counts": {
+   "DIV_MISSED": 0,
+   "DIV_OK": 2,
+   "FALSE_ASSURANCE": 0,
+   "FALSE_ASSURANCE_UNPROVABLE": 0,
+   "FP": 0,
+   "HONEST_UNKNOWN": 33,
+   "INCONCLUSIVE_ON_SAFE": 0,
+   "MISSED_AS_UNKNOWN": 0,
+   "TN": 116,
+   "TP": 19
+  },
+  "pairs": 170,
+  "purity_gate_denials_caused_by_engine": 0,
+  "safe_ruled_out_rate": 1.0,
+  "scenarios": 21,
+  "scenarios_with_internal_route_hits": 0,
+  "seeded_p0_detection_rate": 1.0,
+  "truth_counts": {
+   "DIV": 2,
+   "P0": 19,
+   "SAFE": 116,
+   "UNK": 33
+  },
+  "ui_only_false_positive_resistance": 1.0,
+  "unknown_honesty_rate": 1.0
+ }
+}

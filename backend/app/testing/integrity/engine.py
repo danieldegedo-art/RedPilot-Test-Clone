@@ -2842,8 +2842,286 @@ class PureBlackBoxEngine:
                              identity_tenant_dimension=f"{len(obs)} observed identity/state pairs", entitlement_state="view agrees with server oracle")
 
     # --------------------------------------------------------------------------------------------------------------------------- run
+    # ---- B61 autonomous COLD-START surface discovery (OPT-IN, FAIL-CLOSED) ------------------
+    def _cold_session(self, alias: str, *, token: str | None = None, tenant_id: str | None = None) -> CustomerSession:
+        self.rec.ledger.register_identity(alias, f"tenant_{alias}")
+        return CustomerSession(recorder=self.rec, http=self._http, identity_alias=alias,
+                               tenant_alias=f"tenant_{alias}", token=token, tenant_id=tenant_id)
+
+    @staticmethod
+    def _fill_placeholder(path: str, value: str) -> str:
+        """Every discovered placeholder is a trailing segment ('/pay/{id}'): substitute the engine's
+        OWN reference. No id is ever guessed -- value is always a reference the engine itself minted."""
+        return path[:path.index("{")] + str(value) if "{" in path else path
+
+    async def _cold_discover(self) -> None:
+        """Reconstruct the ExecutionBrief PURELY from authorized use of the product, on a COLD brief
+        (no surface handed in). Steps, each by authorized interaction only (no forge/guess/scan):
+          0. GET the product's own root bootstrap catalog (method+path+request field wire-names).
+          1. sign up (the POST whose UNAUTH response yields a token) -> mint the engine's own tenants.
+          2. public pricing -> plan names + ascending order.
+          3. checkout: the POST that returns a payment reference given a plan (maps plan/amount/
+             currency/status/payment_id wire-names by value, never by a handed-in label).
+          4. sandbox_pay: the placeholder-POST that CAPTURES (response 'captured').
+          5. return_flow: the GET that takes the payment reference.
+          6. features: the clean-vs-paid differential (a clean identity DENIED, a payer ALLOWED with
+             a proof field) -> requires_plan + proof_field + consumes_quota, all inferred by behaviour.
+          7. every remaining route -> an unlabelled candidate op (role inferred downstream by the
+             behaviour / grey-box probes exactly as in grey-box).
+        Then rebuild the brief through from_dict (so every discovered route re-passes the purity
+        gates; discovered provenance is 'authorized_customer_api_trace') and rebind. FAIL-CLOSED: any
+        step that cannot be reconstructed leaves the cold (empty) brief in place, so the run stays
+        cratered rather than guessing."""
+        report: dict[str, Any] = {"stage": "start"}
+        self._cold_discovery_report = report
+        n = [0]
+
+        async def mint() -> CustomerSession | None:
+            n[0] += 1
+            boot = self._cold_session(f"cold_signup_{n[0]}")
+            rr = await boot.raw("POST", self._fill_placeholder(signup_path, ""), label="COLD:signup", json_body={})
+            if rr.status and 200 <= rr.status < 300 and isinstance(rr.body, dict) and rr.body.get("token"):
+                self.rec.register_sensitive(rr.body.get("token"), rr.body.get("tenant_id"))
+                return self._cold_session(f"cold_id_{n[0]}", token=str(rr.body["token"]),
+                                          tenant_id=(str(rr.body["tenant_id"]) if rr.body.get("tenant_id") else None))
+            return None
+
+        try:
+            # 0. bootstrap catalog
+            boot = self._cold_session("cold_boot")
+            cat = None
+            for rp in ("/", self._api_cold_prefix()):
+                if rp is None:
+                    continue
+                r = await boot.raw("GET", rp, label="COLD:bootstrap")
+                if r.status and 200 <= r.status < 300 and isinstance(r.body, dict) and r.body.get("routes"):
+                    cat = r.body["routes"]
+                    break
+            if not cat:
+                report["stage"] = "no_catalog"
+                return
+            routes = [(str(x.get("method", "GET")).upper(), str(x.get("path", "")), [str(z) for z in (x.get("fields") or [])])
+                      for x in cat if isinstance(x, dict) and x.get("path")]
+            report["catalog_size"] = len(routes)
+            obs_resp: dict[str, list[str]] = {}  # response field wire-names observed per route (for glue response_fields)
+
+            # 1. signup (the POST whose UNAUTH response yields a token)
+            signup_path = None
+            for (m, p, _f) in routes:
+                if m != "POST" or "{" in p:
+                    continue
+                rr = await boot.raw("POST", p, label="COLD:probe_signup", json_body={})
+                if rr.status and 200 <= rr.status < 300 and isinstance(rr.body, dict) and rr.body.get("token"):
+                    signup_path = p
+                    break
+            if not signup_path:
+                report["stage"] = "no_signup"
+                return
+
+            # 2. pricing -> plan names + order
+            probe = await mint()
+            if probe is None:
+                report["stage"] = "signup_unusable"
+                return
+            plan_prices: dict[str, dict[str, float]] = {}
+            plans_path = None
+            for (m, p, _f) in routes:
+                if m != "GET" or "{" in p:
+                    continue
+                rr = await probe.raw("GET", p, label="COLD:probe_plans")
+                tiers = rr.body.get("tiers") if (rr.status == 200 and isinstance(rr.body, dict)) else None
+                if isinstance(tiers, list) and tiers and all(isinstance(t, dict) and isinstance(t.get("price"), dict) for t in tiers):
+                    for t in tiers:
+                        name = next((str(v) for k, v in t.items() if k != "price" and isinstance(v, str)), None)
+                        if name:
+                            plan_prices[name] = {str(c): float(x) for c, x in t["price"].items() if isinstance(x, (int, float))}
+                    plans_path = p
+                    break
+            if not plan_prices:
+                report["stage"] = "no_pricing"
+                return
+            plan_order = sorted(plan_prices, key=lambda nm: min(plan_prices[nm].values()))
+            cheapest, priciest = plan_order[0], plan_order[-1]
+
+            # 3. checkout (POST returning a payment reference given a plan)
+            checkout = plan_wire = pid_wire = amt_wire = cur_wire = st_wire = None
+            for (m, p, f) in routes:
+                if m != "POST" or "{" in p or p == signup_path or not f:
+                    continue
+                for cand in f:
+                    s2 = await mint()
+                    if s2 is None:
+                        continue
+                    rr = await s2.raw("POST", p, label="COLD:probe_checkout", json_body={cand: cheapest})
+                    b = rr.body
+                    if rr.status and 200 <= rr.status < 300 and isinstance(b, dict):
+                        idf = next((k for k, v in b.items() if isinstance(v, str) and len(v) >= 10), None)
+                        if idf:
+                            checkout, plan_wire, pid_wire = p, cand, idf
+                            for k, v in b.items():
+                                if k == idf:
+                                    continue
+                                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                                    amt_wire = k
+                                elif isinstance(v, str) and len(v) == 3 and v.isalpha():
+                                    cur_wire = k
+                                elif isinstance(v, str):
+                                    st_wire = k
+                            break
+                if checkout:
+                    break
+            if not checkout:
+                report["stage"] = "no_checkout"
+                return
+
+            async def fresh_ref(sess: CustomerSession) -> str | None:
+                co = await sess.raw("POST", checkout, label="COLD:checkout", json_body={plan_wire: cheapest})
+                return co.body.get(pid_wire) if (co.status and 200 <= co.status < 300 and isinstance(co.body, dict)) else None
+
+            # 4. sandbox_pay (placeholder-POST that CAPTURES)
+            pay_path = None
+            for (m, p, _f) in routes:
+                if m != "POST" or "{" not in p:
+                    continue
+                s3 = await mint()
+                if s3 is None:
+                    continue
+                ref = await fresh_ref(s3)
+                if not ref:
+                    continue
+                rr = await s3.raw("POST", self._fill_placeholder(p, ref), label="COLD:probe_pay",
+                                  json_body={"outcome": "success", (st_wire or "status"): "success"})
+                if rr.status and 200 <= rr.status < 300 and isinstance(rr.body, dict) and any(str(v) == "captured" for v in rr.body.values()):
+                    pay_path = p
+                    break
+            if not pay_path:
+                report["stage"] = "no_pay"
+                return
+
+            # 5. return_flow (the GET listing the payment-ref wire in its fields)
+            return_path = next((p for (m, p, f) in routes if m == "GET" and "{" not in p and pid_wire in f), None)
+
+            async def paid(plan: str) -> CustomerSession | None:
+                s = await mint()
+                if s is None:
+                    return None
+                ref = await fresh_ref(s) if plan == cheapest else None
+                if plan != cheapest:
+                    co = await s.raw("POST", checkout, label="COLD:checkout", json_body={plan_wire: plan})
+                    ref = co.body.get(pid_wire) if isinstance(co.body, dict) else None
+                if not ref:
+                    return None
+                await s.raw("POST", self._fill_placeholder(pay_path, ref), label="COLD:pay", json_body={"outcome": "success"})
+                return s
+
+            # 6. features (clean-vs-paid differential)
+            canonical = {signup_path, plans_path, checkout, pay_path, return_path}
+            features: dict[str, dict] = {}
+            for (m, p, _f) in routes:
+                if p in canonical or "{" in p:
+                    continue
+                N = await mint()
+                if N is None:
+                    continue
+                nres = await N.raw(m, p, label="COLD:feat_clean", json_body=(None if m == "GET" else {}))
+                if isinstance(nres.body, dict):
+                    obs_resp[p] = [str(k) for k in nres.body]  # harvest response fields (e.g. a step-up token producer)
+                if nres.status not in (402, 403):
+                    continue  # open / not a paid gate -> leave as a glue candidate op
+                denied_keys = set((nres.body or {}).keys()) if isinstance(nres.body, dict) else set()
+                for plan in (cheapest, priciest):
+                    P = await paid(plan)
+                    if P is None:
+                        continue
+                    pres = await P.raw(m, p, label=f"COLD:feat_paid_{plan}", json_body=(None if m == "GET" else {}))
+                    if pres.status and 200 <= pres.status < 300 and isinstance(pres.body, dict) and pres.body:
+                        proof = next((k for k in pres.body if k not in denied_keys), None) or next(iter(pres.body))
+                        consumes = any(("remaining" == str(k) or "credit" in str(k).lower()) for k in pres.body)
+                        features[p] = {"method": m, "path": p, "requires_plan": plan, "proof_field": str(proof), "consumes_quota": consumes}
+                        break
+            if not features:
+                report["stage"] = "no_features"
+                return
+
+            # 7. build the reconstructed brief -----------------------------------------------------
+            prov = "authorized_customer_api_trace"
+            ops: dict[str, dict] = {
+                "signup": {"method": "POST", "path": signup_path, "observed_via": prov},
+                "plans": {"method": "GET", "path": plans_path, "observed_via": prov},
+                "start_checkout": {"method": "POST", "path": checkout, "observed_via": prov,
+                                   "request_fields": {"plan": plan_wire, "currency": cur_wire or "currency", "amount": amt_wire or "amount"},
+                                   "response_fields": {"payment_id": pid_wire, "amount": amt_wire or "amount",
+                                                       "currency": cur_wire or "currency", "status": st_wire or "status"}},
+                "sandbox_pay": {"method": "POST", "path": self._fill_placeholder(pay_path, "") + "{payment_id}", "observed_via": prov},
+                "return_flow": {"method": "GET", "path": return_path or checkout, "observed_via": prov,
+                                "request_fields": {"payment_id": pid_wire, "status": st_wire or "status"}},
+            }
+            gi = 0
+            # dedup by (METHOD, raw catalog path): two operations that differ only in method are
+            # distinct -- e.g. a GET account view and a POST update can anonymise to the SAME path, and
+            # dropping the POST would lose the op that carries the flaw (keying on path alone was a real
+            # reconstruction bug). Dedup against the RAW catalog paths the canonical/feature ops consumed
+            # (the canonical pay/return ops are stored with a normalised placeholder, so compare raw).
+            taken = {("POST", signup_path), ("GET", plans_path), ("POST", checkout),
+                     ("POST", pay_path), ("GET", return_path)} | {(s["method"], s["path"]) for s in features.values()}
+            for (m, p, f) in routes:
+                if (m, p) in taken:
+                    continue
+                taken.add((m, p))
+                # request wire-map: the payment-ref wire we LEARNED at checkout gets the classifier-
+                # friendly logical 'payment_id' (so the probe drives it with the engine's OWN reference,
+                # whatever synonym the product used); every other field keeps its own surface form, which
+                # the probe classifies by its wire name (ref/state/challenge/...).
+                rf = {("payment_id" if w == pid_wire else w): w for w in f}
+                rfres = {w: w for w in obs_resp.get(p, [])}  # response fields observed from the product itself
+                op = {"method": m, "path": p, "observed_via": prov}
+                if rf:
+                    op["request_fields"] = rf
+                if rfres:
+                    op["response_fields"] = rfres
+                gi += 1
+                ops[f"glue_{gi}"] = op
+            feats: dict[str, dict] = {}
+            for i, (p, spec) in enumerate(features.items()):
+                feats[f"feat_{i}"] = {"method": spec["method"], "path": spec["path"], "proof_field": spec["proof_field"],
+                                      "requires_plan": spec["requires_plan"], "consumes_quota": spec["consumes_quota"], "observed_via": prov}
+            lim = self.brief.limits
+            d = {
+                "authorization_ref": self.brief.authorization_ref, "authorized_by": self.brief.authorized_by,
+                "environment": self.brief.environment, "target_kind": self.brief.target_kind,
+                "attested_synthetic_data": True, "attested_sandbox_payments": True,
+                "allow_signup": True, "primary_currency": self.brief.primary_currency,
+                "allowed_hosts": list(self.brief.allowed_hosts),
+                "surface": ops, "plans": {nm: {"prices": plan_prices[nm]} for nm in plan_order}, "features": feats,
+                "sandbox_outcomes": {"success": "success", "failure": "declined"},
+                "return_status_values": {"success": "success", "failure": "failure"},
+                "limits": {"max_requests": lim.max_requests, "max_requests_per_second": lim.max_requests_per_second,
+                           "revocation_poll_schedule_s": list(lim.revocation_poll_schedule_s),
+                           "revocation_sla_seconds": lim.revocation_sla_seconds, "quota_probe_cap": lim.quota_probe_cap,
+                           "timeout_seconds": lim.timeout_seconds},
+            }
+            new_brief = ExecutionBrief.from_dict(d, env={})
+            self.brief = new_brief
+            self.rec.brief = new_brief
+            self.prov._brief = new_brief
+            self.prov._pool = list(new_brief.identities.values())
+            report.update({"stage": "ok", "plan_order": plan_order, "checkout": checkout,
+                           "features": {f["path"]: (f["requires_plan"], f["proof_field"], f["consumes_quota"]) for f in features.values()},
+                           "glue_ops": gi, "signup": signup_path, "pay": pay_path, "return": return_path})
+        except Exception as exc:  # noqa: BLE001 -- discovery must never crash the run; a failure stays cratered, never guesses
+            report["stage"] = f"error:{type(exc).__name__}"
+            report["error"] = str(exc)
+
+    def _api_cold_prefix(self) -> str | None:
+        """A single conventional alternate bootstrap location (the API prefix root), tried only if the
+        site root did not serve a catalog. Not a scan: it is one authorized GET at the product's own
+        prefix, the same prefix every discovered route shares."""
+        return None
+
     async def run(self, experiments: Iterable[str] | None = None) -> EngineResult:
         started = now_iso()
+        if self._enable_cold_discovery and not self.brief.operations:
+            await self._cold_discover()  # COLD: reconstruct the surface from the product itself, then proceed unchanged
         wanted = _apply_prioritizer([e for e in EXPERIMENT_ORDER if experiments is None or e in set(experiments)], self._prioritizer)
         findings: list[Finding] = []
         cs = await self._establish_controls()
@@ -2867,7 +3145,8 @@ class PureBlackBoxEngine:
                 break  # triage mode: a confirmed P0 is enough; skip the remaining classes (opt-in; default runs all)
         guard = self._http.guard
         stats = {"customer_level_calls": self.rec.calls, "volunteered_hints_dropped": self.rec.hints_dropped, "hint_names_sample": list(self.rec.hint_samples),
-                 "experiment_order": list(wanted), "oracle_observations": len(self.oracle.observations), "guard": guard.stats() if guard is not None else None, "synthetic_identities_used": sorted(self.prov.sessions)}
+                 "experiment_order": list(wanted), "oracle_observations": len(self.oracle.observations), "guard": guard.stats() if guard is not None else None, "synthetic_identities_used": sorted(self.prov.sessions),
+                 "cold_discovery": self._cold_discovery_report}
         brief_fp = self.brief.fingerprint()
         attach_regression_references(findings, brief_fp)  # ZR-023/B26: each real finding points at its regression check
         replay_bundles = attach_replay_bundles(
