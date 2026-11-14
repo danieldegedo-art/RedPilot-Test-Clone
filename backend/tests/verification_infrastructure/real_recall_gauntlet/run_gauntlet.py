@@ -21,6 +21,7 @@ import os
 import sys
 
 import manifest as MAN
+from four_rule_gate import FourRuleViolation, postcheck as four_rule_postcheck, precheck as four_rule_precheck
 from harness import PHASE2_ENGINE_PROBES, TODAY_ENGINE_PROBES, run_engine_blind
 from surface import Scheme
 
@@ -30,6 +31,12 @@ async def run_instance(family: str, seed: int, split: str, scope: str, *,
     M = importlib.import_module(f"targets.{family}")
     rec: dict = {"family": family, "seed": seed, "split": split, "scope": scope,
                  "advisory": MAN.PROVENANCE[family]["advisory"], "class": MAN.PROVENANCE[family]["engine_class"]}
+
+    # ---- four-rule hard-floor precheck (fail closed) ------------------------------------
+    # Static part: inspect the exact brief the engine will receive (paths/keys/identities are
+    # base-independent). The runtime part (no internal-route hit) is completed after the runs.
+    pre_brief = M.brief("http://127.0.0.1:1", Scheme(family, seed), declare_glue=declare_glue)
+    four_rule_att = four_rule_precheck(pre_brief)
 
     # ---- independent ground truth (flaw on vs patched), engine NOT involved -------------
     truth_on = await M.probe_truth(Scheme(family, seed), True)
@@ -70,6 +77,9 @@ async def run_instance(family: str, seed: int, split: str, scope: str, *,
     else:
         rec["positive_outcome"] = "TP" if found_on else "FN"
     rec["negative_outcome"] = "FP" if found_off else "TN"
+
+    # ---- four-rule hard-floor postcheck (completes rule 1 at runtime; fail closed) ------
+    rec["four_rule"] = four_rule_postcheck(four_rule_att, rec["internal_hits"])
     return rec
 
 
@@ -106,9 +116,13 @@ async def main() -> int:
                     help="sparse: core payment flow only; full: also declare customer-facing glue routes (realistic recon)")
     ap.add_argument("--engine", choices=["today", "phase2"], default="today",
                     help="today: all shipped probes; phase2: + behavior-based discovery probe")
+    ap.add_argument("--corpus", choices=["legacy", "hardened"], default="legacy",
+                    help="legacy: the original gauntlet; hardened: the enterprise-hardened grey-box tranche")
     ap.add_argument("--json", default=None)
     args = ap.parse_args()
 
+    global MAN
+    MAN = importlib.import_module("manifest_hardened" if args.corpus == "hardened" else "manifest")
     declare_glue = args.recon == "full"
     probes = PHASE2_ENGINE_PROBES if args.engine == "phase2" else TODAY_ENGINE_PROBES
     insts = {"test": MAN.TEST, "dev": MAN.DEV, "all": MAN.ALL}[args.split]
