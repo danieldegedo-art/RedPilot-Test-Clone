@@ -40,8 +40,12 @@ oracle** (confirms an idempotency-replay re-grant through the UNCHANGED gate, wi
 0-FP control), developed against the DEV replay miss only — then lifts cold sealed-TEST **0.80 → 0.90
 (9/10)** at **0 FP**, **exceeding** the grey-box ceiling. The single remaining miss (`gb_bola_object`)
 has a demonstrated reason — a cross-subject object oracle needs a gate extension the no-change-to-gate
-rule forbids this increment (not RoE-barred, not cold-unreachable). See **§OPERATION COLD CROWN** and
-**§COLD CROWN — PHASE 2** at the end, and `docs/COLD_CROWN_PLAN.md` (committed before measurement).
+rule forbids this increment (not RoE-barred, not cold-unreachable). Finally, an **author-blind
+HOLDOUT** — a corpus authored by a SEPARATE session whose flaw internals this session never read,
+measured exactly once — scored **0.889 (8/9) COLD at 0 FP** (including the replay flaw via capability
+C), the honest zero-both-sides-bias generalisation number. See **§OPERATION COLD CROWN**,
+**§COLD CROWN — PHASE 2**, and **§COLD CROWN — AUTHOR-BLIND HOLDOUT** at the end, and
+`docs/COLD_CROWN_PLAN.md` (committed before measurement).
 
 ---
 
@@ -793,6 +797,44 @@ MECHANISM (a cold engine can reconstruct a hardened surface by authorized use an
 exceed the grey-box ceiling) is **high**; confidence in the specific 0.90 is **medium** (10-instance
 TEST, reconstructions not original code, loopback not a live PSP, author-blind HOLDOUT not yet measured).
 
+## COLD CROWN — AUTHOR-BLIND HOLDOUT (the headline generalisation result)
+
+A **separate Claude session** (`session_01SmF3DQKjiKVeNWM459M63d`, branch
+`claude/redpilot-coldcrown-holdout`) authored a FRESH hardened-cold corpus — its OWN target
+implementations of the proven advisory mechanisms, its OWN flipped checks, glue-route shapes and
+per-seed anonymisation (seeds 701–709 + a 720 ceiling). The engine-author session **never inspected
+the flaw-defining source** (`hd_*.py`); it read only the manifest metadata (family/seed/scope) and
+let the BLIND runner import the targets. All tuning was frozen first (capabilities A + C committed);
+the HOLDOUT was measured **exactly once**, COLD. The runner **independently** recomputed each
+target's dual-oracle validity.
+
+| Set | Posture | Engine | Recall (critical class) | Precision | FP | Internal hits | Ceiling | Cold-floor | Dual-oracle |
+|---|---|---|---|---|---|---|---|---|---|
+| **author-blind HOLDOUT** | **COLD (domain only)** | cold discovery + replay | **0.889 (8/9)** | 1.0 | **0** | **0** | 1/1 | PASS | all 9 valid |
+
+Raw: `results/cold_holdout_authorblind.json`. Found (8/9): `hd_hold_settle`×2 (async-settle, PBB-U),
+`hd_key_reuse` (idempotency replay, **PBB-C** — capability C generalised to a target the engine author
+never saw), `hd_ref_trust` (federated reference-trust), `hd_claim_unlock` (claim behind step-up),
+`hd_legacy_path` (deprecated/shadow route), `hd_prop_write`×2 (mass-assignment). Ceiling
+`hd_webhook_ceiling` correctly abstained (1/1). **0 false positives on every patched twin.**
+
+**The one miss, classified honestly from the engine's OWN telemetry (no target source read):**
+`hd_phase_jump`#703 (a state-skip variant). The cold reconstruction **succeeded** (`cold_discovery`
+report: `stage=ok`, plan order inferred, all 3 features classified, 7 glue candidate ops) — so this is
+**not** a discovery, RoE, or cold-reachability failure. The grey-box state-skip sequencing (which
+found `h_state_skip` on DEV #403 and sealed TEST #503) did **not** fire its terminal-state confirmation
+on this particular author-blind state-skip implementation — a **confirmation-generalisation gap** in
+the state-skip probe's vocabulary/field-shape coverage, on a flaw implementation authored by a
+different session. Not tuned to (the HOLDOUT is measured once, and the probe is frozen); named, not hidden.
+
+**Why this is the strongest evidence in the scorecard.** The targets were authored by a process that
+never saw the engine, and the engine author never saw the targets' flaw internals — the shared-author
+bias the whole corpus exists to kill is removed on **both** sides. Handed only a domain, on 9 flaw
+implementations it had never encountered, the cold engine reconstructs the hardened surface by
+authorized use and finds **8/9 at 0 FP**, including the replay flaw. The author-blind **0.889** sits
+just below the sealed-TEST **0.90** — the honest, expected small drop when a different author writes
+the flaws — and the single gap is a named, demonstrated probe-coverage limit, not a barrier.
+
 ## Status (COLD CROWN)
 
 - **Phase 1 COMPLETE and FROZEN:** cold-floor gate (fail-closed, stricter than the four-rule floor)
@@ -808,8 +850,13 @@ TEST, reconstructions not original code, loopback not a live PSP, author-blind H
   control: a correctly-idempotent op returns the cached result on replay). Cold now **exceeds** the
   frozen grey-box 0.80. The **proven ceiling is complete**: the one remaining miss (`gb_bola_object`)
   has a demonstrated reason — capability **D** needs a gate extension the no-change-to-gate rule forbids.
+- **Author-blind HOLDOUT COMPLETE:** a separate session authored a fresh cold corpus (9 in_scope + 1
+  ceiling) this session never inspected; measured once, COLD → **0.889 (8/9) at 0 FP**, 0 internal
+  hits, ceiling abstained 1/1, cold-floor PASS, all 9 dual-oracle valid. Capability C generalised to a
+  blind target. The one miss (`hd_phase_jump`) is a named state-skip confirmation-generalisation gap
+  (surface reconstructed `stage=ok`), not a barrier.
 - **Named next (honest, not blocking):** capability **D** (a cross-subject object-access oracle, which
-  requires a new gate mode — out of scope for the no-change-to-gate rule this increment); the
-  **author-blind HOLDOUT** (a separate session authors cold targets this session never inspects,
-  measured once); corpus **breadth** via new real advisories (needs advisory-network access); and a
-  **live provider-test-mode socket**.
+  requires a new gate mode — out of scope for the no-change-to-gate rule this increment); widening the
+  **state-skip probe's** terminal-state vocabulary/field-shape coverage (the one author-blind miss);
+  corpus **breadth** via new real advisories (needs advisory-network access); and a **live
+  provider-test-mode socket**.

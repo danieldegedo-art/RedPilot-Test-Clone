@@ -1,0 +1,641 @@
+{
+  "records": [
+    {
+      "family": "hd_hold_settle",
+      "seed": 701,
+      "split": "test",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-v4g2-cm5v-cxv7",
+      "class": "PBB-U (access without payment; non-settled state treated as paid)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 1522,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 14,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/northwind4/v2/purchase",
+        "features": {
+          "/northwind4/v2/download": [
+            "basic",
+            "export_id",
+            false
+          ],
+          "/northwind4/v2/full-dump": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/northwind4/v2/units/consume": [
+            "basic",
+            "credit_used",
+            true
+          ]
+        },
+        "glue_ops": 6,
+        "signup": "/northwind4/v2/enroll",
+        "pay": "/northwind4/v2/capture/{id}",
+        "return": "/northwind4/v2/complete"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "hd_key_reuse",
+      "seed": 702,
+      "split": "test",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-8mhj-rffc-rcvw / CVE-2026-34210",
+      "class": "PBB-U / PBB-C (replay / over-limit re-grant)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-C"
+      ],
+      "engine_calls": 1446,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 14,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/initech8/v2/purchase",
+        "features": {
+          "/initech8/v2/advanced-analytics": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/initech8/v2/report": [
+            "basic",
+            "export_id",
+            false
+          ],
+          "/initech8/v2/tokens/spend": [
+            "basic",
+            "credit_used",
+            true
+          ]
+        },
+        "glue_ops": 6,
+        "signup": "/initech8/v2/enroll",
+        "pay": "/initech8/v2/confirm-pay/{id}",
+        "return": "/initech8/v2/done"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "hd_phase_jump",
+      "seed": 703,
+      "split": "test",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-qwqm-3jx5-rr8m",
+      "class": "PBB-U (state-machine skip to entitled)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [],
+      "engine_calls": 1762,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 15,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/vandelay6/v2/cart/submit",
+        "features": {
+          "/vandelay6/v2/credits/use": [
+            "basic",
+            "credit_used",
+            true
+          ],
+          "/vandelay6/v2/export": [
+            "basic",
+            "export_id",
+            false
+          ],
+          "/vandelay6/v2/priority-run": [
+            "pro",
+            "report_id",
+            false
+          ]
+        },
+        "glue_ops": 7,
+        "signup": "/vandelay6/v2/register",
+        "pay": "/vandelay6/v2/capture/{id}",
+        "return": "/vandelay6/v2/finish"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "FN",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "hd_ref_trust",
+      "seed": 704,
+      "split": "test",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-7wwh-c3v9-fc55",
+      "class": "PBB-U (federated/cross-service confirm skipped)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 1771,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 15,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/northwind6/v3/cart/submit",
+        "features": {
+          "/northwind6/v3/credits/use": [
+            "basic",
+            "credit_used",
+            true
+          ],
+          "/northwind6/v3/download": [
+            "basic",
+            "export_id",
+            false
+          ],
+          "/northwind6/v3/enterprise-report": [
+            "pro",
+            "report_id",
+            false
+          ]
+        },
+        "glue_ops": 7,
+        "signup": "/northwind6/v3/register",
+        "pay": "/northwind6/v3/confirm-pay/{id}",
+        "return": "/northwind6/v3/done"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "hd_claim_unlock",
+      "seed": 705,
+      "split": "test",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-jg6q-3qfh-r9f8 (+ Ghost GHSA-xm43-3m56-w3wf)",
+      "class": "PBB-U (alternate-flow / claim grant)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 1429,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 15,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/wonka8/v2/charge/new",
+        "features": {
+          "/wonka8/v2/advanced-analytics": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/wonka8/v2/sync": [
+            "basic",
+            "export_id",
+            false
+          ],
+          "/wonka8/v2/units/consume": [
+            "basic",
+            "credit_used",
+            true
+          ]
+        },
+        "glue_ops": 7,
+        "signup": "/wonka8/v2/enroll",
+        "pay": "/wonka8/v2/process/{id}",
+        "return": "/wonka8/v2/return"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "hd_prop_write",
+      "seed": 706,
+      "split": "test",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-5448-v74m-7mv7",
+      "class": "BOPLA / mass-assignment (forbidden property write == access without payment)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 310,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 15,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/vandelay7/v3/purchase",
+        "features": {
+          "/vandelay7/v3/priority-run": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/vandelay7/v3/sync": [
+            "basic",
+            "export_id",
+            false
+          ],
+          "/vandelay7/v3/tokens/spend": [
+            "basic",
+            "credit_used",
+            true
+          ]
+        },
+        "glue_ops": 7,
+        "signup": "/vandelay7/v3/signup",
+        "pay": "/vandelay7/v3/sandbox-pay/{id}",
+        "return": "/vandelay7/v3/done"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "hd_legacy_path",
+      "seed": 707,
+      "split": "test",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-9jr7-2hgp-vhp8",
+      "class": "improper inventory / shadow API (forbidden access == access without payment)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 1780,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 15,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/initech3/v1/purchase",
+        "features": {
+          "/initech3/v1/api/call": [
+            "basic",
+            "credit_used",
+            true
+          ],
+          "/initech3/v1/bulk-export": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/initech3/v1/sync": [
+            "basic",
+            "export_id",
+            false
+          ]
+        },
+        "glue_ops": 7,
+        "signup": "/initech3/v1/signup",
+        "pay": "/initech3/v1/capture/{id}",
+        "return": "/initech3/v1/return"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "hd_hold_settle",
+      "seed": 708,
+      "split": "test",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-v4g2-cm5v-cxv7",
+      "class": "PBB-U (access without payment; non-settled state treated as paid)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 1376,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 14,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/umbrella2/v2/charge/new",
+        "features": {
+          "/umbrella2/v2/bulk-export": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/umbrella2/v2/query": [
+            "basic",
+            "export_id",
+            false
+          ],
+          "/umbrella2/v2/units/consume": [
+            "basic",
+            "credit_used",
+            true
+          ]
+        },
+        "glue_ops": 6,
+        "signup": "/umbrella2/v2/register",
+        "pay": "/umbrella2/v2/confirm-pay/{id}",
+        "return": "/umbrella2/v2/done"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "hd_prop_write",
+      "seed": 709,
+      "split": "test",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-5448-v74m-7mv7",
+      "class": "BOPLA / mass-assignment (forbidden property write == access without payment)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 370,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 15,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/umbrella7/v2/checkout",
+        "features": {
+          "/umbrella7/v2/export": [
+            "basic",
+            "export_id",
+            false
+          ],
+          "/umbrella7/v2/full-dump": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/umbrella7/v2/jobs/run": [
+            "basic",
+            "credit_used",
+            true
+          ]
+        },
+        "glue_ops": 7,
+        "signup": "/umbrella7/v2/register",
+        "pay": "/umbrella7/v2/confirm-pay/{id}",
+        "return": "/umbrella7/v2/done"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "hd_webhook_ceiling",
+      "seed": 720,
+      "split": "test",
+      "scope": "ceiling",
+      "cold": true,
+      "advisory": "GHSA-xff3-5c9p-2mr4 / CVE-2026-41432",
+      "class": "CEILING: provider-event authenticity (out of RoE: signature forgery)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [],
+      "engine_calls": 1,
+      "cold_discovery": {
+        "stage": "no_catalog"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "CEILING_ABSTAIN(correct)",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    }
+  ],
+  "aggregate": {
+    "test": {
+      "split": "test",
+      "in_scope_positives": 9,
+      "true_positives": 8,
+      "false_negatives": 1,
+      "recall": 0.8889,
+      "negatives": 10,
+      "false_positives": 0,
+      "true_negatives": 10,
+      "precision": 1.0,
+      "false_positive_rate": 0.0,
+      "ceiling_instances": 1,
+      "ceiling_abstained": 1,
+      "internal_route_hits_total": 0,
+      "dual_oracle_invalid": []
+    }
+  }
+}
