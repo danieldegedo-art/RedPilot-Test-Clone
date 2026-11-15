@@ -181,7 +181,22 @@ class PaymentIntegrityModule(BaseTestModule):
         admission_order: list[str] = []
         artifact_stamps: dict = {}
         try:
-            engine = PureBlackBoxEngine(http, brief, base_url=self.context.base_url, prioritizer=prioritizer)
+            engine = PureBlackBoxEngine(
+                http, brief, base_url=self.context.base_url, prioritizer=prioritizer,
+                enable_channel_probe=True, enable_chain_probe=True, find_fast=False,
+                enable_race_probe=True, race_burst=24,
+                enable_convergence_probe=True, convergence_use_schema=True, convergence_concurrent=True,
+                enable_fabric_probe=True, fabric_use_dag=True, fabric_use_race=True,
+                fabric_multi_candidate=True, fabric_fresh_challenge=True,
+                enable_reconciliation_probe=True, recon_use_lifecycle=True,
+                recon_use_overlay=True, recon_use_sequence=True,
+                enable_federation=True, fed_use_discovery=True, fed_use_token_re=True,
+                fed_use_trust_graph=True, fed_use_orchestration=True,
+                fed_use_analogy=True, fed_use_infogain=True,
+                enable_behavior_probe=True, enable_greybox_probe=True,
+                enable_cold_discovery=True, enable_replay_probe=True,
+                enable_crosssubject_probe=True,
+            )
             outcome = await engine.run()
             observations = list(engine.oracle.observations)
             admission_order = list(engine.ledger.accepted)  # dicts keep insertion order: the ledger's own admission order
