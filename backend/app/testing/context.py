@@ -57,7 +57,7 @@ class RunSettings:
     # instead of the static EXPERIMENT_ORDER. Off by default -- the static order
     # is the one this platform's regression history is built on; see
     # modules/payment_integrity.py for where this is actually read.
-    prioritize_experiments: bool = False
+    prioritize_experiments: bool = True
     # (method, path) pairs a human has explicitly registered via Settings ->
     # Manual Routes. ReconModule merges these into the FunctionMap it builds
     # (as high-confidence "manual-override" entries) BEFORE role_based_access

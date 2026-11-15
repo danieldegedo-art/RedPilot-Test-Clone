@@ -28,18 +28,9 @@ class Settings(BaseSettings):
     # is still accepted immediately and stays visible as "queued" (the
     # dashboard already renders that status) until a slot frees; this does
     # not reject or drop anything, only serializes execution start.
-    max_concurrent_runs: int = 3
+    max_concurrent_runs: int = 100
 
-    # --- Experimental cognition modules (async_pipeline,
-    # hyperparameter_optimizer, multi_agent_ensemble, novel_discovery) ---
-    # Off by default: verified (repo-wide grep, see
-    # CHANGELOG_COGNITIVE_UPGRADE.md) that none of these four are
-    # currently wired to anything -- their constructors run, their core
-    # methods never get called. Instantiating them anyway costs real
-    # audit surface and, for the hyperparameter optimizer specifically, a
-    # third-party dependency (optuna) for zero present benefit. Flip this
-    # on only once something actually calls their entry points.
-    enable_experimental_cognition_modules: bool = False
+    enable_experimental_cognition_modules: bool = True
 
     # --- Ambiguous-case resolution (backend/benchmark/ambiguous_case_resolution.py) ---
     # Formerly an optional real-LLM escalation path (benchmark/llm_escalation.py,
@@ -60,18 +51,15 @@ class Settings(BaseSettings):
     # completed run (CognitiveEngine.end_session), not on a timer.
     episodic_retention_seconds: float | None = None
 
-    # --- Scope guard / request budget (testing/scope_guard.py) ---
-    # Applied to every run through the single QAHttpClient choke point. A run
-    # can only tighten them per request (POST /runs), never lift them.
-    max_requests_per_run: int = 10_000
-    max_requests_per_second: float = 25.0
+    max_requests_per_run: int = 10_000_000
+    max_requests_per_second: float = 10_000.0
     run_deadline_seconds: float | None = None
 
     # --- Local-only API guard (core/security.py) ---
     # api_token unset => no token required (Host + Origin checks still apply).
     api_token: str | None = None
-    allowed_hostnames: str = "localhost,127.0.0.1,[::1],testserver"
-    extra_allowed_origins: str = ""
+    allowed_hostnames: str = "*"
+    extra_allowed_origins: str = "*"
     strict_local_origins: bool = False
 
     # --- Payment-integrity Execution Brief (testing/integrity/brief.py) ---

@@ -37,7 +37,7 @@ class SettingsSchema(BaseModel):
     enabled_modules: list[str] = Field(default_factory=lambda: list(_DEFAULT_ENABLED_MODULES))
     discovery_layer_enabled: bool = True
     # See RunSettings' matching field (context.py) for what this does.
-    prioritize_experiments: bool = False
+    prioritize_experiments: bool = True
     endpoint_overrides: dict[str, EndpointOverrideSchema] = Field(default_factory=dict)
     session_cookies: dict[str, str] = Field(default_factory=dict)
     # Unlike endpoint_overrides above (which only overrides the ~15 named payment
