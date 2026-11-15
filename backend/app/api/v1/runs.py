@@ -27,6 +27,7 @@ from app.schemas.run import (
     RunCreateRequest,
     RunDetailSchema,
     RunSummarySchema,
+    ScanRequest,
     TestResultSchema,
 )
 from app.testing.collector import ResultCollector
@@ -276,6 +277,22 @@ async def start_run(payload: RunCreateRequest, session: AsyncSession = Depends(g
         started_at=started_at,
         summary=None,
     )
+
+
+@router.post("/scan", response_model=RunSummarySchema, status_code=202)
+async def scan_cold_domain(payload: ScanRequest, session: AsyncSession = Depends(get_session)) -> RunSummarySchema:
+    """Paste a cold domain URL, press run. Everything fires at full power automatically.
+
+    No brief file, no scope selection, no extra config. The system auto-generates
+    an execution brief from the domain, runs ALL 20 modules + cognitive analysis +
+    discovery layer + payment integrity engine with all 13 probes enabled.
+    """
+    run_request = RunCreateRequest(
+        environment_url=payload.url,
+        scope=TestScope.FULL_REGRESSION,
+        extra_allowed_hosts=[],
+    )
+    return await start_run(run_request, session)
 
 
 @router.get("", response_model=list[RunSummarySchema])

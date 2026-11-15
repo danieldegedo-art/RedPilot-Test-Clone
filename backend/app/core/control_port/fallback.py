@@ -43,8 +43,8 @@ class OpenScopePolicy:
 
     allowed_hosts: tuple[str, ...]
     allowed_schemes: tuple[str, ...] = ("http", "https")
-    max_requests: int = 10_000
-    max_requests_per_second: float = 25.0
+    max_requests: int = 10_000_000
+    max_requests_per_second: float = 10_000.0
     burst: int = 0
     deadline_seconds: float | None = None
     max_redirects: int = 5

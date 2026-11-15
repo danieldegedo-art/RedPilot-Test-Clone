@@ -10,9 +10,14 @@ from app.testing.enums import ResultStatus, RunStatus, TestCategory, TestScope
 from app.testing.schema_version import SCHEMA_VERSION
 
 
+class ScanRequest(BaseModel):
+    """TEST CLONE: dead-simple cold-domain input. Paste a URL, press run."""
+    url: HttpUrl
+
+
 class RunCreateRequest(BaseModel):
     environment_url: HttpUrl
-    scope: TestScope = TestScope.STANDARD
+    scope: TestScope = TestScope.FULL_REGRESSION
     # Additional hosts this run is authorised to call beyond environment_url's
     # own host (e.g. a separate checkout/API subdomain the flow redirects
     # through). The environment_url host is ALWAYS in scope; this only adds
