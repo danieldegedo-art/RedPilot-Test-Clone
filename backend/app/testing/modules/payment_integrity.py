@@ -557,6 +557,13 @@ class PaymentIntegrityModule(BaseTestModule):
                 enable_crosssubject_probe=True,
                 enable_signature_bypass=True, enable_auth_bypass=True,
                 enable_ratelimit_bypass=True, enable_id_guessing=True,
+                enable_digital_twin=True, enable_credential_harvest=True,
+                enable_ad_attack_path=True, enable_c2_channel=True,
+                enable_cloud_iam_escalation=True, enable_rbac_escape=True,
+                enable_bypass_weaponization=True, enable_reverse_engineering=True,
+                enable_zero_day_discovery=True, enable_exploit_synthesis=True,
+                enable_edr_bypass=True, enable_dynamic_evasion=True,
+                enable_e2e_chain=True,
             )
             outcome = await engine.run()
             observations = list(engine.oracle.observations)

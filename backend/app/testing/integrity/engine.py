@@ -54,6 +54,19 @@ TITLES = {
     "PBB-AUTH": "Authenticated endpoints must reject absent, empty, malformed, and expired bearer tokens",
     "PBB-RATE": "Server-side rate limits must not be bypassable by client-side evasion (header spoofing, identity rotation)",
     "PBB-IDOR": "Object references must not be guessable or enumerable (sequential, predictable, or nearby IDs)",
+    "PBB-TWIN": "Target responses must be deterministic and reproducible (digital twin fidelity profiling)",
+    "PBB-CRED": "No response, error, or public path may expose credentials, API keys, tokens, or secrets",
+    "PBB-ADPATH": "Active Directory and LDAP endpoints must not be externally accessible or injectable",
+    "PBB-C2": "No endpoint may provide a viable command-and-control channel (SSRF, WebSocket, callback, exfil)",
+    "PBB-IAM": "Cloud IAM metadata and role tokens must not be accessible through the application layer",
+    "PBB-RBAC": "Role boundaries must hold: no cross-role access via parameter manipulation or path traversal",
+    "PBB-BPWPN": "Defensive controls must not be bypassable via encoding, protocol tricks, or known patterns",
+    "PBB-REVENG": "Client-side code must not expose hidden endpoints, hardcoded secrets, or undocumented operations",
+    "PBB-ZDAY": "Application inputs must safely handle all mutation strategies without crash or disclosure",
+    "PBB-XPLOIT": "Individual low-severity findings must not chain into high-severity exploits",
+    "PBB-EDRBP": "Security controls must detect payloads regardless of encoding, timing, or delivery variation",
+    "PBB-EVADE": "Adaptive defenses must maintain detection effectiveness under behavioral variation",
+    "PBB-E2E": "No viable end-to-end kill chain from initial access through escalation to crown-jewel compromise",
 }
 # ZR-019: per-hypothesis-class remediation, keyed off exactly what each experiment
 # demonstrably tests (TITLES above) -- not generic boilerplate, and not fabricated
@@ -74,6 +87,19 @@ RECOMMENDED_FIX: dict[str, str] = {
     "PBB-AUTH": "Validate bearer tokens on every protected request: reject absent Authorization headers, reject empty or malformed tokens, verify token expiry and integrity server-side, and never fall through to an unauthenticated code path on token parse failure.",
     "PBB-RATE": "Enforce rate limits server-side by authenticated identity and by resource, not by client IP or header alone: ignore X-Forwarded-For / X-Real-IP from untrusted sources, bind quotas to the verified identity, and enforce a global resource cap independent of per-identity quotas.",
     "PBB-IDOR": "Use opaque, non-sequential, high-entropy references (e.g. UUIDv4) for all object identifiers; enforce ownership checks on every access regardless of whether the reference is guessable; never rely on reference obscurity as the sole access control.",
+    "PBB-TWIN": "Ensure all API responses are deterministic for identical inputs; eliminate environment-dependent response variations that could be used to profile or clone the application's behavior for offline attack simulation.",
+    "PBB-CRED": "Audit all error handlers, debug endpoints, and configuration paths to ensure no credentials, API keys, tokens, or connection strings are included in any response; use secret scanning in CI/CD; remove or restrict debug/config endpoints in production.",
+    "PBB-ADPATH": "Never expose AD/LDAP endpoints to the public internet; parameterize all LDAP queries to prevent injection; suppress domain topology details in error messages; disable NTLM/Negotiate authentication on public-facing endpoints.",
+    "PBB-C2": "Block SSRF by validating all URL parameters against an allowlist of external hosts; restrict WebSocket upgrade to designated endpoints only; implement egress filtering to prevent outbound callbacks; disable chunked transfer abuse patterns.",
+    "PBB-IAM": "Block SSRF to cloud metadata endpoints (169.254.169.254); never expose IAM role tokens in application responses; use instance metadata service v2 (IMDSv2) with hop limit 1; apply least-privilege IAM policies to application service roles.",
+    "PBB-RBAC": "Enforce authorization checks at the controller/handler level for every endpoint, not just at the routing layer; reject role/permission parameter manipulation server-side; apply consistent authorization regardless of HTTP method; audit all admin endpoints for direct-access bypass.",
+    "PBB-BPWPN": "Decode and normalize all inputs before applying security rules (decode-then-validate, not validate-then-decode); reject requests with double-encoding or path traversal sequences; ignore X-HTTP-Method-Override from untrusted sources; enforce content-type consistency.",
+    "PBB-REVENG": "Remove source maps from production builds; avoid hardcoding API keys or tokens in client-side code; use environment variables injected at build time; minimize exposed API surface in client bundles; implement server-side authorization for all discovered endpoints regardless of discoverability.",
+    "PBB-ZDAY": "Implement strict input validation with allow-lists (type, length, range, pattern) at every endpoint; use parameterized queries and typed deserialization; handle all parser errors gracefully with generic error responses that disclose no internal state.",
+    "PBB-XPLOIT": "Treat the combination of findings as a compound vulnerability: fix each individual finding and verify that fixing any single link in the chain breaks the overall exploit path; implement defense in depth so no single finding enables escalation even if other controls are bypassed.",
+    "PBB-EDRBP": "Apply security rules after full decoding/normalization of the payload; use multiple detection layers (signature + behavioral + ML) so encoding evasion alone cannot bypass all layers; implement request integrity checks that detect fragmentation and reassembly attacks.",
+    "PBB-EVADE": "Implement detection that is identity-bound (tied to authenticated session, not client-observable indicators like IP or User-Agent); use behavioral anomaly detection that adapts to new patterns; rate-limit and challenge suspicious sessions regardless of header variation.",
+    "PBB-E2E": "Implement defense in depth with independent controls at each stage of the kill chain; ensure credential exposure cannot lead to infrastructure access, infrastructure access cannot escalate to cloud privileges, and cloud privileges cannot reach application data without additional authorization.",
 }
 # ZR-019 affected_flow: the FLOW FAMILY (fsm_compiler.FLOW_TYPES -- ZR-001's list) each
 # experiment exercises, fixed by what the experiment tests (TITLES above), not by anything
@@ -97,6 +123,19 @@ FLOW_BY_HYPOTHESIS: dict[str, str] = {
     "PBB-AUTH": "entitlement", # auth bypass on protected feature endpoints
     "PBB-RATE": "entitlement", # rate-limit bypass on quota-enforced endpoints
     "PBB-IDOR": "entitlement", # ID guessing on object-reference endpoints
+    "PBB-TWIN": "entitlement",   # environment profiling for twin fidelity
+    "PBB-CRED": "entitlement",   # credential exposure in responses/paths
+    "PBB-ADPATH": "entitlement", # AD/LDAP infrastructure exposure
+    "PBB-C2": "entitlement",     # C2 channel viability on endpoints
+    "PBB-IAM": "entitlement",    # cloud IAM metadata escalation
+    "PBB-RBAC": "entitlement",   # RBAC escape via parameter manipulation
+    "PBB-BPWPN": "payment",      # bypass defensive controls
+    "PBB-REVENG": "entitlement", # client-side reverse engineering
+    "PBB-ZDAY": "payment",       # input fuzzing for zero-days
+    "PBB-XPLOIT": "entitlement", # exploit chain synthesis
+    "PBB-EDRBP": "entitlement",  # EDR/detection bypass
+    "PBB-EVADE": "entitlement",  # adaptive evasion
+    "PBB-E2E": "entitlement",    # full kill chain
 }
 def _apply_prioritizer(wanted: list[str], prioritizer: PrioritizerFn | None) -> list[str]:
     """ZR-003/ZR-012: let an injected prioritizer choose the ORDER of the experiments
@@ -233,6 +272,19 @@ class PureBlackBoxEngine:
                  enable_auth_bypass: bool = True,
                  enable_ratelimit_bypass: bool = True,
                  enable_id_guessing: bool = True,
+                 enable_digital_twin: bool = True,
+                 enable_credential_harvest: bool = True,
+                 enable_ad_attack_path: bool = True,
+                 enable_c2_channel: bool = True,
+                 enable_cloud_iam_escalation: bool = True,
+                 enable_rbac_escape: bool = True,
+                 enable_bypass_weaponization: bool = True,
+                 enable_reverse_engineering: bool = True,
+                 enable_zero_day_discovery: bool = True,
+                 enable_exploit_synthesis: bool = True,
+                 enable_edr_bypass: bool = True,
+                 enable_dynamic_evasion: bool = True,
+                 enable_e2e_chain: bool = True,
                  disabled_agents: frozenset[str] = frozenset()) -> None:
         self._prioritizer = prioritizer  # ZR-003/ZR-012: None keeps the static EXPERIMENT_ORDER, exactly as before
         # B45 recon-breadth + B46 chain-composition: FAIL-CLOSED. Off unless an authorised caller enables them; when off, the probes are no-ops and behaviour is identical to before.
@@ -400,6 +452,19 @@ class PureBlackBoxEngine:
         self._enable_auth_bypass = enable_auth_bypass
         self._enable_ratelimit_bypass = enable_ratelimit_bypass
         self._enable_id_guessing = enable_id_guessing
+        self._enable_digital_twin = enable_digital_twin
+        self._enable_credential_harvest = enable_credential_harvest
+        self._enable_ad_attack_path = enable_ad_attack_path
+        self._enable_c2_channel = enable_c2_channel
+        self._enable_cloud_iam_escalation = enable_cloud_iam_escalation
+        self._enable_rbac_escape = enable_rbac_escape
+        self._enable_bypass_weaponization = enable_bypass_weaponization
+        self._enable_reverse_engineering = enable_reverse_engineering
+        self._enable_zero_day_discovery = enable_zero_day_discovery
+        self._enable_exploit_synthesis = enable_exploit_synthesis
+        self._enable_edr_bypass = enable_edr_bypass
+        self._enable_dynamic_evasion = enable_dynamic_evasion
+        self._enable_e2e_chain = enable_e2e_chain
         self._base_url = base_url
         self._cold_discovery_report: dict[str, Any] | None = None
         # B47 find-fast: opt-in triage mode -- stop after the first CONFIRMED_P0 (fewer calls). OFF by default, so a full assessment still runs every class and nothing changes.
