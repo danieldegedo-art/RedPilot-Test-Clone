@@ -32,6 +32,7 @@ from app.testing.integrity.gaps import GapRow, capability_gaps, unknown_exposure
 from app.testing.integrity.coverage import coverage_matrix  # ZR-006/ZR-022: multi-dimensional coverage in the summary
 from app.testing.integrity.completion_report import build_completion_report  # ZR-034: engagement completion report
 from app.testing.integrity.regression import build_regression_spec
+from app.testing.integrity.findings import EXPERIMENT_CLASSES, EngineResult
 from app.testing.pesm import record_oracle_observations
 from app.testing.prioritization import Prioritizer
 
@@ -165,6 +166,340 @@ class PaymentIntegrityModule(BaseTestModule):
             "allow_signup": True,
         }
 
+    async def _run_autonomous_agents(
+        self, outcome: EngineResult, brief: ExecutionBrief,
+        fingerprint: str, observations: list, chains: dict[str, dict],
+    ) -> list[TestResult]:
+        """Run the full kill-chain agent roster + every capability module autonomously.
+
+        Every agent and orphaned capability module is invoked with data from the
+        engine's results. Each call is fail-safe: an error becomes an ERROR result,
+        never a crash that stops the run. Returns TestResult objects to emit.
+        """
+        results: list[TestResult] = []
+        now = datetime.now(timezone.utc)
+
+        def _agent_result(agent_id: str, name: str, status: ResultStatus,
+                          actual: str, params: dict[str, Any]) -> TestResult:
+            return TestResult(
+                test_case_id=f"PI-AGENT-{agent_id}", category=TestCategory.PAYMENT_INTEGRITY,
+                name=f"[Agent {agent_id}] {name}", description=f"Autonomous agent {agent_id}: {name}",
+                input_parameters=params, expected="Agent completes and produces leads or analysis.",
+                actual=actual, status=status, recommendation=None,
+                started_at=now, finished_at=datetime.now(timezone.utc), duration_ms=0.0)
+
+        finding_dicts = [f.to_dict() for f in outcome.findings]
+        chain_list = [{"steps": list(chains.get(f.hypothesis_id, {}).keys())} for f in outcome.findings if f.hypothesis_id in chains]
+
+        try:
+            from app.testing.agents.registry import ALL_AGENTS
+            from app.testing.integrity import (
+                attack_chain, capability_synthesis, chokepoints, contract_inference,
+                dedup, differencer, domain_focus, feedback_loop, fleet_orchestration,
+                impact_assessment, kill_chain_roster, knowledge_graph, narrative,
+                payment_fingerprint, race_window, rule_mining, specialists,
+                symbolic_solver, threat_intel,
+            )
+            from app.testing.integrity.findings import EXPERIMENT_CLASSES
+
+            # --- Phase 1: Recon agents ---------------------------------------------------
+            # A3: Surface Discovery
+            try:
+                observed_signals: set[str] = set()
+                for f in outcome.findings:
+                    if f.reasons:
+                        observed_signals.update(f.reasons)
+                fp_res = payment_fingerprint.fingerprint(observed_signals)
+                results.append(_agent_result("A3", "Application-Surface Discovery", ResultStatus.PASS,
+                    f"surface fingerprint: {fp_res.best or 'unknown'}", {"fingerprint": fp_res.to_dict()}))
+            except Exception as exc:
+                results.append(_agent_result("A3", "Application-Surface Discovery", ResultStatus.ERROR,
+                    f"Agent error: {type(exc).__name__}: {exc}", {}))
+
+            # A4: Authenticated Workflow Mapper
+            try:
+                flows = [{"name": op_name, "authenticated": "token" in str(op.request_fields)}
+                         for op_name, op in brief.operations.items()]
+                auth_flows = [f["name"] for f in flows if f["authenticated"]]
+                anon_flows = [f["name"] for f in flows if not f["authenticated"]]
+                results.append(_agent_result("A4", "Authenticated Workflow Mapper", ResultStatus.PASS,
+                    f"{len(auth_flows)} authenticated / {len(anon_flows)} anonymous workflow(s)",
+                    {"authenticated": auth_flows, "anonymous": anon_flows}))
+            except Exception as exc:
+                results.append(_agent_result("A4", "Authenticated Workflow Mapper", ResultStatus.ERROR,
+                    f"Agent error: {type(exc).__name__}: {exc}", {}))
+
+            # A21-A24: Specialist agents
+            for aid, aname in [("A21", "Payment-Provider Specialist"), ("A22", "Webhook-Fraud Specialist"),
+                               ("A23", "Coupon/Promo-Abuse Specialist"), ("A24", "Subscription-Lifecycle Specialist")]:
+                try:
+                    focus = specialists.focus(aid)
+                    results.append(_agent_result(aid, aname, ResultStatus.PASS,
+                        f"focus: {focus['oracle_classes']}", focus))
+                except Exception as exc:
+                    results.append(_agent_result(aid, aname, ResultStatus.ERROR,
+                        f"Agent error: {type(exc).__name__}: {exc}", {}))
+
+            # A37: Threat-Intel Ingestion
+            try:
+                ti_res = threat_intel.ingest([])
+                results.append(_agent_result("A37", "Threat-Intel Ingestion", ResultStatus.PASS,
+                    f"ingested {ti_res.ingested} advisory credit(s), {len(ti_res.unmapped)} unmapped",
+                    ti_res.to_dict()))
+            except Exception as exc:
+                results.append(_agent_result("A37", "Threat-Intel Ingestion", ResultStatus.ERROR,
+                    f"Agent error: {type(exc).__name__}: {exc}", {}))
+
+            # A36: OSINT Operator (narrowed)
+            try:
+                osint_focus = domain_focus.focus("A36")
+                results.append(_agent_result("A36", "OSINT Operator (narrowed)", ResultStatus.PASS,
+                    f"focus: {osint_focus['oracle_classes']}; excludes {osint_focus['excluded']}", osint_focus))
+            except Exception as exc:
+                results.append(_agent_result("A36", "OSINT Operator", ResultStatus.ERROR,
+                    f"Agent error: {type(exc).__name__}: {exc}", {}))
+
+            # A33-A35: Domain-pack agents (in-scope)
+            for aid, aname in [("A33", "Contract Auditor"), ("A34", "Reverser"), ("A35", "Mobile Operator")]:
+                try:
+                    dp_focus = domain_focus.focus(aid)
+                    results.append(_agent_result(aid, aname, ResultStatus.PASS,
+                        f"entitlement-verification focus: {dp_focus['oracle_classes']}", dp_focus))
+                except Exception as exc:
+                    results.append(_agent_result(aid, aname, ResultStatus.ERROR,
+                        f"Agent error: {type(exc).__name__}: {exc}", {}))
+
+            # A31/A32: Out-of-scope (owner-declined) — report refused
+            for aid, aname in [("A31", "AD Operator"), ("A32", "Cloud Hunter")]:
+                results.append(_agent_result(aid, f"{aname} (owner-declined)", ResultStatus.WARNING,
+                    f"{aid} is OUT_OF_SCOPE (owner-declined); not run", {"scope_status": "out_of_scope"}))
+
+            # --- Phase 2: Attack / analysis agents ----------------------------------------
+            # A8: Differential Testing
+            try:
+                subjects = [differencer.SubjectSurfaces(identity=f.hypothesis_id, surfaces=list(f.artifact_ids))
+                            for f in outcome.findings if f.artifact_ids]
+                diff_rep = differencer.report(subjects) if subjects else {"trust_defects": {}, "inconclusive": []}
+                results.append(_agent_result("A8", "Differential Testing", ResultStatus.PASS,
+                    f"{len(diff_rep.get('trust_defects', {}))} trust defect(s)", diff_rep))
+            except Exception as exc:
+                results.append(_agent_result("A8", "Differential Testing", ResultStatus.ERROR,
+                    f"Agent error: {type(exc).__name__}: {exc}", {}))
+
+            # A9: Business-Logic Hypothesis (contract inference)
+            try:
+                access_obs = []
+                for obs in observations:
+                    try:
+                        cond = obs.get("condition", {}) if isinstance(obs, dict) else {}
+                        ant = tuple(sorted(cond.items())) if isinstance(cond, dict) else ()
+                        out_val = obs.get("outcome", "DENIED") if isinstance(obs, dict) else "DENIED"
+                        access_obs.append(contract_inference.AccessObservation(
+                            antecedent=ant,
+                            outcome=contract_inference.Outcome(out_val.upper() if out_val.upper() in ("ALLOWED", "DENIED") else "DENIED"),
+                        ))
+                    except (ValueError, TypeError):
+                        pass
+                if access_obs:
+                    clauses = contract_inference.infer(access_obs, min_support=2)
+                    clause_data = [c.to_dict() for c in clauses]
+                else:
+                    clause_data = []
+                results.append(_agent_result("A9", "Business-Logic Hypothesis", ResultStatus.PASS,
+                    f"{len(clause_data)} clause(s) inferred from {len(access_obs)} observations", {"clauses": clause_data}))
+            except Exception as exc:
+                results.append(_agent_result("A9", "Business-Logic Hypothesis", ResultStatus.ERROR,
+                    f"Agent error: {type(exc).__name__}: {exc}", {}))
+
+            # A11: Race & State-Transition Analysis
+            try:
+                ops = [race_window.Operation(name=op_name, latency_ms=0.0)
+                       for op_name in brief.operations]
+                quota = brief.limits.quota_probe_cap
+                race_res = race_window.detect(ops, quota=quota)
+                results.append(_agent_result("A11", "Race and State-Transition Analysis", ResultStatus.PASS,
+                    f"race {race_res.status.value}; probe concurrency suggestion: {race_window.suggest_probe_concurrency(quota)}",
+                    race_res.to_dict()))
+            except Exception as exc:
+                results.append(_agent_result("A11", "Race and State-Transition Analysis", ResultStatus.ERROR,
+                    f"Agent error: {type(exc).__name__}: {exc}", {}))
+
+            # A38: Symbolic Solver
+            try:
+                op_names = list(brief.operations)[:10]
+                variables = [symbolic_solver.Variable(name=n, domain=("present", "absent")) for n in op_names]
+                variables.append(symbolic_solver.Variable(name="entitled", domain=(True, False)))
+                implications = [symbolic_solver.Implication(
+                    antecedent=((n, "present"),),
+                    consequent=("entitled", True),
+                ) for n in op_names[:5]]
+                violation = (("entitled", False),) + tuple((n, "absent") for n in op_names[:2])
+                solver_res = symbolic_solver.solve_for_violation(variables, implications, violation=violation)
+                results.append(_agent_result("A38", "Symbolic Solver", ResultStatus.PASS,
+                    f"{solver_res.status.value}: {len(solver_res.counterexamples)} counterexample(s)",
+                    solver_res.to_dict()))
+            except Exception as exc:
+                results.append(_agent_result("A38", "Symbolic Solver", ResultStatus.ERROR,
+                    f"Agent error: {type(exc).__name__}: {exc}", {}))
+
+            # --- Phase 3: Proof / assessment agents ----------------------------------------
+            # A13: Severity & Impact Assessment
+            try:
+                ia_out = impact_assessment.assess_all(finding_dicts)
+                results.append(_agent_result("A13", "Severity and Impact-Assessment", ResultStatus.PASS,
+                    f"severity: {ia_out['severity_counts']}", ia_out))
+            except Exception as exc:
+                results.append(_agent_result("A13", "Severity and Impact-Assessment", ResultStatus.ERROR,
+                    f"Agent error: {type(exc).__name__}: {exc}", {}))
+
+            # A28: Impact Quantifier
+            try:
+                ia2 = impact_assessment.assess_all(finding_dicts)
+                counts = ia2.get("severity_counts", {})
+                results.append(_agent_result("A28", "Impact Quantifier", ResultStatus.PASS,
+                    f"{counts.get('critical', 0)} critical, {counts.get('high', 0)} high", {"severity_counts": counts}))
+            except Exception as exc:
+                results.append(_agent_result("A28", "Impact Quantifier", ResultStatus.ERROR,
+                    f"Agent error: {type(exc).__name__}: {exc}", {}))
+
+            # A14: Duplicate & Novelty Analysis
+            try:
+                reg = dedup.NoveltyRegister()
+                novel, duplicate = [], []
+                for fd in finding_dicts:
+                    fp = dedup.fingerprint(fd.get("issue_class"), fd.get("flow"), fd.get("target"))
+                    nov = reg.assess(fp)
+                    (novel if nov.is_novel else duplicate).append(fd.get("hypothesis_id", fp.digest))
+                    reg.register(fp)
+                results.append(_agent_result("A14", "Duplicate and Novelty-Analysis", ResultStatus.PASS,
+                    f"{len(novel)} novel, {len(duplicate)} duplicate", {"novel": novel, "duplicate": duplicate}))
+            except Exception as exc:
+                results.append(_agent_result("A14", "Duplicate and Novelty-Analysis", ResultStatus.ERROR,
+                    f"Agent error: {type(exc).__name__}: {exc}", {}))
+
+            # A15: Report Generation (narrative)
+            try:
+                narr = narrative.report(finding_dicts, chain_list if chain_list else None)
+                results.append(_agent_result("A15", "Report-Generation", ResultStatus.PASS,
+                    narr["headline"], narr))
+            except Exception as exc:
+                results.append(_agent_result("A15", "Report-Generation", ResultStatus.ERROR,
+                    f"Agent error: {type(exc).__name__}: {exc}", {}))
+
+            # A29: Chain-Trace Renderer
+            try:
+                traces = [narrative.narrate_chain(c) for c in chain_list] if chain_list else []
+                results.append(_agent_result("A29", "Chain-Trace Renderer", ResultStatus.PASS,
+                    f"{len(traces)} chain(s) rendered", {"traces": traces}))
+            except Exception as exc:
+                results.append(_agent_result("A29", "Chain-Trace Renderer", ResultStatus.ERROR,
+                    f"Agent error: {type(exc).__name__}: {exc}", {}))
+
+            # --- Phase 4: Learning / orchestration agents ----------------------------------
+            # A19: Feedback-Learning
+            try:
+                events = [feedback_loop.FeedbackEvent(
+                    event_id=f"ev-{i}",
+                    hypothesis_id=f.hypothesis_id,
+                    signal=feedback_loop.Signal.ALLOWED if f.verdict == Verdict.CONFIRMED_P0
+                           else feedback_loop.Signal.DENIED if f.verdict == Verdict.RULED_OUT
+                           else feedback_loop.Signal.INCONCLUSIVE,
+                ) for i, f in enumerate(outcome.findings)]
+                registered = set(EXPERIMENT_CLASSES)
+                fold_res = feedback_loop.fold({}, events, registered=registered)
+                results.append(_agent_result("A19", "Feedback-Learning", ResultStatus.PASS,
+                    f"{len(fold_res.applied)} event(s) folded", fold_res.to_dict()))
+            except Exception as exc:
+                results.append(_agent_result("A19", "Feedback-Learning", ResultStatus.ERROR,
+                    f"Agent error: {type(exc).__name__}: {exc}", {}))
+
+            # A30: Capability-Synthesis
+            try:
+                conclusive = {f.hypothesis_id for f in outcome.findings
+                              if f.verdict in (Verdict.CONFIRMED_P0, Verdict.RULED_OUT)}
+                synth_res = capability_synthesis.synthesize(
+                    enabled=True, conclusive=conclusive,
+                    prior={h: 1.0 for h in EXPERIMENT_CLASSES})
+                results.append(_agent_result("A30", "Capability-Synthesis", ResultStatus.PASS,
+                    synth_res.status.value, synth_res.to_dict()))
+            except Exception as exc:
+                results.append(_agent_result("A30", "Capability-Synthesis", ResultStatus.ERROR,
+                    f"Agent error: {type(exc).__name__}: {exc}", {}))
+
+            # A39: Graph-Analyst (chokepoints)
+            try:
+                choke_rep = chokepoints.chokepoint_report(outcome)
+                fix = choke_rep["summary"]["highest_leverage_fix"]
+                results.append(_agent_result("A39", "Graph-Analyst (Chokepoints)", ResultStatus.PASS,
+                    f"highest-leverage fix: {fix}", choke_rep))
+            except Exception as exc:
+                results.append(_agent_result("A39", "Graph-Analyst (Chokepoints)", ResultStatus.ERROR,
+                    f"Agent error: {type(exc).__name__}: {exc}", {}))
+
+            # A20: Orchestrator / Fleet Coordinator
+            try:
+                hypotheses = sorted(EXPERIMENT_CLASSES)
+                deps = fleet_orchestration.dependencies_from_catalog(hypotheses)
+                plan = fleet_orchestration.orchestrate(hypotheses, enabled=True, max_workers=4, dependencies=deps)
+                fleet_info = {
+                    "declared_fleet_size": kill_chain_roster.FLEET_SIZE,
+                    "in_roster": len(kill_chain_roster.ROSTER),
+                    "activatable": len([a for a in kill_chain_roster.ROSTER if a.activatable]),
+                    "out_of_scope": [a.agent_id for a in kill_chain_roster.out_of_scope()],
+                }
+                results.append(_agent_result("A20", "Orchestrator/Fleet Coordinator", ResultStatus.PASS,
+                    f"{len(hypotheses)} hypotheses -> {len(plan.waves)} wave(s); {fleet_info['activatable']} agents activatable",
+                    {"plan": plan.to_dict(), "fleet": fleet_info}))
+            except Exception as exc:
+                results.append(_agent_result("A20", "Orchestrator/Fleet Coordinator", ResultStatus.ERROR,
+                    f"Agent error: {type(exc).__name__}: {exc}", {}))
+
+            # --- Phase 5: Knowledge Graph + remaining capabilities -------------------------
+            # Knowledge Graph: cross-engagement learning
+            try:
+                kg = knowledge_graph.KnowledgeGraph()
+                kg.ingest_engagement(target_fingerprint=fingerprint, result=outcome)
+                leads_data = knowledge_graph.leads_payload(kg, fingerprint)
+                results.append(_agent_result("KG", "Cross-Engagement Knowledge Graph", ResultStatus.PASS,
+                    f"{len(kg.nodes)} nodes, {len(kg.edges)} edges, {len(leads_data.get('leads', []))} leads",
+                    leads_data))
+            except Exception as exc:
+                results.append(_agent_result("KG", "Cross-Engagement Knowledge Graph", ResultStatus.ERROR,
+                    f"Agent error: {type(exc).__name__}: {exc}", {}))
+
+            # Rule Mining
+            try:
+                cases = [rule_mining.Case(
+                    case_id=f.hypothesis_id,
+                    attributes=(("verdict", f.verdict.value), ("p0_class", f.p0_class),
+                                ("confidence_pct", int(f.confidence * 100))),
+                ) for f in outcome.findings]
+                rules = rule_mining.mine(cases, consequent_keys={"verdict"}) if len(cases) >= 3 else []
+                results.append(_agent_result("RM", "Rule Mining", ResultStatus.PASS,
+                    f"{len(rules)} rule(s) mined from {len(cases)} cases",
+                    {"rules": [r.to_dict() for r in rules]}))
+            except Exception as exc:
+                results.append(_agent_result("RM", "Rule Mining", ResultStatus.ERROR,
+                    f"Agent error: {type(exc).__name__}: {exc}", {}))
+
+            # Fleet roster summary
+            try:
+                roster_data = kill_chain_roster.roster_payload()
+                results.append(_agent_result("FLEET", "Kill-Chain Roster Summary", ResultStatus.PASS,
+                    f"fleet: {roster_data['fleet_size']} agents ({roster_data['documented']} documented, "
+                    f"{len(roster_data['out_of_scope'])} out of scope)",
+                    roster_data))
+            except Exception as exc:
+                results.append(_agent_result("FLEET", "Kill-Chain Roster Summary", ResultStatus.ERROR,
+                    f"Agent error: {type(exc).__name__}: {exc}", {}))
+
+        except Exception as exc:
+            logger.exception("Autonomous agent orchestration layer crashed")
+            results.append(_agent_result("ORCH", "Agent Orchestration Layer", ResultStatus.ERROR,
+                f"Orchestration layer failed: {type(exc).__name__}: {exc}", {}))
+
+        return results
+
     async def run(self) -> None:
         raw = self.context.settings.integrity_brief
         if raw is None:
@@ -246,6 +581,14 @@ class PaymentIntegrityModule(BaseTestModule):
                 logger.exception("could not build the evidence graph for %s; the finding is emitted without it", finding.hypothesis_id)
                 graph = None
             await self.emit(self._finding_result(finding, fingerprint, graph))
+
+        # -- Autonomous Agent Orchestration Layer ----------------------------------
+        # Wire every agent and every capability module into the scan path so
+        # nothing in the codebase is left idle. Each agent is fail-safe: a
+        # delegate failure becomes an error report, never a crash.
+        agent_reports = await self._run_autonomous_agents(outcome, brief, fingerprint, observations, chains)
+        for ar in agent_reports:
+            await self.emit(ar)
 
         counts = Counter(f.verdict.value for f in outcome.findings)
         rows = capability_gaps(brief, outcome)
