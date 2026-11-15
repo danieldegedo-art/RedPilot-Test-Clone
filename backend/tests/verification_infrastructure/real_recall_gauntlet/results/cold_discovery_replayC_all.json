@@ -1,0 +1,1240 @@
+{
+  "records": [
+    {
+      "family": "h_async_auth",
+      "seed": 401,
+      "split": "dev",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-v4g2-cm5v-cxv7",
+      "class": "PBB-U (access without payment; non-settled state treated as paid)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 1496,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 14,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/vandelay8/v3/purchase",
+        "features": {
+          "/vandelay8/v3/bulk-export": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/vandelay8/v3/export": [
+            "basic",
+            "export_id",
+            false
+          ],
+          "/vandelay8/v3/units/consume": [
+            "basic",
+            "credit_used",
+            true
+          ]
+        },
+        "glue_ops": 6,
+        "signup": "/vandelay8/v3/signup",
+        "pay": "/vandelay8/v3/capture/{id}",
+        "return": "/vandelay8/v3/finish"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "h_replay_regrant",
+      "seed": 402,
+      "split": "dev",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-8mhj-rffc-rcvw / CVE-2026-34210",
+      "class": "PBB-U / PBB-C (replay / over-limit re-grant)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-C"
+      ],
+      "engine_calls": 1490,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 14,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/umbrella6/v1/order",
+        "features": {
+          "/umbrella6/v1/bulk-export": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/umbrella6/v1/credits/use": [
+            "basic",
+            "credit_used",
+            true
+          ],
+          "/umbrella6/v1/download": [
+            "basic",
+            "export_id",
+            false
+          ]
+        },
+        "glue_ops": 6,
+        "signup": "/umbrella6/v1/register",
+        "pay": "/umbrella6/v1/capture/{id}",
+        "return": "/umbrella6/v1/complete"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "h_state_skip",
+      "seed": 403,
+      "split": "dev",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-qwqm-3jx5-rr8m",
+      "class": "PBB-U (state-machine skip to entitled)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 1617,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 15,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/wonka2/v1/checkout",
+        "features": {
+          "/wonka2/v1/download": [
+            "basic",
+            "export_id",
+            false
+          ],
+          "/wonka2/v1/priority-run": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/wonka2/v1/units/consume": [
+            "basic",
+            "credit_used",
+            true
+          ]
+        },
+        "glue_ops": 7,
+        "signup": "/wonka2/v1/register",
+        "pay": "/wonka2/v1/sandbox-pay/{id}",
+        "return": "/wonka2/v1/return"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "h_federated_skip",
+      "seed": 404,
+      "split": "dev",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-7wwh-c3v9-fc55",
+      "class": "PBB-U (federated/cross-service confirm skipped)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 1711,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 15,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/globex4/v2/order",
+        "features": {
+          "/globex4/v2/credits/use": [
+            "basic",
+            "credit_used",
+            true
+          ],
+          "/globex4/v2/priority-run": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/globex4/v2/query": [
+            "basic",
+            "export_id",
+            false
+          ]
+        },
+        "glue_ops": 7,
+        "signup": "/globex4/v2/join",
+        "pay": "/globex4/v2/capture/{id}",
+        "return": "/globex4/v2/callback"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "h_claim_stepup",
+      "seed": 405,
+      "split": "dev",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-jg6q-3qfh-r9f8 (+ Ghost GHSA-xm43-3m56-w3wf)",
+      "class": "PBB-U (alternate-flow / claim grant)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 1691,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 15,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/initech4/v2/order",
+        "features": {
+          "/initech4/v2/bulk-export": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/initech4/v2/export": [
+            "basic",
+            "export_id",
+            false
+          ],
+          "/initech4/v2/jobs/run": [
+            "basic",
+            "credit_used",
+            true
+          ]
+        },
+        "glue_ops": 7,
+        "signup": "/initech4/v2/join",
+        "pay": "/initech4/v2/capture/{id}",
+        "return": "/initech4/v2/done"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "gb_bola_object",
+      "seed": 406,
+      "split": "dev",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-x287-5c68-36wp",
+      "class": "BOLA (forbidden cross-tenant object access)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [],
+      "engine_calls": 277,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 16,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/vandelay1/v1/cart/submit",
+        "features": {
+          "/vandelay1/v1/enterprise-report": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/vandelay1/v1/jobs/run": [
+            "basic",
+            "credit_used",
+            true
+          ],
+          "/vandelay1/v1/query": [
+            "basic",
+            "export_id",
+            false
+          ]
+        },
+        "glue_ops": 8,
+        "signup": "/vandelay1/v1/register",
+        "pay": "/vandelay1/v1/capture/{id}",
+        "return": "/vandelay1/v1/complete"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "FN",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "gb_bopla_massassign",
+      "seed": 407,
+      "split": "dev",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-5448-v74m-7mv7",
+      "class": "BOPLA / mass-assignment (forbidden property write == access without payment)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 428,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 15,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/vandelay9/v2/checkout",
+        "features": {
+          "/vandelay9/v2/download": [
+            "basic",
+            "export_id",
+            false
+          ],
+          "/vandelay9/v2/priority-run": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/vandelay9/v2/units/consume": [
+            "basic",
+            "credit_used",
+            true
+          ]
+        },
+        "glue_ops": 7,
+        "signup": "/vandelay9/v2/onboard",
+        "pay": "/vandelay9/v2/settle/{id}",
+        "return": "/vandelay9/v2/finish"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "gb_shadow_api",
+      "seed": 408,
+      "split": "dev",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-9jr7-2hgp-vhp8",
+      "class": "improper inventory / shadow API (forbidden access == access without payment)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 1620,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 15,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/vandelay6/v1/cart/submit",
+        "features": {
+          "/vandelay6/v1/credits/use": [
+            "basic",
+            "credit_used",
+            true
+          ],
+          "/vandelay6/v1/full-dump": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/vandelay6/v1/query": [
+            "basic",
+            "export_id",
+            false
+          ]
+        },
+        "glue_ops": 7,
+        "signup": "/vandelay6/v1/register",
+        "pay": "/vandelay6/v1/confirm-pay/{id}",
+        "return": "/vandelay6/v1/callback"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "h_async_auth",
+      "seed": 501,
+      "split": "test",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-v4g2-cm5v-cxv7",
+      "class": "PBB-U (access without payment; non-settled state treated as paid)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 1463,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 14,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/umbrella2/v3/purchase",
+        "features": {
+          "/umbrella2/v3/download": [
+            "basic",
+            "export_id",
+            false
+          ],
+          "/umbrella2/v3/enterprise-report": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/umbrella2/v3/units/consume": [
+            "basic",
+            "credit_used",
+            true
+          ]
+        },
+        "glue_ops": 6,
+        "signup": "/umbrella2/v3/enroll",
+        "pay": "/umbrella2/v3/capture/{id}",
+        "return": "/umbrella2/v3/return"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "h_replay_regrant",
+      "seed": 502,
+      "split": "test",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-8mhj-rffc-rcvw / CVE-2026-34210",
+      "class": "PBB-U / PBB-C (replay / over-limit re-grant)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-C"
+      ],
+      "engine_calls": 1392,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 14,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/umbrella6/v1/purchase",
+        "features": {
+          "/umbrella6/v1/api/call": [
+            "basic",
+            "credit_used",
+            true
+          ],
+          "/umbrella6/v1/enterprise-report": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/umbrella6/v1/export": [
+            "basic",
+            "export_id",
+            false
+          ]
+        },
+        "glue_ops": 6,
+        "signup": "/umbrella6/v1/enroll",
+        "pay": "/umbrella6/v1/confirm-pay/{id}",
+        "return": "/umbrella6/v1/return"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "h_state_skip",
+      "seed": 503,
+      "split": "test",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-qwqm-3jx5-rr8m",
+      "class": "PBB-U (state-machine skip to entitled)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 2035,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 15,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/wonka1/v2/order",
+        "features": {
+          "/wonka1/v2/enterprise-report": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/wonka1/v2/sync": [
+            "basic",
+            "export_id",
+            false
+          ],
+          "/wonka1/v2/tokens/spend": [
+            "basic",
+            "credit_used",
+            true
+          ]
+        },
+        "glue_ops": 7,
+        "signup": "/wonka1/v2/join",
+        "pay": "/wonka1/v2/capture/{id}",
+        "return": "/wonka1/v2/finish"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "h_federated_skip",
+      "seed": 504,
+      "split": "test",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-7wwh-c3v9-fc55",
+      "class": "PBB-U (federated/cross-service confirm skipped)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 1784,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 15,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/umbrella9/v3/checkout",
+        "features": {
+          "/umbrella9/v3/full-dump": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/umbrella9/v3/report": [
+            "basic",
+            "export_id",
+            false
+          ],
+          "/umbrella9/v3/tokens/spend": [
+            "basic",
+            "credit_used",
+            true
+          ]
+        },
+        "glue_ops": 7,
+        "signup": "/umbrella9/v3/enroll",
+        "pay": "/umbrella9/v3/sandbox-pay/{id}",
+        "return": "/umbrella9/v3/complete"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "h_claim_stepup",
+      "seed": 505,
+      "split": "test",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-jg6q-3qfh-r9f8 (+ Ghost GHSA-xm43-3m56-w3wf)",
+      "class": "PBB-U (alternate-flow / claim grant)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 1641,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 15,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/northwind9/v3/charge/new",
+        "features": {
+          "/northwind9/v3/bulk-export": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/northwind9/v3/credits/use": [
+            "basic",
+            "credit_used",
+            true
+          ],
+          "/northwind9/v3/query": [
+            "basic",
+            "export_id",
+            false
+          ]
+        },
+        "glue_ops": 7,
+        "signup": "/northwind9/v3/onboard",
+        "pay": "/northwind9/v3/confirm-pay/{id}",
+        "return": "/northwind9/v3/return"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "gb_bola_object",
+      "seed": 506,
+      "split": "test",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-x287-5c68-36wp",
+      "class": "BOLA (forbidden cross-tenant object access)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [],
+      "engine_calls": 265,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 16,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/initech2/v3/order",
+        "features": {
+          "/initech2/v3/api/call": [
+            "basic",
+            "credit_used",
+            true
+          ],
+          "/initech2/v3/bulk-export": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/initech2/v3/query": [
+            "basic",
+            "export_id",
+            false
+          ]
+        },
+        "glue_ops": 8,
+        "signup": "/initech2/v3/register",
+        "pay": "/initech2/v3/capture/{id}",
+        "return": "/initech2/v3/done"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "FN",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "gb_bopla_massassign",
+      "seed": 507,
+      "split": "test",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-5448-v74m-7mv7",
+      "class": "BOPLA / mass-assignment (forbidden property write == access without payment)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 352,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 15,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/initech6/v3/order",
+        "features": {
+          "/initech6/v3/bulk-export": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/initech6/v3/sync": [
+            "basic",
+            "export_id",
+            false
+          ],
+          "/initech6/v3/tokens/spend": [
+            "basic",
+            "credit_used",
+            true
+          ]
+        },
+        "glue_ops": 7,
+        "signup": "/initech6/v3/signup",
+        "pay": "/initech6/v3/sandbox-pay/{id}",
+        "return": "/initech6/v3/done"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "gb_shadow_api",
+      "seed": 508,
+      "split": "test",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-9jr7-2hgp-vhp8",
+      "class": "improper inventory / shadow API (forbidden access == access without payment)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 1615,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 15,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/hooli1/v3/checkout",
+        "features": {
+          "/hooli1/v3/api/call": [
+            "basic",
+            "credit_used",
+            true
+          ],
+          "/hooli1/v3/export": [
+            "basic",
+            "export_id",
+            false
+          ],
+          "/hooli1/v3/priority-run": [
+            "pro",
+            "report_id",
+            false
+          ]
+        },
+        "glue_ops": 7,
+        "signup": "/hooli1/v3/enroll",
+        "pay": "/hooli1/v3/sandbox-pay/{id}",
+        "return": "/hooli1/v3/complete"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "h_async_auth",
+      "seed": 509,
+      "split": "test",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-v4g2-cm5v-cxv7",
+      "class": "PBB-U (access without payment; non-settled state treated as paid)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 1330,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 14,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/initech9/v3/order",
+        "features": {
+          "/initech9/v3/jobs/run": [
+            "basic",
+            "credit_used",
+            true
+          ],
+          "/initech9/v3/priority-run": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/initech9/v3/report": [
+            "basic",
+            "export_id",
+            false
+          ]
+        },
+        "glue_ops": 6,
+        "signup": "/initech9/v3/enroll",
+        "pay": "/initech9/v3/confirm-pay/{id}",
+        "return": "/initech9/v3/return"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "gb_bopla_massassign",
+      "seed": 510,
+      "split": "test",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-5448-v74m-7mv7",
+      "class": "BOPLA / mass-assignment (forbidden property write == access without payment)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 323,
+      "cold_discovery": {
+        "stage": "ok",
+        "catalog_size": 15,
+        "plan_order": [
+          "basic",
+          "pro"
+        ],
+        "checkout": "/globex3/v1/purchase",
+        "features": {
+          "/globex3/v1/bulk-export": [
+            "pro",
+            "report_id",
+            false
+          ],
+          "/globex3/v1/export": [
+            "basic",
+            "export_id",
+            false
+          ],
+          "/globex3/v1/jobs/run": [
+            "basic",
+            "credit_used",
+            true
+          ]
+        },
+        "glue_ops": 7,
+        "signup": "/globex3/v1/join",
+        "pay": "/globex3/v1/capture/{id}",
+        "return": "/globex3/v1/finish"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "webhook_forgery",
+      "seed": 590,
+      "split": "test",
+      "scope": "ceiling",
+      "cold": true,
+      "advisory": "GHSA-xff3-5c9p-2mr4 / CVE-2026-41432",
+      "class": "CEILING: provider-event authenticity (out of RoE: signature forgery)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [],
+      "engine_calls": 1,
+      "cold_discovery": {
+        "stage": "no_catalog"
+      },
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "CEILING_ABSTAIN(correct)",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    }
+  ],
+  "aggregate": {
+    "test": {
+      "split": "test",
+      "in_scope_positives": 10,
+      "true_positives": 9,
+      "false_negatives": 1,
+      "recall": 0.9,
+      "negatives": 11,
+      "false_positives": 0,
+      "true_negatives": 11,
+      "precision": 1.0,
+      "false_positive_rate": 0.0,
+      "ceiling_instances": 1,
+      "ceiling_abstained": 1,
+      "internal_route_hits_total": 0,
+      "dual_oracle_invalid": []
+    },
+    "dev": {
+      "split": "dev",
+      "in_scope_positives": 8,
+      "true_positives": 7,
+      "false_negatives": 1,
+      "recall": 0.875,
+      "negatives": 8,
+      "false_positives": 0,
+      "true_negatives": 8,
+      "precision": 1.0,
+      "false_positive_rate": 0.0,
+      "ceiling_instances": 0,
+      "ceiling_abstained": 0,
+      "internal_route_hits_total": 0,
+      "dual_oracle_invalid": []
+    }
+  }
+}

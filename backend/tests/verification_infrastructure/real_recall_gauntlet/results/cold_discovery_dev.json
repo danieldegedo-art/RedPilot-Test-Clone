@@ -1,0 +1,298 @@
+{
+  "records": [
+    {
+      "family": "h_async_auth",
+      "seed": 401,
+      "split": "dev",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-v4g2-cm5v-cxv7",
+      "class": "PBB-U (access without payment; non-settled state treated as paid)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 1446,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "h_replay_regrant",
+      "seed": 402,
+      "split": "dev",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-8mhj-rffc-rcvw / CVE-2026-34210",
+      "class": "PBB-U / PBB-C (replay / over-limit re-grant)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [],
+      "engine_calls": 1414,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "FN",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "h_state_skip",
+      "seed": 403,
+      "split": "dev",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-qwqm-3jx5-rr8m",
+      "class": "PBB-U (state-machine skip to entitled)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 1567,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "h_federated_skip",
+      "seed": 404,
+      "split": "dev",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-7wwh-c3v9-fc55",
+      "class": "PBB-U (federated/cross-service confirm skipped)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 1683,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "h_claim_stepup",
+      "seed": 405,
+      "split": "dev",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-jg6q-3qfh-r9f8 (+ Ghost GHSA-xm43-3m56-w3wf)",
+      "class": "PBB-U (alternate-flow / claim grant)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 1663,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "gb_bola_object",
+      "seed": 406,
+      "split": "dev",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-x287-5c68-36wp",
+      "class": "BOLA (forbidden cross-tenant object access)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [],
+      "engine_calls": 227,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "FN",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "gb_bopla_massassign",
+      "seed": 407,
+      "split": "dev",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-5448-v74m-7mv7",
+      "class": "BOPLA / mass-assignment (forbidden property write == access without payment)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 378,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    },
+    {
+      "family": "gb_shadow_api",
+      "seed": 408,
+      "split": "dev",
+      "scope": "in_scope",
+      "cold": true,
+      "advisory": "GHSA-9jr7-2hgp-vhp8",
+      "class": "improper inventory / shadow API (forbidden access == access without payment)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 1592,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "cold_floor": {
+        "rule1_domain_only": "pass(static)",
+        "rule2_no_source_blueprints_credentials": "pass",
+        "rule3_no_internal_access": "pass",
+        "rule4_bottom_up_identities_only": "pass",
+        "handed_in": "base_url + RoE attestation + allow_signup + currency + limits ONLY",
+        "surface_declared": {
+          "surface": 0,
+          "features": 0,
+          "plans": 0,
+          "identities": 0
+        },
+        "internal_route_hits": 0,
+        "cold_floor_satisfied": true
+      }
+    }
+  ],
+  "aggregate": {
+    "dev": {
+      "split": "dev",
+      "in_scope_positives": 8,
+      "true_positives": 6,
+      "false_negatives": 2,
+      "recall": 0.75,
+      "negatives": 8,
+      "false_positives": 0,
+      "true_negatives": 8,
+      "precision": 1.0,
+      "false_positive_rate": 0.0,
+      "ceiling_instances": 0,
+      "ceiling_abstained": 0,
+      "internal_route_hits_total": 0,
+      "dual_oracle_invalid": []
+    }
+  }
+}

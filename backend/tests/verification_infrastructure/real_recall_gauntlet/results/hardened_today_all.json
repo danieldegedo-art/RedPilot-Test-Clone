@@ -1,0 +1,601 @@
+{
+  "records": [
+    {
+      "family": "h_async_auth",
+      "seed": 401,
+      "split": "dev",
+      "scope": "in_scope",
+      "advisory": "GHSA-v4g2-cm5v-cxv7",
+      "class": "PBB-U (access without payment; non-settled state treated as paid)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 135,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "four_rule": {
+        "rule1_no_internal_access": "pass",
+        "rule2_no_source": "pass",
+        "rule3_no_network_blueprints": "pass",
+        "rule4_no_admin_credentials": "pass",
+        "declared_identities": [
+          "engine-signed-up-ordinary-tenants"
+        ],
+        "target_kind": "controlled_benchmark",
+        "internal_route_hits": 0,
+        "grey_box_within_four_rules": true
+      }
+    },
+    {
+      "family": "h_replay_regrant",
+      "seed": 402,
+      "split": "dev",
+      "scope": "in_scope",
+      "advisory": "GHSA-8mhj-rffc-rcvw / CVE-2026-34210",
+      "class": "PBB-U / PBB-C (replay / over-limit re-grant)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [],
+      "engine_calls": 679,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "FN",
+      "negative_outcome": "TN",
+      "four_rule": {
+        "rule1_no_internal_access": "pass",
+        "rule2_no_source": "pass",
+        "rule3_no_network_blueprints": "pass",
+        "rule4_no_admin_credentials": "pass",
+        "declared_identities": [
+          "engine-signed-up-ordinary-tenants"
+        ],
+        "target_kind": "controlled_benchmark",
+        "internal_route_hits": 0,
+        "grey_box_within_four_rules": true
+      }
+    },
+    {
+      "family": "h_state_skip",
+      "seed": 403,
+      "split": "dev",
+      "scope": "in_scope",
+      "advisory": "GHSA-qwqm-3jx5-rr8m",
+      "class": "PBB-U (state-machine skip to entitled)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [],
+      "engine_calls": 1255,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "FN",
+      "negative_outcome": "TN",
+      "four_rule": {
+        "rule1_no_internal_access": "pass",
+        "rule2_no_source": "pass",
+        "rule3_no_network_blueprints": "pass",
+        "rule4_no_admin_credentials": "pass",
+        "declared_identities": [
+          "engine-signed-up-ordinary-tenants"
+        ],
+        "target_kind": "controlled_benchmark",
+        "internal_route_hits": 0,
+        "grey_box_within_four_rules": true
+      }
+    },
+    {
+      "family": "h_federated_skip",
+      "seed": 404,
+      "split": "dev",
+      "scope": "in_scope",
+      "advisory": "GHSA-7wwh-c3v9-fc55",
+      "class": "PBB-U (federated/cross-service confirm skipped)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [],
+      "engine_calls": 1578,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "FN",
+      "negative_outcome": "TN",
+      "four_rule": {
+        "rule1_no_internal_access": "pass",
+        "rule2_no_source": "pass",
+        "rule3_no_network_blueprints": "pass",
+        "rule4_no_admin_credentials": "pass",
+        "declared_identities": [
+          "engine-signed-up-ordinary-tenants"
+        ],
+        "target_kind": "controlled_benchmark",
+        "internal_route_hits": 0,
+        "grey_box_within_four_rules": true
+      }
+    },
+    {
+      "family": "h_claim_stepup",
+      "seed": 405,
+      "split": "dev",
+      "scope": "in_scope",
+      "advisory": "GHSA-jg6q-3qfh-r9f8 (+ Ghost GHSA-xm43-3m56-w3wf)",
+      "class": "PBB-U (alternate-flow / claim grant)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [],
+      "engine_calls": 1272,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "FN",
+      "negative_outcome": "TN",
+      "four_rule": {
+        "rule1_no_internal_access": "pass",
+        "rule2_no_source": "pass",
+        "rule3_no_network_blueprints": "pass",
+        "rule4_no_admin_credentials": "pass",
+        "declared_identities": [
+          "engine-signed-up-ordinary-tenants"
+        ],
+        "target_kind": "controlled_benchmark",
+        "internal_route_hits": 0,
+        "grey_box_within_four_rules": true
+      }
+    },
+    {
+      "family": "gb_bola_object",
+      "seed": 406,
+      "split": "dev",
+      "scope": "in_scope",
+      "advisory": "GHSA-x287-5c68-36wp",
+      "class": "BOLA (forbidden cross-tenant object access)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [],
+      "engine_calls": 112,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "FN",
+      "negative_outcome": "TN",
+      "four_rule": {
+        "rule1_no_internal_access": "pass",
+        "rule2_no_source": "pass",
+        "rule3_no_network_blueprints": "pass",
+        "rule4_no_admin_credentials": "pass",
+        "declared_identities": [
+          "engine-signed-up-ordinary-tenants"
+        ],
+        "target_kind": "controlled_benchmark",
+        "internal_route_hits": 0,
+        "grey_box_within_four_rules": true
+      }
+    },
+    {
+      "family": "gb_bopla_massassign",
+      "seed": 407,
+      "split": "dev",
+      "scope": "in_scope",
+      "advisory": "GHSA-5448-v74m-7mv7",
+      "class": "BOPLA / mass-assignment (forbidden property write == access without payment)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 205,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "four_rule": {
+        "rule1_no_internal_access": "pass",
+        "rule2_no_source": "pass",
+        "rule3_no_network_blueprints": "pass",
+        "rule4_no_admin_credentials": "pass",
+        "declared_identities": [
+          "engine-signed-up-ordinary-tenants"
+        ],
+        "target_kind": "controlled_benchmark",
+        "internal_route_hits": 0,
+        "grey_box_within_four_rules": true
+      }
+    },
+    {
+      "family": "gb_shadow_api",
+      "seed": 408,
+      "split": "dev",
+      "scope": "in_scope",
+      "advisory": "GHSA-9jr7-2hgp-vhp8",
+      "class": "improper inventory / shadow API (forbidden access == access without payment)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [],
+      "engine_calls": 777,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "FN",
+      "negative_outcome": "TN",
+      "four_rule": {
+        "rule1_no_internal_access": "pass",
+        "rule2_no_source": "pass",
+        "rule3_no_network_blueprints": "pass",
+        "rule4_no_admin_credentials": "pass",
+        "declared_identities": [
+          "engine-signed-up-ordinary-tenants"
+        ],
+        "target_kind": "controlled_benchmark",
+        "internal_route_hits": 0,
+        "grey_box_within_four_rules": true
+      }
+    },
+    {
+      "family": "h_async_auth",
+      "seed": 501,
+      "split": "test",
+      "scope": "in_scope",
+      "advisory": "GHSA-v4g2-cm5v-cxv7",
+      "class": "PBB-U (access without payment; non-settled state treated as paid)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 135,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "four_rule": {
+        "rule1_no_internal_access": "pass",
+        "rule2_no_source": "pass",
+        "rule3_no_network_blueprints": "pass",
+        "rule4_no_admin_credentials": "pass",
+        "declared_identities": [
+          "engine-signed-up-ordinary-tenants"
+        ],
+        "target_kind": "controlled_benchmark",
+        "internal_route_hits": 0,
+        "grey_box_within_four_rules": true
+      }
+    },
+    {
+      "family": "h_replay_regrant",
+      "seed": 502,
+      "split": "test",
+      "scope": "in_scope",
+      "advisory": "GHSA-8mhj-rffc-rcvw / CVE-2026-34210",
+      "class": "PBB-U / PBB-C (replay / over-limit re-grant)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [],
+      "engine_calls": 667,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "FN",
+      "negative_outcome": "TN",
+      "four_rule": {
+        "rule1_no_internal_access": "pass",
+        "rule2_no_source": "pass",
+        "rule3_no_network_blueprints": "pass",
+        "rule4_no_admin_credentials": "pass",
+        "declared_identities": [
+          "engine-signed-up-ordinary-tenants"
+        ],
+        "target_kind": "controlled_benchmark",
+        "internal_route_hits": 0,
+        "grey_box_within_four_rules": true
+      }
+    },
+    {
+      "family": "h_state_skip",
+      "seed": 503,
+      "split": "test",
+      "scope": "in_scope",
+      "advisory": "GHSA-qwqm-3jx5-rr8m",
+      "class": "PBB-U (state-machine skip to entitled)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [],
+      "engine_calls": 1578,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "FN",
+      "negative_outcome": "TN",
+      "four_rule": {
+        "rule1_no_internal_access": "pass",
+        "rule2_no_source": "pass",
+        "rule3_no_network_blueprints": "pass",
+        "rule4_no_admin_credentials": "pass",
+        "declared_identities": [
+          "engine-signed-up-ordinary-tenants"
+        ],
+        "target_kind": "controlled_benchmark",
+        "internal_route_hits": 0,
+        "grey_box_within_four_rules": true
+      }
+    },
+    {
+      "family": "h_federated_skip",
+      "seed": 504,
+      "split": "test",
+      "scope": "in_scope",
+      "advisory": "GHSA-7wwh-c3v9-fc55",
+      "class": "PBB-U (federated/cross-service confirm skipped)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [],
+      "engine_calls": 1411,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "FN",
+      "negative_outcome": "TN",
+      "four_rule": {
+        "rule1_no_internal_access": "pass",
+        "rule2_no_source": "pass",
+        "rule3_no_network_blueprints": "pass",
+        "rule4_no_admin_credentials": "pass",
+        "declared_identities": [
+          "engine-signed-up-ordinary-tenants"
+        ],
+        "target_kind": "controlled_benchmark",
+        "internal_route_hits": 0,
+        "grey_box_within_four_rules": true
+      }
+    },
+    {
+      "family": "h_claim_stepup",
+      "seed": 505,
+      "split": "test",
+      "scope": "in_scope",
+      "advisory": "GHSA-jg6q-3qfh-r9f8 (+ Ghost GHSA-xm43-3m56-w3wf)",
+      "class": "PBB-U (alternate-flow / claim grant)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [],
+      "engine_calls": 1344,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "FN",
+      "negative_outcome": "TN",
+      "four_rule": {
+        "rule1_no_internal_access": "pass",
+        "rule2_no_source": "pass",
+        "rule3_no_network_blueprints": "pass",
+        "rule4_no_admin_credentials": "pass",
+        "declared_identities": [
+          "engine-signed-up-ordinary-tenants"
+        ],
+        "target_kind": "controlled_benchmark",
+        "internal_route_hits": 0,
+        "grey_box_within_four_rules": true
+      }
+    },
+    {
+      "family": "gb_bola_object",
+      "seed": 506,
+      "split": "test",
+      "scope": "in_scope",
+      "advisory": "GHSA-x287-5c68-36wp",
+      "class": "BOLA (forbidden cross-tenant object access)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [],
+      "engine_calls": 112,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "FN",
+      "negative_outcome": "TN",
+      "four_rule": {
+        "rule1_no_internal_access": "pass",
+        "rule2_no_source": "pass",
+        "rule3_no_network_blueprints": "pass",
+        "rule4_no_admin_credentials": "pass",
+        "declared_identities": [
+          "engine-signed-up-ordinary-tenants"
+        ],
+        "target_kind": "controlled_benchmark",
+        "internal_route_hits": 0,
+        "grey_box_within_four_rules": true
+      }
+    },
+    {
+      "family": "gb_bopla_massassign",
+      "seed": 507,
+      "split": "test",
+      "scope": "in_scope",
+      "advisory": "GHSA-5448-v74m-7mv7",
+      "class": "BOPLA / mass-assignment (forbidden property write == access without payment)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 199,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "four_rule": {
+        "rule1_no_internal_access": "pass",
+        "rule2_no_source": "pass",
+        "rule3_no_network_blueprints": "pass",
+        "rule4_no_admin_credentials": "pass",
+        "declared_identities": [
+          "engine-signed-up-ordinary-tenants"
+        ],
+        "target_kind": "controlled_benchmark",
+        "internal_route_hits": 0,
+        "grey_box_within_four_rules": true
+      }
+    },
+    {
+      "family": "gb_shadow_api",
+      "seed": 508,
+      "split": "test",
+      "scope": "in_scope",
+      "advisory": "GHSA-9jr7-2hgp-vhp8",
+      "class": "improper inventory / shadow API (forbidden access == access without payment)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [],
+      "engine_calls": 777,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "FN",
+      "negative_outcome": "TN",
+      "four_rule": {
+        "rule1_no_internal_access": "pass",
+        "rule2_no_source": "pass",
+        "rule3_no_network_blueprints": "pass",
+        "rule4_no_admin_credentials": "pass",
+        "declared_identities": [
+          "engine-signed-up-ordinary-tenants"
+        ],
+        "target_kind": "controlled_benchmark",
+        "internal_route_hits": 0,
+        "grey_box_within_four_rules": true
+      }
+    },
+    {
+      "family": "h_async_auth",
+      "seed": 509,
+      "split": "test",
+      "scope": "in_scope",
+      "advisory": "GHSA-v4g2-cm5v-cxv7",
+      "class": "PBB-U (access without payment; non-settled state treated as paid)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 135,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "four_rule": {
+        "rule1_no_internal_access": "pass",
+        "rule2_no_source": "pass",
+        "rule3_no_network_blueprints": "pass",
+        "rule4_no_admin_credentials": "pass",
+        "declared_identities": [
+          "engine-signed-up-ordinary-tenants"
+        ],
+        "target_kind": "controlled_benchmark",
+        "internal_route_hits": 0,
+        "grey_box_within_four_rules": true
+      }
+    },
+    {
+      "family": "gb_bopla_massassign",
+      "seed": 510,
+      "split": "test",
+      "scope": "in_scope",
+      "advisory": "GHSA-5448-v74m-7mv7",
+      "class": "BOPLA / mass-assignment (forbidden property write == access without payment)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [
+        "PBB-U"
+      ],
+      "engine_calls": 205,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "TP",
+      "negative_outcome": "TN",
+      "four_rule": {
+        "rule1_no_internal_access": "pass",
+        "rule2_no_source": "pass",
+        "rule3_no_network_blueprints": "pass",
+        "rule4_no_admin_credentials": "pass",
+        "declared_identities": [
+          "engine-signed-up-ordinary-tenants"
+        ],
+        "target_kind": "controlled_benchmark",
+        "internal_route_hits": 0,
+        "grey_box_within_four_rules": true
+      }
+    },
+    {
+      "family": "webhook_forgery",
+      "seed": 590,
+      "split": "test",
+      "scope": "ceiling",
+      "advisory": "GHSA-xff3-5c9p-2mr4 / CVE-2026-41432",
+      "class": "CEILING: provider-event authenticity (out of RoE: signature forgery)",
+      "truth_flaw_on": true,
+      "truth_patched": false,
+      "dual_oracle_valid": true,
+      "engine_confirmed_flaw_on": [],
+      "engine_calls": 141,
+      "internal_hits": 0,
+      "engine_confirmed_patched": [],
+      "positive_outcome": "CEILING_ABSTAIN(correct)",
+      "negative_outcome": "TN",
+      "four_rule": {
+        "rule1_no_internal_access": "pass",
+        "rule2_no_source": "pass",
+        "rule3_no_network_blueprints": "pass",
+        "rule4_no_admin_credentials": "pass",
+        "declared_identities": [
+          "engine-signed-up-ordinary-tenants"
+        ],
+        "target_kind": "controlled_benchmark",
+        "internal_route_hits": 0,
+        "grey_box_within_four_rules": true
+      }
+    }
+  ],
+  "aggregate": {
+    "test": {
+      "split": "test",
+      "in_scope_positives": 10,
+      "true_positives": 4,
+      "false_negatives": 6,
+      "recall": 0.4,
+      "negatives": 11,
+      "false_positives": 0,
+      "true_negatives": 11,
+      "precision": 1.0,
+      "false_positive_rate": 0.0,
+      "ceiling_instances": 1,
+      "ceiling_abstained": 1,
+      "internal_route_hits_total": 0,
+      "dual_oracle_invalid": []
+    },
+    "dev": {
+      "split": "dev",
+      "in_scope_positives": 8,
+      "true_positives": 2,
+      "false_negatives": 6,
+      "recall": 0.25,
+      "negatives": 8,
+      "false_positives": 0,
+      "true_negatives": 8,
+      "precision": 1.0,
+      "false_positive_rate": 0.0,
+      "ceiling_instances": 0,
+      "ceiling_abstained": 0,
+      "internal_route_hits_total": 0,
+      "dual_oracle_invalid": []
+    }
+  }
+}

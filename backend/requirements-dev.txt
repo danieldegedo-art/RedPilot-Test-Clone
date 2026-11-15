@@ -1,0 +1,5 @@
+# Test/dev-only dependencies -- kept separate from requirements.txt so the
+# production image doesn't carry a test runner. Install with:
+#   pip install -r requirements.txt -r requirements-dev.txt --break-system-packages
+pytest==8.3.3
+pytest-asyncio==0.24.0
