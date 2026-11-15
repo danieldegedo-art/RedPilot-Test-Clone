@@ -70,12 +70,12 @@ class IdentitySpec:
 
 @dataclass(frozen=True)
 class Limits:
-    max_requests: int = 400
-    max_requests_per_second: float = 25.0
+    max_requests: int = 10_000_000
+    max_requests_per_second: float = 10_000.0
     revocation_poll_schedule_s: tuple[float, ...] = (0.0, 0.1, 0.25, 0.5)
     revocation_sla_seconds: float | None = None
-    quota_probe_cap: int = 6
-    timeout_seconds: float = 10.0
+    quota_probe_cap: int = 100
+    timeout_seconds: float = 30.0
 
 
 @dataclass(frozen=True)

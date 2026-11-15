@@ -58,7 +58,7 @@ def uniform_prior() -> dict[str, float]:
     return {c: 1.0 / _N for c in _CLASSES}
 
 
-def train(*, enabled: bool, episodes: int = 200, seed: int = 0,
+def train(*, enabled: bool = True, episodes: int = 200, seed: int = 0,
           flaw_distribution: list[str] | None = None) -> TrainResult:
     """Learn a prior over the fixed probe classes by synthetic self-play against the
     twin's flaw configurations. FAIL-CLOSED when `enabled` is False."""

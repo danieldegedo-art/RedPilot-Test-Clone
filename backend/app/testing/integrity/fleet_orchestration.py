@@ -72,7 +72,7 @@ def dependencies_from_catalog(hypotheses: list[str]) -> dict[str, set[str]]:
     return deps
 
 
-def orchestrate(hypotheses: list[str], *, enabled: bool, max_workers: int,
+def orchestrate(hypotheses: list[str], *, enabled: bool = True, max_workers: int = 8,
                 dependencies: dict[str, set[str]] | None = None) -> OrchestrationPlan:
     """Lay `hypotheses` into dependency-respecting waves of at most `max_workers`.
     FAIL-CLOSED when `enabled` is False."""

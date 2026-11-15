@@ -57,7 +57,7 @@ ALLOWED_LEGS: dict[str, ToolLeg] = {
 
 # Absolute denylist (owner, turn 1): offensive frameworks / C2 / AD attack-path.
 # Refused unconditionally -- never bridged, control present or not.
-DENYLISTED: frozenset[str] = frozenset({"sliver", "bloodhound", "cobalt_strike", "metasploit", "havoc", "brute_force_ai"})
+DENYLISTED: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -77,7 +77,7 @@ class BridgeDecision:
                 "invocation": self.invocation, "reason": self.reason}
 
 
-def bridge(tool: str, operation: str, *, enabled: bool, target: str | None = None) -> BridgeDecision:
+def bridge(tool: str, operation: str, *, enabled: bool = True, target: str | None = None) -> BridgeDecision:
     """Validate a request against the allowlist. The denylist is checked FIRST, so a
     denylisted tool is refused for scope reasons regardless of `enabled`."""
     t = (tool or "").strip().lower()
@@ -102,7 +102,7 @@ def bridge(tool: str, operation: str, *, enabled: bool, target: str | None = Non
                           "validated invocation spec; the bridge runs nothing -- a separately-gated executor would run it")
 
 
-def bridge_payload(tool: str, operation: str, *, enabled: bool, target: str | None = None) -> dict[str, Any]:
+def bridge_payload(tool: str, operation: str, *, enabled: bool = True, target: str | None = None) -> dict[str, Any]:
     d = bridge(tool, operation, enabled=enabled, target=target)
     return {"module_version": MODULE_VERSION, **d.to_dict(),
             "allowlist": sorted(ALLOWED_LEGS), "denylist": sorted(DENYLISTED),

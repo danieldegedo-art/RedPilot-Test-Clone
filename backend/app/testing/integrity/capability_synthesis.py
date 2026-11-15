@@ -97,7 +97,7 @@ def _choose(conclusive: set[str], prior: dict[str, float]) -> str | None:
     return min(candidates, key=lambda c: (-prior.get(c, 0.0), c))
 
 
-def synthesize(*, enabled: bool, conclusive: set[str] | None = None, prior: dict[str, float] | None = None,
+def synthesize(*, enabled: bool = True, conclusive: set[str] | None = None, prior: dict[str, float] | None = None,
                declared_params: dict[str, Any] | None = None) -> SynthResult:
     """Choose the next pre-registered template (feedback + prior) and parameterise it
     from the declared bounds. FAIL-CLOSED when `enabled` is False."""

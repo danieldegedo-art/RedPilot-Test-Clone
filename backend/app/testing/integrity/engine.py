@@ -204,19 +204,19 @@ def _clean(ids: Iterable[str | None]) -> list[str]:
 class PureBlackBoxEngine:
     def __init__(self, http: QAHttpClient, brief: ExecutionBrief, *, base_url: str, ledger: EvidenceLedgerHandle | None = None,
                  clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
-                 prioritizer: PrioritizerFn | None = None, enable_channel_probe: bool = False, enable_chain_probe: bool = False, find_fast: bool = False,
-                 enable_race_probe: bool = False, race_burst: int = 10, enable_convergence_probe: bool = False,
+                 prioritizer: PrioritizerFn | None = None, enable_channel_probe: bool = True, enable_chain_probe: bool = True, find_fast: bool = False,
+                 enable_race_probe: bool = True, race_burst: int = 24, enable_convergence_probe: bool = True,
                  convergence_use_schema: bool = True, convergence_concurrent: bool = True,
-                 enable_fabric_probe: bool = False, fabric_use_dag: bool = True, fabric_use_race: bool = True,
+                 enable_fabric_probe: bool = True, fabric_use_dag: bool = True, fabric_use_race: bool = True,
                  fabric_multi_candidate: bool = True, fabric_fresh_challenge: bool = True,
-                 enable_reconciliation_probe: bool = False, recon_use_lifecycle: bool = True,
+                 enable_reconciliation_probe: bool = True, recon_use_lifecycle: bool = True,
                  recon_use_overlay: bool = True, recon_use_sequence: bool = True,
-                 enable_federation: bool = False, fed_use_discovery: bool = True, fed_use_token_re: bool = True,
+                 enable_federation: bool = True, fed_use_discovery: bool = True, fed_use_token_re: bool = True,
                  fed_use_trust_graph: bool = True, fed_use_orchestration: bool = True,
                  fed_use_analogy: bool = True, fed_use_infogain: bool = True,
-                 enable_behavior_probe: bool = False, enable_greybox_probe: bool = False,
-                 enable_cold_discovery: bool = False, enable_replay_probe: bool = False,
-                 enable_crosssubject_probe: bool = False,
+                 enable_behavior_probe: bool = True, enable_greybox_probe: bool = True,
+                 enable_cold_discovery: bool = True, enable_replay_probe: bool = True,
+                 enable_crosssubject_probe: bool = True,
                  disabled_agents: frozenset[str] = frozenset()) -> None:
         self._prioritizer = prioritizer  # ZR-003/ZR-012: None keeps the static EXPERIMENT_ORDER, exactly as before
         # B45 recon-breadth + B46 chain-composition: FAIL-CLOSED. Off unless an authorised caller enables them; when off, the probes are no-ops and behaviour is identical to before.

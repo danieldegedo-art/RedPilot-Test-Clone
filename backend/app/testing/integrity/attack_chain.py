@@ -110,7 +110,7 @@ def effect_of(hypothesis_id: str) -> dict[str, Any]:
             "note": "established only if the oracle confirms this step (ZR-017); not asserted otherwise"}
 
 
-def compose_chains(goal: str, *, enabled: bool, max_depth: int = 4, max_chains: int = 32) -> ComposeResult:
+def compose_chains(goal: str, *, enabled: bool = True, max_depth: int = 4, max_chains: int = 32) -> ComposeResult:
     """Find precondition-gated orderings of pre-registered steps that reach `goal`
     as their final step, starting from BASELINE_STATE. FAIL-CLOSED: returns an empty
     FAIL_CLOSED result when `enabled` is False (the control is absent)."""

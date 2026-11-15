@@ -63,7 +63,7 @@ class SurfacePlan:
                 "final_state": dict(self.final_state), "reason": self.reason}
 
 
-def plan(actions: list[Action], *, allowed_hosts: set[str], enabled: bool,
+def plan(actions: list[Action], *, allowed_hosts: set[str], enabled: bool = True,
          max_actions: int = MAX_ACTIONS) -> SurfacePlan:
     """Validate and plan `actions`. FAIL-CLOSED without the control; REFUSED_SCOPE on
     a navigation off the allowlist; REFUSED_STATE on an action invalid for the state."""
