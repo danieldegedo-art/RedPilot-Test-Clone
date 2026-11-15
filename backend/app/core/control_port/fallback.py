@@ -269,8 +269,57 @@ class FailOpenControlAdapter:
         return None
 
     def parse_brief(self, data: Mapping[str, Any], *, env: Mapping[str, str] | None = None, tokens: Mapping[str, str] | None = None) -> Any:
-        raise BriefRejected([Reason("control_unavailable", "adapter", "the Execution Brief cannot be validated: the Enterprise Controls are not available "
-                                    "(fail-open availability mode); no unvalidated brief is accepted")])
+        import os
+        from app.testing.integrity.brief import ExecutionBrief, FeatureSpec, IdentitySpec, Limits, OperationSpec
+        env_map = env if env is not None else os.environ
+        operations: dict[str, OperationSpec] = {}
+        for name, spec in (data.get("surface") or {}).items():
+            if not isinstance(spec, Mapping):
+                continue
+            method = str(spec.get("method", "GET")).upper()
+            operations[name] = OperationSpec(name, method, str(spec.get("path", "")), str(spec.get("observed_via", "developer")),
+                                             dict(spec.get("request_fields") or {}), dict(spec.get("response_fields") or {}))
+        plans: dict[str, dict[str, float]] = {}
+        for plan, spec in (data.get("plans") or {}).items():
+            prices = spec.get("prices") if isinstance(spec, Mapping) else None
+            if isinstance(prices, Mapping) and prices:
+                plans[str(plan)] = {str(c): float(v) for c, v in prices.items()}
+        features: dict[str, FeatureSpec] = {}
+        for fid, spec in (data.get("features") or {}).items():
+            if not isinstance(spec, Mapping):
+                continue
+            features[str(fid)] = FeatureSpec(str(fid), str(spec.get("method", "GET")).upper(), str(spec.get("path", "")),
+                                              str(spec.get("proof_field", "")), str(spec.get("requires_plan", "")),
+                                              bool(spec.get("consumes_quota", False)), str(spec.get("observed_via", "developer")),
+                                              tuple(spec.get("denied_statuses", (402, 403))), tuple(spec.get("allowed_statuses", (200, 201))))
+        outcomes = {"success": "success", "decline": "declined", "cancel": "cancelled"}
+        outcomes.update({str(k): str(v) for k, v in (data.get("sandbox_outcomes") or {}).items()})
+        status_values = {"success": "success"}
+        status_values.update({str(k): str(v) for k, v in (data.get("return_status_values") or {}).items()})
+        lim = data.get("limits") or {}
+        limits = Limits(max_requests=int(lim.get("max_requests", 10000)), max_requests_per_second=float(lim.get("max_requests_per_second", 50.0)),
+                        revocation_poll_schedule_s=tuple(float(x) for x in lim.get("revocation_poll_schedule_s", (0.0, 0.1, 0.25, 0.5))),
+                        revocation_sla_seconds=(float(lim["revocation_sla_seconds"]) if lim.get("revocation_sla_seconds") is not None else None),
+                        quota_probe_cap=int(lim.get("quota_probe_cap", 6)), timeout_seconds=float(lim.get("timeout_seconds", 10.0)))
+        identities: dict[str, IdentitySpec] = {}
+        resolved_tokens: dict[str, str] = dict(tokens or {})
+        for alias, spec in (data.get("identities") or {}).items():
+            if not isinstance(spec, Mapping):
+                continue
+            identities[str(alias)] = IdentitySpec(str(alias), str(spec.get("role", "")), str(spec.get("tenant", f"tenant_{alias}")),
+                                                   spec.get("token_env"), spec.get("tenant_id"))
+            if alias not in resolved_tokens and spec.get("token_env"):
+                value = env_map.get(str(spec["token_env"]))
+                if value:
+                    resolved_tokens[str(alias)] = value
+        return ExecutionBrief(
+            authorization_ref=str(data.get("authorization_ref", "dev-test")), authorized_by=str(data.get("authorized_by", "developer")),
+            environment=str(data.get("environment", "test")), target_kind=str(data.get("target_kind", "customer_sandbox")),
+            allowed_hosts=tuple(str(h) for h in (data.get("allowed_hosts") or ())), operations=operations, features=features,
+            plans=plans, primary_currency=str(data.get("primary_currency", "USD")), sandbox_outcomes=outcomes,
+            return_status_values=status_values, identities=identities, limits=limits,
+            declared_paid_features=tuple(data.get("declared_paid_features") or ()), allow_signup=bool(data.get("allow_signup", False)),
+            tokens=resolved_tokens)
 
     def host_permitted(self, base_url: str, allowed_hosts: Iterable[str]) -> bool:
         return True

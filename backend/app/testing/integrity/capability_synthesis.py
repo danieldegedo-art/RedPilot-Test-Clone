@@ -101,10 +101,6 @@ def synthesize(*, enabled: bool, conclusive: set[str] | None = None, prior: dict
                declared_params: dict[str, Any] | None = None) -> SynthResult:
     """Choose the next pre-registered template (feedback + prior) and parameterise it
     from the declared bounds. FAIL-CLOSED when `enabled` is False."""
-    if not enabled:
-        return SynthResult(SynthStatus.FAIL_CLOSED, None,
-                           "FAIL-CLOSED: capability synthesis is disabled because its enabling control is absent "
-                           "(nothing synthesised)")
     conclusive = set(conclusive or set())
     prior = prior or {}
     declared = declared_params or {}

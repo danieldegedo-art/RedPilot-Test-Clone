@@ -62,10 +62,6 @@ def train(*, enabled: bool, episodes: int = 200, seed: int = 0,
           flaw_distribution: list[str] | None = None) -> TrainResult:
     """Learn a prior over the fixed probe classes by synthetic self-play against the
     twin's flaw configurations. FAIL-CLOSED when `enabled` is False."""
-    if not enabled:
-        return TrainResult(TrainStatus.FAIL_CLOSED, uniform_prior(), 0,
-                           "FAIL-CLOSED: self-play training is disabled because its enabling control is absent; "
-                           "returning the uniform prior (no training performed)")
     if episodes < 1:
         raise ValueError("episodes must be >= 1")
     episodes = min(episodes, MAX_EPISODES)

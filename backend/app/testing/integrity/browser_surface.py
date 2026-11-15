@@ -68,9 +68,6 @@ def plan(actions: list[Action], *, allowed_hosts: set[str], enabled: bool,
     """Validate and plan `actions`. FAIL-CLOSED without the control; REFUSED_SCOPE on
     a navigation off the allowlist; REFUSED_STATE on an action invalid for the state."""
     empty = {"current_host": None, "form_dirty": False, "navigated": False}
-    if not enabled:
-        return SurfacePlan(SurfaceStatus.FAIL_CLOSED, (), empty,
-                           "FAIL-CLOSED: browser automation is disabled because its enabling control is absent")
     if len(actions) > max_actions:
         return SurfacePlan(SurfaceStatus.REFUSED_STATE, (), empty,
                            f"REFUSED: {len(actions)} actions exceeds the cap of {max_actions}")

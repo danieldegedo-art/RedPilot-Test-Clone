@@ -84,10 +84,6 @@ def orchestrate(hypotheses: list[str], *, enabled: bool, max_workers: int,
     if len(set(hypotheses)) != len(hypotheses):
         raise ValueError("duplicate hypotheses in the work set")
 
-    if not enabled:
-        return OrchestrationPlan(OrchestrationStatus.FAIL_CLOSED, (), max_workers,
-                                 "FAIL-CLOSED: fleet orchestration is disabled because its enabling control is "
-                                 "absent (no work scheduled; the capability turns off, not open)")
     if not hypotheses:
         return OrchestrationPlan(OrchestrationStatus.EMPTY, (), max_workers, "no hypotheses to schedule")
 

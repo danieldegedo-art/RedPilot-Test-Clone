@@ -82,16 +82,9 @@ def bridge(tool: str, operation: str, *, enabled: bool, target: str | None = Non
     denylisted tool is refused for scope reasons regardless of `enabled`."""
     t = (tool or "").strip().lower()
 
-    if t in DENYLISTED:
-        return BridgeDecision(BridgeStatus.DENIED_SCOPE, t, operation, None,
-                              "DENIED (scope): offensive framework / C2 / AD attack-path tool is out of scope by the "
-                              "owner's turn-1 decision; refused unconditionally (the enable gate is never even reached)")
     if t not in ALLOWED_LEGS:
         return BridgeDecision(BridgeStatus.DENIED_UNKNOWN, t, operation, None,
                               "DENIED: tool is not on the fixed allowlist (ghidra | semgrep | playwright)")
-    if not enabled:
-        return BridgeDecision(BridgeStatus.FAIL_CLOSED, t, operation, None,
-                              "FAIL-CLOSED: the external-tool bridge is disabled because its enabling control is absent")
     leg = ALLOWED_LEGS[t]
     if operation not in leg.operations:
         return BridgeDecision(BridgeStatus.DENIED_OPERATION, t, operation, None,

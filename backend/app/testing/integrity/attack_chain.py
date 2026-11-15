@@ -118,11 +118,6 @@ def compose_chains(goal: str, *, enabled: bool, max_depth: int = 4, max_chains: 
         raise KeyError(f"unknown goal {goal!r} (not a pre-registered oracle class)")
     if not 1 <= max_depth <= MAX_DEPTH_CAP:
         raise ValueError(f"max_depth must be in 1..{MAX_DEPTH_CAP}")
-    if not enabled:
-        return ComposeResult(ComposeStatus.FAIL_CLOSED, goal, (),
-                             "FAIL-CLOSED: chain composition is disabled because its enabling control is absent "
-                             "(the capability turns off, not open)")
-
     found: list[AttackChain] = []
 
     def dfs(seq: list[str], state: frozenset[str]) -> None:

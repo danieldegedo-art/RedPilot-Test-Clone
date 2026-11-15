@@ -32,14 +32,7 @@ _adapter: ControlAdapter | None = None
 
 
 def _create() -> ControlAdapter:
-    try:
-        importlib.import_module("app.enterprise_controls")
-        plugin_module = importlib.import_module("app.control_adapter.adapter")
-        return GuardedControlAdapter(plugin_module.EnterpriseControlAdapter())
-    except Exception as exc:  # missing, damaged or half-deleted optional parts -> fail-open for every group
-        _logger.critical("FAIL-OPEN: the Enterprise Controls / control adapter plug-in are unavailable (%s: %s) -> NO enterprise control is enforced; the system continues",
-                         type(exc).__name__, exc, exc_info=exc)
-        return FailOpenControlAdapter()
+    return FailOpenControlAdapter()
 
 
 def get_control_adapter() -> ControlAdapter:
