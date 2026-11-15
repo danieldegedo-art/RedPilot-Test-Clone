@@ -872,6 +872,13 @@ generalised across the seal. Every other family stayed TP (no regression), every
 (**FP 0**), the `webhook_forgery` ceiling abstained (1/1), 0 internal-route hits. Raw run:
 `run_gauntlet.py --corpus hardened --split all --engine cold --recon cold`.
 
+**Grey-box posture also lifted (same engine edit, `--engine greybox --recon full`):** sealed TEST
+**0.80 → 0.90 (9/10)**, DEV 0.875 (7/8), **FP 0**, 0 internal hits, ceiling abstained 1/1.
+`gb_bola_object` is TP via PBB-D on DEV #406 and sealed TEST #506. The single remaining grey-box miss
+is `h_replay_regrant` — **not a capability gap**: capability C (`enable_replay_probe`) is wired into the
+COLD probe set only, not grey-box, so grey-box has no over-limit oracle. (The cold engine, which carries
+both C and D, reaches 1.00.)
+
 ### Pre-registration vs outcome (committed in `docs/CAPABILITY_D_PLAN.md` before measuring)
 - `gb_bola_object#406` (DEV): predicted **TP** → **TP** (PBB-D). ✓
 - `gb_bola_object#506` (sealed TEST): predicted **TP (expected)** → **TP** (PBB-D). ✓
