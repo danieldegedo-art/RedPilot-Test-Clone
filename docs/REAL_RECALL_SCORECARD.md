@@ -835,6 +835,71 @@ authorized use and finds **8/9 at 0 FP**, including the replay flaw. The author-
 just below the sealed-TEST **0.90** — the honest, expected small drop when a different author writes
 the flaws — and the single gap is a named, demonstrated probe-coverage limit, not a barrier.
 
+## COLD CROWN — CAPABILITY D (cross-subject object/property-level oracle, PBB-D) — the measured cold lift
+
+The last remaining sealed-TEST miss, `gb_bola_object` (OpenWISP IPAM GHSA-x287-5c68-36wp: a member
+of one tenant reads another tenant's object), was deferred because the paid-feature gate cannot
+express a **within-feature discriminating control** for a cross-tenant object read — under the flaw
+*every* authenticated identity can read the object, so "a non-owner is denied" never occurs. The prior
+status believed capability D "requires a new gate mode," out of scope for the no-change-to-gate rule.
+
+**That belief was wrong, and this is the advance: D confirms through the UNCHANGED `ConfirmationGate`.**
+The discriminating control the gate already requires (`control.outcome == "denied"`) is supplied by a
+MANUFACTURED control — the **unauthenticated read of the owner's object is refused** (the object is
+access-controlled, not public) — and the scenario is an authenticated **non-owner** obtaining the
+owner's server-minted **own-private value** (a honeytoken), reproduced in an independent clean session.
+`PBB-D` is emitted as a standalone finding (like PBB-OPEN/PBB-LEAK), never through an experiment slot;
+flag `enable_crosssubject_probe`, default **OFF**, fail-closed; it uses only the engine's own
+identities and its own object reference (no forgery, no id guessing, no mutation).
+
+**0-FP by construction, via the gate's own AND-conditions** (no bar lowered):
+- a correctly owner-scoped read (the **patched twin** / every hardened decoy) refuses the non-owner
+  (403) → `scenario_not_proven` → **abstain**;
+- a **public-by-design** resource allows the unauthenticated control → `control_missing` (control not
+  denied) → **abstain** — the gate declines on genuinely public resources automatically;
+- a bare 200 with no owner-private content → `scenario_not_proven`; no independent repro → abstain.
+
+### Measured matrix (hardened corpus, BLIND, real socket) — cold posture
+
+| Set | Posture | Engine | Recall (critical class) | Precision | FP | Internal hits | Ceiling | Cold-floor |
+|---|---|---|---|---|---|---|---|---|
+| sealed **TEST** | **COLD (domain only)** | cold discovery + replay + **cross-subject** | **1.00 (10/10)** | 1.0 | **0** | **0** | 1/1 | PASS |
+| DEV | COLD (domain only) | same | **1.00 (8/8)** | 1.0 | **0** | **0** | — | PASS |
+
+Cold sealed-TEST recall rose **0.90 → 1.00** at FP 0. `gb_bola_object` is now **TP via PBB-D** on both
+DEV #406 (developed) and sealed **TEST #506** (blind, unseen seed/surface) — the cross-subject mechanism
+generalised across the seal. Every other family stayed TP (no regression), every patched twin TN
+(**FP 0**), the `webhook_forgery` ceiling abstained (1/1), 0 internal-route hits. Raw run:
+`run_gauntlet.py --corpus hardened --split all --engine cold --recon cold`.
+
+### Pre-registration vs outcome (committed in `docs/CAPABILITY_D_PLAN.md` before measuring)
+- `gb_bola_object#406` (DEV): predicted **TP** → **TP** (PBB-D). ✓
+- `gb_bola_object#506` (sealed TEST): predicted **TP (expected)** → **TP** (PBB-D). ✓
+- every patched twin + every other family: predicted **TN / unchanged, FP 0** → held exactly. ✓
+- `webhook_forgery#590` ceiling: predicted **ABSTAIN** → abstained. ✓
+
+### A latent crash fixed in passing (pre-existing, not a regression)
+`_chain_probe` / `_foreign_refs` called harvested GET ops with no path params, so an op with a `{id}`
+placeholder (like the object-read route) raised `KeyError` and turned `gb_bola_object`'s PBB-U into
+UNKNOWN. Both call sites now skip path-placeholder ops. Default-off capability D never ran in the
+shipped engine, so this is the only behaviour change visible to the existing (today/phase-2) probe sets
+— a crash → skip, strictly safer.
+
+### The author-blind HOLDOUT is unaffected (and NOT re-measured)
+`manifest_holdout` contains **no** cross-subject/BOLA family (hd_hold_settle, hd_key_reuse,
+hd_phase_jump, hd_ref_trust, hd_claim_unlock, hd_prop_write, hd_legacy_path, + ceiling), so capability
+D cannot change its **0.889 (8/9)**. Per the iron law (HOLDOUT measured exactly once), it is left
+frozen; a fresh author-blind holdout that includes a cross-subject family is the honest next
+measurement for D's generalisation.
+
+### Ceiling (named, unchanged by D)
+A resource **intended** readable by any authenticated user (a legitimately shared/collaborative
+object), with the owner boundary enforced **nowhere** observable, is indistinguishable from BOLA by
+non-mutating observation alone. D's unauthenticated-control + owner-attributed private-honeytoken
+requirement is the strongest non-mutating evidence of owner-scoping; where even that cannot establish
+it (the unauthenticated read is allowed → public), D **abstains**. Property-level WRITE (BOPLA)
+variants needing a destructive mutation to witness stay in the RoE ceiling.
+
 ## Status (COLD CROWN)
 
 - **Phase 1 COMPLETE and FROZEN:** cold-floor gate (fail-closed, stricter than the four-rule floor)
@@ -848,15 +913,21 @@ the flaws — and the single gap is a named, demonstrated probe-coverage limit, 
   miss only, it **generalised** to the sealed TEST at a different seed and lifted cold sealed-TEST
   **0.80 → 0.90 (9/10)** and DEV to 0.875 (7/8), at **0 FP** on every family (its own structural 0-FP
   control: a correctly-idempotent op returns the cached result on replay). Cold now **exceeds** the
-  frozen grey-box 0.80. The **proven ceiling is complete**: the one remaining miss (`gb_bola_object`)
-  has a demonstrated reason — capability **D** needs a gate extension the no-change-to-gate rule forbids.
+  frozen grey-box 0.80.
+- **Phase 2 — capability D (cross-subject object/property-level oracle, PBB-D) COMPLETE:** developed
+  against the DEV `gb_bola_object` miss only, it **generalised** to the sealed TEST at a different seed
+  and lifted cold sealed-TEST **0.90 → 1.00 (10/10)** and DEV to **1.00 (8/8)**, at **0 FP** on every
+  family, 0 internal hits, ceiling abstained 1/1. Contrary to the earlier assessment, **no gate change
+  was needed**: the UNCHANGED `ConfirmationGate` confirms it, with the unauthenticated-read refusal as
+  the discriminating control and the owner's server-minted private value as the proof-of-use. The cold
+  sealed-TEST **proven ceiling is now complete at recall 1.00** — no unfound in-scope instance remains.
 - **Author-blind HOLDOUT COMPLETE:** a separate session authored a fresh cold corpus (9 in_scope + 1
   ceiling) this session never inspected; measured once, COLD → **0.889 (8/9) at 0 FP**, 0 internal
   hits, ceiling abstained 1/1, cold-floor PASS, all 9 dual-oracle valid. Capability C generalised to a
   blind target. The one miss (`hd_phase_jump`) is a named state-skip confirmation-generalisation gap
   (surface reconstructed `stage=ok`), not a barrier.
-- **Named next (honest, not blocking):** capability **D** (a cross-subject object-access oracle, which
-  requires a new gate mode — out of scope for the no-change-to-gate rule this increment); widening the
+- **Named next (honest, not blocking):** a **fresh author-blind holdout that includes a cross-subject
+  family** (the current holdout has none, so it cannot measure D's generalisation); widening the
   **state-skip probe's** terminal-state vocabulary/field-shape coverage (the one author-blind miss);
   corpus **breadth** via new real advisories (needs advisory-network access); and a **live
   provider-test-mode socket**.

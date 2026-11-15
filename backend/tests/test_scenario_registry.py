@@ -29,12 +29,12 @@ def test_binding_and_divergence_classes_require_a_second_scope():
     assert scopes("retention_after_refund") == {"server_enforced"}
 
 
-def test_total_required_is_ten_plus_four_extras():
-    assert len(REQUIRED) == 14
+def test_total_required_is_eleven_plus_four_extras():
+    assert len(REQUIRED) == 15  # 11 pre-registered classes at server_enforced + 4 second-scope extras
 
 
 def test_empty_observed_leaves_everything_unmet():
-    assert len(unmet([])) == 14 and not is_complete([])
+    assert len(unmet([])) == 15 and not is_complete([])
 
 
 def test_full_observed_is_complete():
@@ -52,5 +52,5 @@ def test_unmet_accepts_class_scope_pairs_and_reports_the_gap():
 
 def test_coverage_report_json_safe():
     rep = coverage_report([Scenario("retention_after_refund", Scope.SERVER_ENFORCED.value)])
-    assert rep["complete"] is False and rep["required"] == 14
+    assert rep["complete"] is False and rep["required"] == 15
     assert json.loads(json.dumps(rep)) == rep

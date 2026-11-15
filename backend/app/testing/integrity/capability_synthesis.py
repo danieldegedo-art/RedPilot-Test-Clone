@@ -58,6 +58,7 @@ TEMPLATES: dict[str, ProbeTemplate] = {
     "PBB-E": ProbeTemplate("PBB-E"),
     "PBB-OPEN": ProbeTemplate("PBB-OPEN"),
     "PBB-LEAK": ProbeTemplate("PBB-LEAK"),
+    "PBB-D": ProbeTemplate("PBB-D"),  # cross-subject object/property-level access (fully specified; no params)
 }
 assert set(TEMPLATES) == set(EXPERIMENT_CLASSES), "template catalog must be exactly the pre-registered classes"
 

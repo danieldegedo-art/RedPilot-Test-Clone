@@ -130,6 +130,17 @@ SPECS: dict[str, OracleSpec] = {
         p0_condition="K, which never paid, USES the feature after V1's payment, K was denied before, a clean re-session of K reproduces it, artifacts admitted.",
         rule_out_condition="K denied after V1's payment (checked as part of the controls; no separate finding is emitted then).",
         stop_condition=_COMMON_STOP, evidence_requirements=_COMMON_EVIDENCE),
+    "PBB-D": OracleSpec(
+        invariant="A subject's own object is readable only by that subject (or an explicitly granted party); another authenticated subject cannot read it -- object-level ownership is enforced on every read path.",
+        baseline_state="Owner B creates its OWN object (server mints a private reference + a private value); an UNAUTHENTICATED read of that object is REFUSED (so the object is access-controlled, not public); a non-owner A is the subject under test.",
+        identity_and_tenant="owner B (own tenant, holds the object), non-owner A (different synthetic tenant), independent clean non-owner A2 for reproduction, unauthenticated session as the discriminating control.",
+        controlled_variable="the reader's relationship to the object (owner vs authenticated non-owner vs unauthenticated), using ONLY the engine's own object reference (never a guessed/foreign id).",
+        action_sequence="B creates its own object -> B self-reads (captures the owner-private value) -> UNAUTHENTICATED read of the same object (control: refused) -> A (authenticated non-owner) reads it -> A2 (independent clean non-owner) reproduces.",
+        expected_outcome="A (and A2) DENIED; only the owner and the unauthenticated-refused control are observed.",
+        p0_condition="A, an authenticated non-owner, reads B's object and obtains B's server-minted OWN-PRIVATE value, the unauthenticated control stays REFUSED (discriminating), and an independent clean session reproduces it, all artifacts admitted.",
+        rule_out_condition="A refused (owner-scoped read), or the unauthenticated control is ALLOWED (public-by-design -> abstain), while the read oracle is discriminating.",
+        stop_condition=_COMMON_STOP + "; no owner-private value is observable on the object read; a resource intended-shared among all authenticated users with no observable owner boundary (documented ceiling)",
+        evidence_requirements=_COMMON_EVIDENCE + "; the non-owner must obtain the SAME owner-private value the owner's self-read returned (provenance-bound), never a bare 200"),
     "PBB-OPEN": OracleSpec(
         invariant="A feature the brief declares plan-gated is DENIED to a fresh identity that never paid.",
         baseline_state="Two independent fresh identities, no payment attempt.",
@@ -145,6 +156,7 @@ SPECS: dict[str, OracleSpec] = {
 EXPERIMENT_CLASSES: dict[str, str] = {
     "PBB-U": "unconfirmed_payment_grants_access", "PBB-F": "plan_or_price_binding", "PBB-H": "currency_binding", "PBB-C": "duplicate_value_via_return_flow_repetition",
     "PBB-G": "cross_tenant_binding", "PBB-X": "cross_identity_binding", "PBB-R": "retention_after_refund", "PBB-E": "ui_vs_server_divergence", "PBB-OPEN": "paid_feature_open_to_unpaid", "PBB-LEAK": "entitlement_leak_to_unrelated_identity",
+    "PBB-D": "cross_subject_object_access",
 }
 
 # ZR-006: the identity/tenant SCOPE each experiment probes. The smallest
@@ -153,6 +165,7 @@ EXPERIMENT_CLASSES: dict[str, str] = {
 SCOPE_BY_HYPOTHESIS: dict[str, str] = {
     "PBB-U": "single_identity", "PBB-F": "single_identity", "PBB-H": "single_identity", "PBB-C": "single_identity", "PBB-R": "single_identity",
     "PBB-G": "cross_tenant", "PBB-X": "cross_identity", "PBB-LEAK": "unrelated_identity", "PBB-E": "view_consistency", "PBB-OPEN": "open_access",
+    "PBB-D": "cross_subject",
 }
 
 

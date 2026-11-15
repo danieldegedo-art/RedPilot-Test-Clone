@@ -96,9 +96,11 @@ class RunResult:
 # Phase-2 engine = today's probes + the new behavior-based discovery probe (opt-in, fail-closed).
 PHASE2_ENGINE_PROBES: dict[str, Any] = {**TODAY_ENGINE_PROBES, "enable_behavior_probe": True}
 
-# Grey-box engine = phase-2 + the B60 grey-box sequencing probe (opt-in, fail-closed). This is the
-# capability developed for the ENTERPRISE-HARDENED tranche; default-OFF so legacy runs are identical.
-GREYBOX_ENGINE_PROBES: dict[str, Any] = {**PHASE2_ENGINE_PROBES, "enable_greybox_probe": True}
+# Grey-box engine = phase-2 + the B60 grey-box sequencing probe + the B63 cross-subject object/
+# property-level probe (capability D), both opt-in / fail-closed. These are the capabilities developed
+# for the ENTERPRISE-HARDENED tranche; default-OFF so legacy / today / phase-2 runs stay byte-identical.
+GREYBOX_ENGINE_PROBES: dict[str, Any] = {**PHASE2_ENGINE_PROBES, "enable_greybox_probe": True,
+                                         "enable_crosssubject_probe": True}
 
 # COLD engine = grey-box + the B61 autonomous cold-start surface-discovery pre-pass (opt-in,
 # fail-closed). On a COLD brief (no declared surface) it reconstructs the surface by authorized use

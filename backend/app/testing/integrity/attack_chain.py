@@ -63,6 +63,9 @@ LINKS: dict[str, ChainLink] = {
     "PBB-LEAK": ChainLink(frozenset({"access_without_payment"}), frozenset({"unrelated_identity_access"})),
     "PBB-R": ChainLink(frozenset({"access_without_payment"}), frozenset({"retention_after_refund"})),
     "PBB-E": ChainLink(frozenset(), frozenset({"view_server_divergence"})),
+    # PBB-D stands alone: a fresh authenticated identity reaches another subject's object directly
+    # (no prior payment step). Its effect is a cross-subject access that no payment step consumes.
+    "PBB-D": ChainLink(frozenset({"fresh_identity"}), frozenset({"cross_subject_object_access"})),
 }
 assert set(LINKS) == set(EXPERIMENT_CLASSES), "chain catalog must cover exactly the pre-registered classes"
 

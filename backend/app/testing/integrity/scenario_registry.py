@@ -4,7 +4,7 @@ A declared, fixed checklist of the scenarios an engagement MUST exercise before 
 be called complete. A scenario is one pre-registered oracle class (ZR-036) tested at a
 declared test scope. The minimum is:
 
-  * every one of the ten pre-registered classes exercised at the SERVER_ENFORCED scope
+  * every one of the eleven pre-registered classes exercised at the SERVER_ENFORCED scope
     (the only authoritative surface -- see differencer.py); plus
   * the identity/tenant-binding classes (cross_identity, cross_tenant, entitlement_leak)
     ALSO at the CROSS_SUBJECT scope -- binding can only be confirmed by testing access

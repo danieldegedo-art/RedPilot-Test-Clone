@@ -58,6 +58,8 @@ class EntitlementObservation:
     server_allows: bool | None = None             # the server-enforced outcome
     never_paid: bool | None = None                # the identity never paid
     unrelated_identity: bool | None = None         # an identity unrelated to any payer
+    nonowner_obtained_private_object: bool | None = None  # an authenticated non-owner obtained the owner's server-minted private object value
+    object_read_access_controlled: bool | None = None     # the unauthenticated read of that object is refused (it is gated, not public-by-design)
 
 
 @dataclass(frozen=True)
@@ -113,6 +115,9 @@ LIBRARY: tuple[EntitlementInvariant, ...] = (
          "Confirm the unrelated identity has no legitimate shared-plan/team entitlement."),
     _inv("PBB-OPEN", ("never_paid", "feature_usable"), lambda o: o.never_paid is True and o.feature_usable is True,
          "Confirm the feature is actually meant to be paid-only (plan-gating is customer-declared)."),
+    _inv("PBB-D", ("nonowner_obtained_private_object", "object_read_access_controlled"),
+         lambda o: o.nonowner_obtained_private_object is True and o.object_read_access_controlled is True,
+         "Confirm the object is not INTENDED readable by any authenticated user (a legitimately shared object); the unauthenticated-refused control establishes it is access-controlled, not public-by-design."),
 )
 _BY_ID = {i.invariant_id: i for i in LIBRARY}
 

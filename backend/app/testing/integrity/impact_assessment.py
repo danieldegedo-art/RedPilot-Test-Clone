@@ -58,6 +58,7 @@ CLASS_SEVERITY: dict[str, Severity] = {
     "duplicate_value_via_return_flow_repetition": Severity.MEDIUM,
     "retention_after_refund": Severity.MEDIUM,
     "ui_vs_server_divergence": Severity.LOW,   # non-authoritative -> capped LOW
+    "cross_subject_object_access": Severity.HIGH,  # BOLA: a non-owner reads another subject's private object
 }
 assert set(CLASS_SEVERITY) == set(EXPERIMENT_CLASSES.values()), "class-severity map must cover the pre-registered classes"
 

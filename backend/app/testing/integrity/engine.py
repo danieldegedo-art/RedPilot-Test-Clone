@@ -49,6 +49,7 @@ TITLES = {
     "PBB-R": "Paid feature must stop after a confirmed refund (within the declared tolerance)", "PBB-E": "Customer-visible pages must agree with the server-enforced outcome",
     "PBB-OPEN": "A plan-gated feature must be denied to an identity that never paid",
     "PBB-LEAK": "One customer's payment must not unlock the feature for unrelated identities",
+    "PBB-D": "A subject must not read another subject's own object (cross-subject/tenant object access)",
 }
 # ZR-019: per-hypothesis-class remediation, keyed off exactly what each experiment
 # demonstrably tests (TITLES above) -- not generic boilerplate, and not fabricated
@@ -64,6 +65,7 @@ RECOMMENDED_FIX: dict[str, str] = {
     "PBB-E": "Derive the customer-visible success/paid state from the same server-side entitlement check as the protected feature itself, not from the payment provider's return-flow status parameter alone -- treat this as a trust defect even when not independently a P0.",
     "PBB-OPEN": "Confirm the protected feature is denied to a clean identity with no payment before trusting any payment-attribution test built on top of it.",
     "PBB-LEAK": "Scope entitlement grants to the paying identity/tenant explicitly; an unrelated identity becoming entitled right after someone else's payment indicates a shared or unscoped entitlement key.",
+    "PBB-D": "Enforce object-level ownership at the data-access layer on EVERY read path: verify the authenticated caller owns (or is explicitly granted) the object before returning it; an unauthenticated refusal with an authenticated-stranger grant means authentication is checked but ownership is not.",
 }
 # ZR-019 affected_flow: the FLOW FAMILY (fsm_compiler.FLOW_TYPES -- ZR-001's list) each
 # experiment exercises, fixed by what the experiment tests (TITLES above), not by anything
@@ -82,6 +84,7 @@ FLOW_BY_HYPOTHESIS: dict[str, str] = {
     "PBB-E": "entitlement",   # customer-visible claim vs server-enforced outcome
     "PBB-OPEN": "entitlement",
     "PBB-LEAK": "entitlement",
+    "PBB-D": "entitlement",   # cross-subject object-level access (BOLA)
 }
 def _apply_prioritizer(wanted: list[str], prioritizer: PrioritizerFn | None) -> list[str]:
     """ZR-003/ZR-012: let an injected prioritizer choose the ORDER of the experiments
@@ -213,6 +216,7 @@ class PureBlackBoxEngine:
                  fed_use_analogy: bool = True, fed_use_infogain: bool = True,
                  enable_behavior_probe: bool = False, enable_greybox_probe: bool = False,
                  enable_cold_discovery: bool = False, enable_replay_probe: bool = False,
+                 enable_crosssubject_probe: bool = False,
                  disabled_agents: frozenset[str] = frozenset()) -> None:
         self._prioritizer = prioritizer  # ZR-003/ZR-012: None keeps the static EXPERIMENT_ORDER, exactly as before
         # B45 recon-breadth + B46 chain-composition: FAIL-CLOSED. Off unless an authorised caller enables them; when off, the probes are no-ops and behaviour is identical to before.
@@ -365,6 +369,17 @@ class PureBlackBoxEngine:
         # control). Its own 0-FP control: a correctly-idempotent op returns the cached result on replay,
         # so a LEGITIMATE first grant never trips it (patched -> n1==n0 -> RULED_OUT).
         self._enable_replay_probe = enable_replay_probe
+        # B63 cross-subject object/property-level probe (capability D): OPT-IN (off by default,
+        # fail-closed). Confirms forbidden cross-subject/cross-tenant object access (BOLA) through the
+        # UNCHANGED gate, using ONLY the engine's own identities/references (no forgery, no id guessing,
+        # no mutation). It supplies the discriminating control the paid-feature gate cannot express for
+        # a cross-tenant object read: the UNAUTHENTICATED read of the owner's object (refused -> the
+        # resource is access-controlled, not public) is the control; an authenticated NON-OWNER reading
+        # the owner's object and obtaining the owner's OWN-PRIVATE value (a server-minted honeytoken) is
+        # the scenario; an independent clean session reproduces it. Its own 0-FP controls: a correctly
+        # owner-scoped read refuses the stranger (403 -> no scenario -> no confirm), and a public-by-
+        # design read allows the unauthenticated control (-> control not denied -> the gate abstains).
+        self._enable_crosssubject_probe = enable_crosssubject_probe
         self._base_url = base_url
         self._cold_discovery_report: dict[str, Any] | None = None
         # B47 find-fast: opt-in triage mode -- stop after the first CONFIRMED_P0 (fewer calls). OFF by default, so a full assessment still runs every class and nothing changes.
@@ -743,6 +758,9 @@ class PureBlackBoxEngine:
         deny = {t for t in (getattr(V, "_token", None),) if isinstance(t, str) and t}
         try:
             for g in harvest_ops:
+                spec = b.op(g)
+                if spec is None or "{" in spec.path:
+                    continue  # a path-placeholder op needs a reference not harvested here; never call it unfilled
                 r = await V.call(g, label=f"U:victim:recon:{g}")
                 self._harvest(r.body, out, deny)
                 self._harvest_headers(r.headers, out, deny)
@@ -841,6 +859,9 @@ class PureBlackBoxEngine:
             _signer: dict[str, Any] = {}  # per-run asymmetric keypair we generate + register (DPoP-style), to sign with
             deny = {t for t in (getattr(S, "_token", None),) if isinstance(t, str) and t}  # the identity's own bearer -- never replayed as a field value
             for g in harvest_ops:
+                gspec = self.brief.op(g)
+                if gspec is None or "{" in gspec.path:
+                    continue  # a path-placeholder op needs a reference not harvested here; never call it unfilled
                 r = await S.call(g, label=f"U:chain:recon:{g}")
                 self._harvest(r.body, ctx, deny)
                 self._harvest_headers(r.headers, ctx, deny)
@@ -2454,6 +2475,137 @@ class PureBlackBoxEngine:
                                          limitations=["Found via a DECLARED alternate/deprecated route returning a paid feature's proof; a route absent from the published spec is not probed here."])
         return None
 
+    # ---- B63 cross-subject object/property-level oracle (capability D; OPT-IN, FAIL-CLOSED) ------
+    def _xs_extract_ref(self, body: Any) -> str | None:
+        """A reference the engine's OWN account just minted (a create response's id/ref). Prefer a
+        ref-labelled key; else a single non-empty scalar. Never a guessed or foreign id."""
+        if not isinstance(body, dict):
+            return None
+        for k, v in body.items():
+            if isinstance(v, (str, int)) and str(v) and self._greybox_is_ref(str(k)):
+                return str(v)
+        scalars = [str(v) for v in body.values() if isinstance(v, (str, int)) and str(v)]
+        return scalars[0] if len(scalars) == 1 else None
+
+    @staticmethod
+    def _xs_private_field(body: Any, ref_value: str) -> tuple[str | None, Any]:
+        """The owner-private value-witness: the highest-entropy non-reference scalar in the owner's
+        OWN self-read (the server-minted secret). Deterministic (longest value, then key name)."""
+        if not isinstance(body, dict):
+            return None, None
+        cands = [(k, v) for k, v in body.items() if isinstance(v, str) and v and str(v) != str(ref_value)]
+        if not cands:
+            return None, None
+        cands.sort(key=lambda kv: (-len(str(kv[1])), str(kv[0])))
+        return cands[0][0], cands[0][1]
+
+    def _xs_obs(self, cr: CallResult, feature_id: str, session: CustomerSession, oracle_id: str, pf: str) -> OracleObservation:
+        """Build a protected-feature-use observation from a cross-subject object read driven through
+        the TEMPLATE-path op call (so the artifact carries the redacted template path + a clean op
+        name, and is admitted -- unlike a resolved-path feature_call, whose path embeds the minted id
+        and is rejected as an unredacted sensitive value). Mirrors oracle.py's outcome vocabulary."""
+        proof = isinstance(cr.body, dict) and bool(cr.body.get(pf))
+        if not cr.admitted or cr.error is not None or cr.status is None:
+            outcome = "indeterminate"
+        elif cr.status in (200, 201):
+            outcome = "allowed" if proof else "indeterminate"
+        elif cr.status in (401, 403, 404):
+            outcome = "denied"
+        else:
+            outcome = "indeterminate"
+        return OracleObservation(oracle_id=oracle_id, feature_id=feature_id, identity_alias=session.identity_alias,
+                                 tenant_alias=session.tenant_alias, outcome=outcome, kind=KIND_FEATURE_USE,
+                                 proof_present=bool(proof and outcome == "allowed"), session_isolation_id=session.session_id,
+                                 artifact_ids=(cr.artifact_id,) if cr.artifact_id else (), observed_at=now_iso())
+
+    def _xs_object_pairs(self) -> list[tuple[Any, Any, str]]:
+        """(create_op, read_op, placeholder) pairs among role-inferred candidate ops: a POST with no
+        path placeholder (object create) and a GET whose path is that same resource plus ONE trailing
+        {id} placeholder (object read). Discovered cold from the bootstrap; declared in grey-box."""
+        cands = self._behavior_candidate_ops()
+        creates = [op for op in cands if op.method == "POST" and "{" not in op.path]
+        pairs: list[tuple[Any, Any, str]] = []
+        for rop in cands:
+            if rop.method != "GET" or not rop.path.rstrip("/").endswith("}"):
+                continue
+            phs = [seg[1:-1] for seg in rop.path.split("/") if seg.startswith("{") and seg.endswith("}")]
+            if len(phs) != 1:
+                continue
+            base = rop.path[:rop.path.index("{")].rstrip("/")
+            for cop in creates:
+                if cop.path.rstrip("/") == base:
+                    pairs.append((cop, rop, phs[0]))
+        return pairs
+
+    async def _cross_subject_probe(self, cs: ControlState) -> Finding | None:
+        """Capability D: forbidden cross-subject / cross-tenant object access (BOLA), confirmed through
+        the UNCHANGED gate with a MANUFACTURED discriminating control and an owner-private value-witness,
+        using ONLY the engine's own identities/references (no forgery, no id guessing, no mutation).
+          control  : the UNAUTHENTICATED read of the owner's object is REFUSED (so it is access-
+                     controlled, not public-by-design) -- the discriminating control the paid-feature
+                     gate cannot express for a cross-tenant object read;
+          scenario : an authenticated NON-OWNER reads the owner's object and obtains the owner's
+                     server-minted OWN-PRIVATE value (a correctly owner-scoped read refuses it -> 0-FP);
+          repro    : an independent clean non-owner session reproduces it.
+        0-FP by construction: a patched/owner-scoped read denies the stranger (no scenario); a public
+        resource allows the unauthenticated control (-> control not denied -> the gate abstains)."""
+        if not self._enable_crosssubject_probe or not cs.setup_ok:
+            return None
+        for _i, (cop, rop, ph) in enumerate(self._xs_object_pairs()[:3]):
+            if self._stop_reason() is not None:
+                return None
+            try:
+                B = await self.prov.acquire("xs_owner")       # the object's owner (engine's own tenant)
+                A = await self.prov.acquire("xs_stranger")    # an authenticated NON-owner (engine's own tenant)
+                A2 = await self.prov.acquire("xs_stranger2")  # an independent clean non-owner (reproduction)
+            except IdentityPoolExhausted:
+                return None
+            cr = await B.call(cop.name, label=f"XS:{cop.name}:create")  # owner creates its OWN object
+            b_ref = self._xs_extract_ref(cr.body)
+            if not b_ref:
+                continue
+            own = await B.call(rop.name, path_params={ph: b_ref}, label=f"XS:{rop.name}:owner")  # owner self-read
+            if own.status != 200 or not isinstance(own.body, dict):
+                continue
+            pf, v_b = self._xs_private_field(own.body, b_ref)  # the owner-private honeytoken
+            if pf is None or not v_b:
+                continue
+            fid = f"xsubj::{rop.name}"  # clean feature_id (no minted id) shared by control/scenario/repro
+            # control: the UNAUTHENTICATED read of the owner's object must be REFUSED (access-controlled,
+            # not public). Driven uses_token=False through the template-path op so the artifact is admitted.
+            unauth = self._cold_session(f"xs_unauth_{_i}")
+            uc = await unauth.call(rop.name, path_params={ph: b_ref}, uses_token=False, label=f"XS:{rop.name}:ctl_unauth")
+            ctl = self._xs_obs(uc, fid, unauth, f"XS:{rop.name}:ctl_unauth", pf)
+            if ctl.outcome != "denied":
+                continue  # public-by-design (or indeterminate) -> not an owner-private resource -> ABSTAIN
+            ctl = ProtectedFeatureOracle.with_discrimination(ctl, True)  # owner self-read allowed vs unauth denied
+            # scenario: an authenticated NON-OWNER reads the owner's object and obtains the owner-private value.
+            sc = await A.call(rop.name, path_params={ph: b_ref}, label=f"XS:{rop.name}:scenario")
+            scen = self._xs_obs(sc, fid, A, f"XS:{rop.name}:scenario", pf)
+            if scen.outcome != "allowed" or not scen.proof_present or (isinstance(sc.body, dict) and str(sc.body.get(pf)) != str(v_b)):
+                continue  # patched / correctly owner-scoped -> stranger refused or no owner-private value -> ABSTAIN (0-FP)
+            # independent clean-session reproduction by a second non-owner.
+            rc = await A2.call(rop.name, path_params={ph: b_ref}, label=f"XS:{rop.name}:repro")
+            repro = self._xs_obs(rc, fid, A2, f"XS:{rop.name}:repro", pf)
+            if repro.outcome != "allowed" or not repro.proof_present:
+                continue
+            ids = _clean([*cs.artifact_ids, cr.artifact_id, own.artifact_id, *ctl.artifact_ids, *scen.artifact_ids, *repro.artifact_ids])
+            decision = self.gate.evaluate(ConfirmationCandidate("PBB-D", ctl, scen, repro, False,
+                                          signals_used=(KIND_FEATURE_USE,), evidence_classes=tuple(self._class_of(i) for i in ids)))
+            if decision.confirmed:
+                return self._finding("PBB-D", Verdict.CONFIRMED_P0, "high",
+                                     f"An authenticated NON-OWNER read another subject's object via the discovered read operation {rop.name!r} and obtained the owner's OWN-PRIVATE value (server-minted field {pf!r}); the same object is REFUSED to an unauthenticated caller (so it is access-controlled, not public), and an independent clean session reproduced the cross-subject read. No id was guessed and nothing was forged or mutated -- the reference belongs to the engine's own second tenant. Internal cause: UNKNOWN.",
+                                     artifacts=ids, token=decision.token,
+                                     metrics={"create_op": cop.name, "read_op": rop.name, "read_path": rop.path, "discovery": "cross_subject_object", "proof_field": pf},
+                                     identity_tenant_dimension=f"owner={B.identity_alias}/{B.tenant_alias}, non_owner={A.identity_alias}/{A.tenant_alias}, repro={A2.identity_alias}",
+                                     commercial_context="cross-subject object-level authorization (BOLA); not a payment flaw",
+                                     payment_state="n/a (authorization flaw: a non-owner reads the owner's object)",
+                                     actual_state=f"non-owner {A.identity_alias} obtained owner {B.identity_alias}'s private {pf!r} via {rop.name}",
+                                     entitlement_state="forbidden cross-subject object access granted",
+                                     server_side_oracle=f"{scen.oracle_id}: non-owner outcome=allowed w/ owner-private proof; control {ctl.oracle_id}: unauthenticated outcome=denied (discriminating)",
+                                     limitations=["READ-side cross-subject access to an owner-private object (the non-owner obtains the owner's server-minted private value), anchored on an UNAUTHENTICATED-refused control. A resource INTENDED readable by any authenticated user (a legitimately shared object), with the owner boundary enforced NOWHERE observable, is a documented ceiling -> ABSTAINED where the unauthenticated control is not refused. Property-level WRITE (BOPLA) variants needing a destructive mutation to witness stay in the RoE ceiling."])
+        return None
+
     async def _exp_u(self, cs: ControlState) -> Finding:
         hyp = "PBB-U"
         if (blocked := self._precondition(cs, hyp)) is not None:
@@ -3231,6 +3383,18 @@ class PureBlackBoxEngine:
             await self.ledger.flush_pending()  # ZR-009: durable after every experiment, not only once at the end
             if self._find_fast and findings and findings[-1].verdict is Verdict.CONFIRMED_P0:
                 break  # triage mode: a confirmed P0 is enough; skip the remaining classes (opt-in; default runs all)
+        # B63 capability D: cross-subject object/property-level access (PBB-D). Emitted as a STANDALONE
+        # finding (like PBB-OPEN / PBB-LEAK), not through an EXPERIMENT_ORDER slot, so its own
+        # hypothesis_id is preserved. OPT-IN / fail-closed; it confirms only through the UNCHANGED gate.
+        if self._enable_crosssubject_probe and self._stop_reason() is None and not (self._find_fast and any(f.verdict is Verdict.CONFIRMED_P0 for f in findings)):
+            try:
+                if (xsf := await self._cross_subject_probe(cs)) is not None:
+                    findings.append(xsf)
+            except IdentityPoolExhausted:
+                pass
+            except Exception as exc:  # noqa: BLE001 - a probe error is never a guess and never takes the run down
+                findings.append(self._finding("PBB-D", Verdict.UNKNOWN, "low", f"The cross-subject probe could not be completed ({type(exc).__name__}).", reasons=[f"engine_error:{type(exc).__name__}"]))
+            await self.ledger.flush_pending()
         guard = self._http.guard
         stats = {"customer_level_calls": self.rec.calls, "volunteered_hints_dropped": self.rec.hints_dropped, "hint_names_sample": list(self.rec.hint_samples),
                  "experiment_order": list(wanted), "oracle_observations": len(self.oracle.observations), "guard": guard.stats() if guard is not None else None, "synthetic_identities_used": sorted(self.prov.sessions),
