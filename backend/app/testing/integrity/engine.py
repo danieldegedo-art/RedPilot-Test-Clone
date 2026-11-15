@@ -50,6 +50,10 @@ TITLES = {
     "PBB-OPEN": "A plan-gated feature must be denied to an identity that never paid",
     "PBB-LEAK": "One customer's payment must not unlock the feature for unrelated identities",
     "PBB-D": "A subject must not read another subject's own object (cross-subject/tenant object access)",
+    "PBB-SIG": "Signature-requiring endpoints must reject absent, empty, algorithm-downgraded, and malformed signatures",
+    "PBB-AUTH": "Authenticated endpoints must reject absent, empty, malformed, and expired bearer tokens",
+    "PBB-RATE": "Server-side rate limits must not be bypassable by client-side evasion (header spoofing, identity rotation)",
+    "PBB-IDOR": "Object references must not be guessable or enumerable (sequential, predictable, or nearby IDs)",
 }
 # ZR-019: per-hypothesis-class remediation, keyed off exactly what each experiment
 # demonstrably tests (TITLES above) -- not generic boilerplate, and not fabricated
@@ -66,6 +70,10 @@ RECOMMENDED_FIX: dict[str, str] = {
     "PBB-OPEN": "Confirm the protected feature is denied to a clean identity with no payment before trusting any payment-attribution test built on top of it.",
     "PBB-LEAK": "Scope entitlement grants to the paying identity/tenant explicitly; an unrelated identity becoming entitled right after someone else's payment indicates a shared or unscoped entitlement key.",
     "PBB-D": "Enforce object-level ownership at the data-access layer on EVERY read path: verify the authenticated caller owns (or is explicitly granted) the object before returning it; an unauthenticated refusal with an authenticated-stranger grant means authentication is checked but ownership is not.",
+    "PBB-SIG": "Validate signatures on every request: reject absent or empty signature headers, reject algorithm:none and algorithm downgrade, verify against the registered key, and reject truncated or malformed signatures before processing the request body.",
+    "PBB-AUTH": "Validate bearer tokens on every protected request: reject absent Authorization headers, reject empty or malformed tokens, verify token expiry and integrity server-side, and never fall through to an unauthenticated code path on token parse failure.",
+    "PBB-RATE": "Enforce rate limits server-side by authenticated identity and by resource, not by client IP or header alone: ignore X-Forwarded-For / X-Real-IP from untrusted sources, bind quotas to the verified identity, and enforce a global resource cap independent of per-identity quotas.",
+    "PBB-IDOR": "Use opaque, non-sequential, high-entropy references (e.g. UUIDv4) for all object identifiers; enforce ownership checks on every access regardless of whether the reference is guessable; never rely on reference obscurity as the sole access control.",
 }
 # ZR-019 affected_flow: the FLOW FAMILY (fsm_compiler.FLOW_TYPES -- ZR-001's list) each
 # experiment exercises, fixed by what the experiment tests (TITLES above), not by anything
@@ -85,6 +93,10 @@ FLOW_BY_HYPOTHESIS: dict[str, str] = {
     "PBB-OPEN": "entitlement",
     "PBB-LEAK": "entitlement",
     "PBB-D": "entitlement",   # cross-subject object-level access (BOLA)
+    "PBB-SIG": "payment",     # signature bypass on payment/checkout endpoints
+    "PBB-AUTH": "entitlement", # auth bypass on protected feature endpoints
+    "PBB-RATE": "entitlement", # rate-limit bypass on quota-enforced endpoints
+    "PBB-IDOR": "entitlement", # ID guessing on object-reference endpoints
 }
 def _apply_prioritizer(wanted: list[str], prioritizer: PrioritizerFn | None) -> list[str]:
     """ZR-003/ZR-012: let an injected prioritizer choose the ORDER of the experiments
@@ -217,6 +229,10 @@ class PureBlackBoxEngine:
                  enable_behavior_probe: bool = True, enable_greybox_probe: bool = True,
                  enable_cold_discovery: bool = True, enable_replay_probe: bool = True,
                  enable_crosssubject_probe: bool = True,
+                 enable_signature_bypass: bool = True,
+                 enable_auth_bypass: bool = True,
+                 enable_ratelimit_bypass: bool = True,
+                 enable_id_guessing: bool = True,
                  disabled_agents: frozenset[str] = frozenset()) -> None:
         self._prioritizer = prioritizer  # ZR-003/ZR-012: None keeps the static EXPERIMENT_ORDER, exactly as before
         # B45 recon-breadth + B46 chain-composition: FAIL-CLOSED. Off unless an authorised caller enables them; when off, the probes are no-ops and behaviour is identical to before.
@@ -380,6 +396,10 @@ class PureBlackBoxEngine:
         # owner-scoped read refuses the stranger (403 -> no scenario -> no confirm), and a public-by-
         # design read allows the unauthenticated control (-> control not denied -> the gate abstains).
         self._enable_crosssubject_probe = enable_crosssubject_probe
+        self._enable_signature_bypass = enable_signature_bypass
+        self._enable_auth_bypass = enable_auth_bypass
+        self._enable_ratelimit_bypass = enable_ratelimit_bypass
+        self._enable_id_guessing = enable_id_guessing
         self._base_url = base_url
         self._cold_discovery_report: dict[str, Any] | None = None
         # B47 find-fast: opt-in triage mode -- stop after the first CONFIRMED_P0 (fewer calls). OFF by default, so a full assessment still runs every class and nothing changes.
@@ -3358,6 +3378,226 @@ class PureBlackBoxEngine:
         prefix, the same prefix every discovered route shares."""
         return None
 
+    # ----------------------------------------- B64: signature bypass probe -----------
+    async def _signature_bypass_probe(self, cs: ControlState) -> Finding | None:
+        """Try absent / empty / alg-none / truncated / wrong-key signatures against
+        every brief operation that declares a signature field. FAIL-CLOSED: no-op when
+        the brief has no signature-bearing operations."""
+        if not self._enable_signature_bypass:
+            return None
+        pre = self._precondition(cs, "PBB-SIG")
+        if pre is not None:
+            return pre
+        sig_ops = [name for name, op in self.brief.operations.items()
+                   if any(k for k in (op.request_fields or {}) if "sig" in k.lower() or "hmac" in k.lower() or "digest" in k.lower())]
+        if not sig_ops:
+            return self._finding("PBB-SIG", Verdict.BLOCKED, "low",
+                                 "No signature-bearing operation declared in the brief; probe cannot run.",
+                                 reasons=["no_signature_operations"])
+        S = await self.prov.acquire("sig-bypass")
+        feature = self.brief.primary_feature()
+        if feature is None:
+            return None
+        bypasses: list[str] = []
+        variants = [
+            ("absent", {}),
+            ("empty", {"signature": ""}),
+            ("alg_none", {"signature": "eyJhbGciOiJub25lIn0.e30."}),
+            ("truncated", {"signature": "AAAA"}),
+            ("null_byte", {"signature": "\x00"}),
+        ]
+        for variant_name, override_fields in variants:
+            for op_name in sig_ops:
+                try:
+                    result = await S.call(op_name, label=f"PBB-SIG:{variant_name}:{op_name}", fields=override_fields)
+                    if result.status is not None and 200 <= result.status < 300:
+                        obs = await self.oracle.check(S, feature, oracle_id=f"PBB-SIG:{variant_name}:{op_name}:oracle")
+                        if obs.outcome == "allowed":
+                            bypasses.append(f"{variant_name} on {op_name}")
+                except Exception:
+                    pass
+        if bypasses:
+            return self._finding("PBB-SIG", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
+                                 f"Signature bypass accepted: {', '.join(bypasses)}",
+                                 reasons=[f"sig_bypass_{b.split(' on ')[0]}" for b in bypasses])
+        return self._finding("PBB-SIG", Verdict.RULED_OUT, "high",
+                             f"All {len(variants)} signature bypass variants rejected on {len(sig_ops)} operation(s).",
+                             reasons=["all_variants_denied"])
+
+    # ----------------------------------------- B65: auth bypass probe ---------------
+    async def _auth_bypass_probe(self, cs: ControlState) -> Finding | None:
+        """Try absent / empty / malformed / null bearer tokens against protected
+        endpoints. FAIL-CLOSED: no-op when no feature oracle is established."""
+        if not self._enable_auth_bypass:
+            return None
+        pre = self._precondition(cs, "PBB-AUTH")
+        if pre is not None:
+            return pre
+        feature = self.brief.primary_feature()
+        if feature is None:
+            return None
+        # Use a raw unauthenticated session (no token at all)
+        K = cs.K
+        if K is None:
+            return None
+        bypasses: list[str] = []
+        auth_variants = [
+            ("no_header", None),
+            ("empty_bearer", "Bearer "),
+            ("bearer_null", "Bearer null"),
+            ("bearer_zero", "Bearer 0000000000000000"),
+            ("bearer_truncated", "Bearer " + "A" * 8),
+        ]
+        for variant_name, auth_value in auth_variants:
+            try:
+                headers: dict[str, str] = {}
+                if auth_value is not None:
+                    headers["Authorization"] = auth_value
+                for op_name in list(self.brief.operations)[:5]:
+                    result = await K.call(op_name, label=f"PBB-AUTH:{variant_name}:{op_name}",
+                                          fields={}, extra_headers=headers)
+                    if result.status is not None and 200 <= result.status < 300:
+                        obs = await self.oracle.check(K, feature, oracle_id=f"PBB-AUTH:{variant_name}:{op_name}:oracle")
+                        if obs.outcome == "allowed":
+                            bypasses.append(f"{variant_name} on {op_name}")
+            except Exception:
+                pass
+        if bypasses:
+            return self._finding("PBB-AUTH", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
+                                 f"Auth bypass accepted: {', '.join(bypasses)}",
+                                 reasons=[f"auth_bypass_{b.split(' on ')[0]}" for b in bypasses])
+        return self._finding("PBB-AUTH", Verdict.RULED_OUT, "high",
+                             f"All {len(auth_variants)} auth bypass variants rejected.",
+                             reasons=["all_variants_denied"])
+
+    # ----------------------------------------- B66: rate-limit bypass probe ---------
+    async def _ratelimit_bypass_probe(self, cs: ControlState) -> Finding | None:
+        """Drive an identity to its declared rate limit, then try client-side evasion
+        (header spoofing, rapid burst). FAIL-CLOSED: no-op when no quota_probe_cap."""
+        if not self._enable_ratelimit_bypass:
+            return None
+        pre = self._precondition(cs, "PBB-RATE")
+        if pre is not None:
+            return pre
+        feature = self.brief.primary_feature()
+        if feature is None:
+            return None
+        cap = self.brief.limits.quota_probe_cap
+        if cap <= 0:
+            return self._finding("PBB-RATE", Verdict.BLOCKED, "low",
+                                 "No declared quota/rate-limit cap in the brief; probe cannot run.",
+                                 reasons=["no_rate_limit_declared"])
+        S = await self.prov.acquire("rate-bypass")
+        # Drive to the limit
+        granted = 0
+        for i in range(cap + 5):
+            obs = await self.oracle.check(S, feature, oracle_id=f"PBB-RATE:fill:{i}")
+            if obs.outcome == "allowed":
+                granted += 1
+            else:
+                break
+        if granted > cap:
+            return self._finding("PBB-RATE", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
+                                 f"Granted {granted} uses against a declared cap of {cap} without any evasion.",
+                                 reasons=["over_quota_no_evasion"])
+        # Now try evasion variants
+        evasion_grants: dict[str, int] = {}
+        evasion_headers = [
+            ("xff_spoofed", {"X-Forwarded-For": "10.0.0.1"}),
+            ("xrealip_spoofed", {"X-Real-IP": "192.168.1.1"}),
+            ("user_agent_changed", {"User-Agent": "Mozilla/5.0 RedPilot-RateTest"}),
+        ]
+        for variant_name, hdrs in evasion_headers:
+            try:
+                for op_name in list(self.brief.operations)[:3]:
+                    result = await S.call(op_name, label=f"PBB-RATE:{variant_name}:{op_name}",
+                                          fields={}, extra_headers=hdrs)
+                    if result.status is not None and 200 <= result.status < 300:
+                        obs = await self.oracle.check(S, feature, oracle_id=f"PBB-RATE:{variant_name}:{op_name}:oracle")
+                        if obs.outcome == "allowed":
+                            evasion_grants[variant_name] = evasion_grants.get(variant_name, 0) + 1
+            except Exception:
+                pass
+        if evasion_grants:
+            return self._finding("PBB-RATE", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
+                                 f"Rate limit bypassed via client headers: {evasion_grants}",
+                                 reasons=[f"rate_bypass_{k}" for k in evasion_grants])
+        return self._finding("PBB-RATE", Verdict.RULED_OUT, "high",
+                             f"Rate-limited identity stayed denied under all {len(evasion_headers)} evasion variants (cap={cap}, granted={granted}).",
+                             reasons=["all_evasion_denied"])
+
+    # ----------------------------------------- B67: ID guessing probe ---------------
+    async def _id_guessing_probe(self, cs: ControlState) -> Finding | None:
+        """Derive candidate IDs from a legitimately obtained reference and try them as
+        a different identity. FAIL-CLOSED: no-op when no object-reference operation."""
+        if not self._enable_id_guessing:
+            return None
+        pre = self._precondition(cs, "PBB-IDOR")
+        if pre is not None:
+            return pre
+        # Find operations that return an id/reference field
+        ref_ops: list[tuple[str, str]] = []
+        for op_name, op in self.brief.operations.items():
+            for field_name in (op.response_fields or {}):
+                if any(k in field_name.lower() for k in ("id", "ref", "uuid", "key", "token", "handle")):
+                    ref_ops.append((op_name, field_name))
+        if not ref_ops:
+            return self._finding("PBB-IDOR", Verdict.BLOCKED, "low",
+                                 "No object-reference-returning operation declared in the brief; probe cannot run.",
+                                 reasons=["no_ref_operations"])
+        B = await self.prov.acquire("idor-owner")
+        A = await self.prov.acquire("idor-stranger")
+        guessed_hits: list[str] = []
+        for op_name, field_name in ref_ops[:5]:
+            try:
+                owner_result = await B.call(op_name, label=f"PBB-IDOR:owner:{op_name}", fields={})
+                if owner_result.status is None or owner_result.status >= 400:
+                    continue
+                spec = self.brief.op(op_name)
+                ref_val = spec.read(owner_result.body, field_name) if spec else None
+                if ref_val is None:
+                    continue
+                ref_str = str(ref_val)
+                # Derive candidate IDs
+                candidates: list[tuple[str, str]] = []
+                # Sequential +/- 1
+                try:
+                    numeric = int(ref_str)
+                    candidates.append(("seq_minus_1", str(numeric - 1)))
+                    candidates.append(("seq_plus_1", str(numeric + 1)))
+                    candidates.append(("seq_minus_10", str(numeric - 10)))
+                    candidates.append(("seq_plus_10", str(numeric + 10)))
+                    candidates.append(("zero", "0"))
+                    candidates.append(("one", "1"))
+                except ValueError:
+                    # Not numeric — try prefix/suffix mutations
+                    if len(ref_str) > 4:
+                        candidates.append(("truncated", ref_str[:len(ref_str)//2]))
+                    candidates.append(("zero_suffix", ref_str[:-1] + "0"))
+                    candidates.append(("a_suffix", ref_str[:-1] + "a"))
+                for candidate_name, candidate_id in candidates:
+                    try:
+                        read_ops = [n for n, o in self.brief.operations.items()
+                                    if any(k in (n.lower()) for k in ("get", "read", "fetch", "view", "show", "detail"))]
+                        target_op = read_ops[0] if read_ops else op_name
+                        stranger_result = await A.call(target_op, label=f"PBB-IDOR:{candidate_name}:{op_name}",
+                                                       fields={field_name: candidate_id},
+                                                       path_params={field_name: candidate_id})
+                        if stranger_result.status is not None and 200 <= stranger_result.status < 300:
+                            if stranger_result.body and str(stranger_result.body) != str(owner_result.body):
+                                guessed_hits.append(f"{candidate_name} on {op_name} ({field_name}={candidate_id})")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        if guessed_hits:
+            return self._finding("PBB-IDOR", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
+                                 f"ID guessing resolved foreign objects: {', '.join(guessed_hits[:5])}",
+                                 reasons=[f"idor_{h.split(' on ')[0]}" for h in guessed_hits])
+        return self._finding("PBB-IDOR", Verdict.RULED_OUT, "high",
+                             f"All guessed IDs rejected or 404 across {len(ref_ops)} reference operation(s).",
+                             reasons=["all_guesses_denied"])
+
     async def run(self, experiments: Iterable[str] | None = None) -> EngineResult:
         started = now_iso()
         if self._enable_cold_discovery and not self.brief.operations:
@@ -3395,6 +3635,23 @@ class PureBlackBoxEngine:
             except Exception as exc:  # noqa: BLE001 - a probe error is never a guess and never takes the run down
                 findings.append(self._finding("PBB-D", Verdict.UNKNOWN, "low", f"The cross-subject probe could not be completed ({type(exc).__name__}).", reasons=[f"engine_error:{type(exc).__name__}"]))
             await self.ledger.flush_pending()
+        # B64-B67: signature bypass, auth bypass, rate-limit bypass, ID guessing probes
+        _not_fast = not (self._find_fast and any(f.verdict is Verdict.CONFIRMED_P0 for f in findings))
+        for _probe_fn, _probe_hyp in [
+            (self._signature_bypass_probe, "PBB-SIG"),
+            (self._auth_bypass_probe, "PBB-AUTH"),
+            (self._ratelimit_bypass_probe, "PBB-RATE"),
+            (self._id_guessing_probe, "PBB-IDOR"),
+        ]:
+            if self._stop_reason() is None and _not_fast:
+                try:
+                    if (_pf := await _probe_fn(cs)) is not None:
+                        findings.append(_pf)
+                except IdentityPoolExhausted:
+                    pass
+                except Exception as exc:  # noqa: BLE001
+                    findings.append(self._finding(_probe_hyp, Verdict.UNKNOWN, "low", f"Probe could not be completed ({type(exc).__name__}).", reasons=[f"engine_error:{type(exc).__name__}"]))
+                await self.ledger.flush_pending()
         guard = self._http.guard
         stats = {"customer_level_calls": self.rec.calls, "volunteered_hints_dropped": self.rec.hints_dropped, "hint_names_sample": list(self.rec.hint_samples),
                  "experiment_order": list(wanted), "oracle_observations": len(self.oracle.observations), "guard": guard.stats() if guard is not None else None, "synthetic_identities_used": sorted(self.prov.sessions),

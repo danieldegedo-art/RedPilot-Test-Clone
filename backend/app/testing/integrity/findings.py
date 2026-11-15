@@ -141,6 +141,50 @@ SPECS: dict[str, OracleSpec] = {
         rule_out_condition="A refused (owner-scoped read), or the unauthenticated control is ALLOWED (public-by-design -> abstain), while the read oracle is discriminating.",
         stop_condition=_COMMON_STOP + "; no owner-private value is observable on the object read; a resource intended-shared among all authenticated users with no observable owner boundary (documented ceiling)",
         evidence_requirements=_COMMON_EVIDENCE + "; the non-owner must obtain the SAME owner-private value the owner's self-read returned (provenance-bound), never a bare 200"),
+    "PBB-SIG": OracleSpec(
+        invariant="An endpoint that requires a request signature must reject requests with absent, empty, malformed, or algorithm-downgraded signatures.",
+        baseline_state="A legitimately signed request succeeds; fresh identity with no signature is denied.",
+        identity_and_tenant="subject S (own synthetic tenant) with a valid signing key, control K (unsigned/clean).",
+        controlled_variable="signature header presence and content (absent, empty, alg:none, truncated, wrong-key).",
+        action_sequence="S signs a valid request (succeeds) -> S sends the same request with no signature -> empty signature -> alg:none -> truncated signature -> wrong key. Each variant is checked against the protected-feature oracle.",
+        expected_outcome="Every bypass variant DENIED; only the legitimately signed request is ALLOWED.",
+        p0_condition="S USES the feature with a bypass signature variant (absent/empty/none/truncated/wrong-key), the legitimately signed control succeeds, and a clean session reproduces it.",
+        rule_out_condition="All bypass variants denied while the signed control succeeds.",
+        stop_condition=_COMMON_STOP + "; no signature-requiring endpoint in the brief's declared surface",
+        evidence_requirements=_COMMON_EVIDENCE + "; the bypass variant's signature header (or absence) is captured in the admitted artifact"),
+    "PBB-AUTH": OracleSpec(
+        invariant="An endpoint that requires authentication must reject requests with absent, empty, malformed, or expired bearer tokens.",
+        baseline_state="A legitimately authenticated request succeeds; an unauthenticated request is denied.",
+        identity_and_tenant="subject S (authenticated, own synthetic tenant), control K (unauthenticated/clean).",
+        controlled_variable="Authorization header presence and content (absent, empty Bearer, malformed token, expired-pattern token, null-byte token).",
+        action_sequence="S authenticates legitimately (succeeds) -> request with no Authorization header -> empty 'Bearer ' -> 'Bearer null' -> 'Bearer <truncated>' -> 'Bearer 0000'. Each variant is checked against the protected-feature oracle.",
+        expected_outcome="Every unauthenticated variant DENIED; only the legitimately authenticated request is ALLOWED.",
+        p0_condition="S USES the feature with a bypass auth variant (no token/empty/malformed), the authenticated control succeeds, and a clean session reproduces it.",
+        rule_out_condition="All bypass variants denied while the authenticated control succeeds.",
+        stop_condition=_COMMON_STOP + "; no authentication-requiring endpoint in the brief's declared surface",
+        evidence_requirements=_COMMON_EVIDENCE + "; the bypass variant's Authorization header (or absence) is captured in the admitted artifact"),
+    "PBB-RATE": OracleSpec(
+        invariant="Server-side rate limits and quota enforcement must not be bypassable by client-side techniques (identity rotation, connection reuse, header spoofing).",
+        baseline_state="A single identity hitting its declared rate limit is denied; fresh identities are allowed their own quota.",
+        identity_and_tenant="subject S1 (hits limit), S2-S4 (rotation pool), control K (clean).",
+        controlled_variable="client-side evasion technique (identity rotation across S1-S4, X-Forwarded-For spoofing, connection keep-alive reuse, rapid sequential burst).",
+        action_sequence="S1 drives to the declared rate limit (denied) -> S1 retries with X-Forwarded-For spoofed -> S1 retries with different User-Agent -> rotate to S2 on the same resource -> burst S1-S4 concurrently. Check the protected-feature oracle for over-limit grants.",
+        expected_outcome="Rate-limited identity stays denied regardless of client header changes; identity rotation is legitimate (each gets its own quota) but a single resource's total does not exceed the global cap.",
+        p0_condition="An identity that exceeded its rate limit USES the feature via a client-side evasion technique, or the total grants across rotated identities exceed the resource's declared global cap.",
+        rule_out_condition="Rate-limited identity stays denied under all evasion variants; rotated identities each get exactly their own quota with no global over-grant.",
+        stop_condition=_COMMON_STOP + "; no declared rate limit or quota cap in the brief",
+        evidence_requirements=_COMMON_EVIDENCE + "; request count, denial count, and the evasion header used are captured per variant"),
+    "PBB-IDOR": OracleSpec(
+        invariant="Object references must not be guessable or enumerable; sequential, predictable, or nearby IDs must not resolve to other users' objects.",
+        baseline_state="Owner B creates an object and receives a reference; non-owner A holds no reference to B's object.",
+        identity_and_tenant="owner B (own tenant), non-owner A (different synthetic tenant), independent A2 for reproduction.",
+        controlled_variable="the object reference A presents (sequential +/-1, +/-10, zero-padded variants, base64-decoded-and-modified, UUID v1 time-adjacent).",
+        action_sequence="B creates its own object (captures the reference) -> derive candidate IDs from B's reference (sequential, adjacent, predictable patterns) -> A requests each candidate -> check whether any resolves to a real object with a different owner's data -> A2 reproduces.",
+        expected_outcome="All guessed references DENIED or return 404; no object belonging to another owner is retrieved.",
+        p0_condition="A retrieves an object belonging to another owner using a guessed/enumerated reference derived from B's legitimate reference, A2 reproduces, artifacts admitted.",
+        rule_out_condition="All guessed references denied or 404, while B's own reference works for B (the object endpoint is functional).",
+        stop_condition=_COMMON_STOP + "; no object-reference endpoint in the brief's declared surface; references are opaque UUIDs with no observable sequential pattern",
+        evidence_requirements=_COMMON_EVIDENCE + "; the guessed reference and the derivation method are captured in the admitted artifact"),
     "PBB-OPEN": OracleSpec(
         invariant="A feature the brief declares plan-gated is DENIED to a fresh identity that never paid.",
         baseline_state="Two independent fresh identities, no payment attempt.",
@@ -157,6 +201,7 @@ EXPERIMENT_CLASSES: dict[str, str] = {
     "PBB-U": "unconfirmed_payment_grants_access", "PBB-F": "plan_or_price_binding", "PBB-H": "currency_binding", "PBB-C": "duplicate_value_via_return_flow_repetition",
     "PBB-G": "cross_tenant_binding", "PBB-X": "cross_identity_binding", "PBB-R": "retention_after_refund", "PBB-E": "ui_vs_server_divergence", "PBB-OPEN": "paid_feature_open_to_unpaid", "PBB-LEAK": "entitlement_leak_to_unrelated_identity",
     "PBB-D": "cross_subject_object_access",
+    "PBB-SIG": "signature_bypass", "PBB-AUTH": "auth_bypass", "PBB-RATE": "ratelimit_bypass", "PBB-IDOR": "id_guessing",
 }
 
 # ZR-006: the identity/tenant SCOPE each experiment probes. The smallest
@@ -166,6 +211,7 @@ SCOPE_BY_HYPOTHESIS: dict[str, str] = {
     "PBB-U": "single_identity", "PBB-F": "single_identity", "PBB-H": "single_identity", "PBB-C": "single_identity", "PBB-R": "single_identity",
     "PBB-G": "cross_tenant", "PBB-X": "cross_identity", "PBB-LEAK": "unrelated_identity", "PBB-E": "view_consistency", "PBB-OPEN": "open_access",
     "PBB-D": "cross_subject",
+    "PBB-SIG": "signature_bypass", "PBB-AUTH": "auth_bypass", "PBB-RATE": "ratelimit_bypass", "PBB-IDOR": "id_guessing",
 }
 
 

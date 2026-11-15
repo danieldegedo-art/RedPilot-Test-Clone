@@ -44,9 +44,9 @@ That single URL triggers the full pipeline:
 1. **Auto-brief** — generates a minimal `ExecutionBrief` from the domain
 2. **Cold discovery** — 7-step surface reconstruction (sitemap, robots, OpenAPI, link harvest,
    form harvest, payment-keyword scan, JS endpoint extraction)
-3. **PureBlackBoxEngine** — all 13 capability probes enabled, all 8+3 experiments
+3. **PureBlackBoxEngine** — all 17 capability probes enabled, all 8+7 experiments
    (`PBB-U`, `PBB-F`, `PBB-H`, `PBB-C`, `PBB-G`, `PBB-X`, `PBB-R`, `PBB-E` + standalone
-   `PBB-D`, `PBB-OPEN`, `PBB-LEAK`)
+   `PBB-D`, `PBB-OPEN`, `PBB-LEAK`, `PBB-SIG`, `PBB-AUTH`, `PBB-RATE`, `PBB-IDOR`)
 4. **Autonomous agent layer** — all 35 kill-chain agents (A2–A39) and all capability modules in
    5 phases
 5. **Cognitive analysis + intelligent discovery** — 20 cognitive sub-modules fire post-engine
@@ -79,6 +79,22 @@ A20 (fleet orchestrator)
 
 **Phase 5 — Knowledge Graph + remaining:**
 Cross-engagement knowledge graph, rule mining, fleet roster summary
+
+### Bypass probes (test clone only)
+
+These four probes are enabled only in this test clone. The production repo's safety contract
+forbids them ("no signature/auth/rate-limit bypass; no ID guessing").
+
+| Probe | Hypothesis | What it does |
+|---|---|---|
+| `PBB-SIG` | Signature bypass | Sends absent / empty / alg:none / truncated / wrong-key signatures against signature-requiring endpoints |
+| `PBB-AUTH` | Auth bypass | Sends absent / empty / malformed / null bearer tokens against authenticated endpoints |
+| `PBB-RATE` | Rate-limit bypass | Drives an identity to its quota cap, then tries X-Forwarded-For / X-Real-IP / User-Agent spoofing |
+| `PBB-IDOR` | ID guessing | Derives sequential / adjacent / mutated candidate IDs from a legitimate reference and tries them as a different identity |
+
+Each probe follows the same fail-safe pattern as the existing experiments: errors become
+`UNKNOWN`, never a crash. A hit becomes `SUSPECTED_PAYMENT_INTEGRITY_ISSUE`; a clean result
+becomes `RULED_OUT`.
 
 ---
 

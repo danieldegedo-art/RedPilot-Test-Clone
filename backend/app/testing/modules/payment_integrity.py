@@ -555,6 +555,8 @@ class PaymentIntegrityModule(BaseTestModule):
                 enable_behavior_probe=True, enable_greybox_probe=True,
                 enable_cold_discovery=True, enable_replay_probe=True,
                 enable_crosssubject_probe=True,
+                enable_signature_bypass=True, enable_auth_bypass=True,
+                enable_ratelimit_bypass=True, enable_id_guessing=True,
             )
             outcome = await engine.run()
             observations = list(engine.oracle.observations)
