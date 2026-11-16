@@ -539,46 +539,80 @@ class PaymentIntegrityModule(BaseTestModule):
         observations: list = []
         admission_order: list[str] = []
         artifact_stamps: dict = {}
+        _engine_kwargs = dict(
+            prioritizer=prioritizer,
+            enable_channel_probe=True, enable_chain_probe=True, find_fast=False,
+            enable_race_probe=True, race_burst=24,
+            enable_convergence_probe=True, convergence_use_schema=True, convergence_concurrent=True,
+            enable_fabric_probe=True, fabric_use_dag=True, fabric_use_race=True,
+            fabric_multi_candidate=True, fabric_fresh_challenge=True,
+            enable_reconciliation_probe=True, recon_use_lifecycle=True,
+            recon_use_overlay=True, recon_use_sequence=True,
+            enable_federation=True, fed_use_discovery=True, fed_use_token_re=True,
+            fed_use_trust_graph=True, fed_use_orchestration=True,
+            fed_use_analogy=True, fed_use_infogain=True,
+            enable_behavior_probe=True, enable_greybox_probe=True,
+            enable_cold_discovery=True, enable_replay_probe=True,
+            enable_crosssubject_probe=True,
+            enable_signature_bypass=True, enable_auth_bypass=True,
+            enable_ratelimit_bypass=True, enable_id_guessing=True,
+            enable_digital_twin=True, enable_credential_harvest=True,
+            enable_ad_attack_path=True, enable_c2_channel=True,
+            enable_cloud_iam_escalation=True, enable_rbac_escape=True,
+            enable_bypass_weaponization=True, enable_reverse_engineering=True,
+            enable_zero_day_discovery=True, enable_exploit_synthesis=True,
+            enable_edr_bypass=True, enable_dynamic_evasion=True,
+            enable_e2e_chain=True,
+            enable_recursive_recon=True, enable_param_discovery=True,
+            enable_hidden_paths=True, enable_swarm_coordination=True,
+            enable_bas_simulation=True, enable_attack_graph=True,
+            enable_supply_chain=True, enable_coverage_fuzzing=True,
+            enable_poc_validation=True, enable_payload_morphing=True,
+            enable_attack_playbook=True, enable_schema_api_test=True,
+            enable_browser_probing=True, enable_multi_agent_orch=True,
+            enable_distributed_test=True,
+        )
         try:
+            _twin_url_for_engine = getattr(self.context, "twin_url", None) or self.context.base_url
             engine = PureBlackBoxEngine(
-                http, brief, base_url=self.context.base_url, prioritizer=prioritizer,
-                enable_channel_probe=True, enable_chain_probe=True, find_fast=False,
-                enable_race_probe=True, race_burst=24,
-                enable_convergence_probe=True, convergence_use_schema=True, convergence_concurrent=True,
-                enable_fabric_probe=True, fabric_use_dag=True, fabric_use_race=True,
-                fabric_multi_candidate=True, fabric_fresh_challenge=True,
-                enable_reconciliation_probe=True, recon_use_lifecycle=True,
-                recon_use_overlay=True, recon_use_sequence=True,
-                enable_federation=True, fed_use_discovery=True, fed_use_token_re=True,
-                fed_use_trust_graph=True, fed_use_orchestration=True,
-                fed_use_analogy=True, fed_use_infogain=True,
-                enable_behavior_probe=True, enable_greybox_probe=True,
-                enable_cold_discovery=True, enable_replay_probe=True,
-                enable_crosssubject_probe=True,
-                enable_signature_bypass=True, enable_auth_bypass=True,
-                enable_ratelimit_bypass=True, enable_id_guessing=True,
-                enable_digital_twin=True, enable_credential_harvest=True,
-                enable_ad_attack_path=True, enable_c2_channel=True,
-                enable_cloud_iam_escalation=True, enable_rbac_escape=True,
-                enable_bypass_weaponization=True, enable_reverse_engineering=True,
-                enable_zero_day_discovery=True, enable_exploit_synthesis=True,
-                enable_edr_bypass=True, enable_dynamic_evasion=True,
-                enable_e2e_chain=True,
+                http, brief, base_url=self.context.base_url, cold_domain_url=_twin_url_for_engine, target_label="cold_domain", **_engine_kwargs,
             )
             outcome = await engine.run()
             observations = list(engine.oracle.observations)
-            admission_order = list(engine.ledger.accepted)  # dicts keep insertion order: the ledger's own admission order
+            admission_order = list(engine.ledger.accepted)
             artifact_stamps = artifact_timestamps_from_ledger(engine.ledger.accepted)
             if self.context.feature_registry is not None:
-                # ZR-002 / A5: model this run's oracle observations as entitlement-state
-                # snapshots. Advisory, like build_prioritizer above -- one broken optional
-                # write must never take the run's actual findings down with it.
                 try:
                     await record_oracle_observations(engine.oracle.observations, self.context.feature_registry, recorded_at=datetime.now(timezone.utc))
                 except Exception:
                     logger.exception("could not record entitlement-state snapshots to PESM; findings are unaffected")
         finally:
             await http.aclose()
+        # -- Dual-target mode: ALWAYS run ALL probes against the digital twin too --
+        # If a separate twin_url is configured, use it; otherwise re-run against the
+        # same cold domain as a behavioral consistency / reproducibility check.
+        twin_outcome = None
+        _twin_url = getattr(self.context, "twin_url", None) or self.context.base_url
+        if True:  # always run dual-target
+            logger.info("dual-target: running full engine against twin %s", _twin_url)
+            twin_http = QAHttpClient(base_url=_twin_url, timeout_seconds=brief.limits.timeout_seconds, proxy_url=self.context.settings.proxy_url, headers={},
+                                     user_agent="qa-pure-black-box-engine/1.0 (twin)", max_retries=0, guard=guard, stateless=True)
+            try:
+                twin_engine = PureBlackBoxEngine(
+                    twin_http, brief, base_url=_twin_url, target_label="digital_twin", **_engine_kwargs,
+                )
+                twin_outcome = await twin_engine.run()
+                observations.extend(twin_engine.oracle.observations)
+                for key, val in twin_engine.ledger.accepted.items():
+                    admission_order.append(key)
+                twin_stamps = artifact_timestamps_from_ledger(twin_engine.ledger.accepted)
+                artifact_stamps.update(twin_stamps)
+                outcome.findings.extend(twin_outcome.findings)
+                outcome.stats["twin_engine_stats"] = twin_outcome.stats
+            except Exception:
+                logger.exception("dual-target twin run failed; cold-domain findings are unaffected")
+            finally:
+                await twin_http.aclose()
         chains: dict[str, dict] = {}
         for finding in outcome.findings:
             graph: EvidenceGraph | None

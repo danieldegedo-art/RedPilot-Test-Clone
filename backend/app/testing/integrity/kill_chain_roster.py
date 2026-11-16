@@ -108,6 +108,36 @@ ROSTER: tuple[Agent, ...] = (
     Agent("A37", "Threat-Intel Ingestion Agent", _R, False, _IN, ("B40",)),
     Agent("A38", "Symbolic-Solver Agent", _A, False, _IN, ("B41",)),
     Agent("A39", "Graph-Analyst Agent", _PL, False, _IN, ("B42",)),
+    # A40-A52: offensive capability agents (test clone only)
+    Agent("A40", "Digital Twin Profiler", _R, True, _IN, ("B68",), "environment fingerprinting and twin fidelity assessment"),
+    Agent("A41", "Credential Hunter", _A, True, _IN, ("B69",), "credential/secret detection across response paths"),
+    Agent("A42", "AD Path Analyst", _A, True, _IN, ("B70",), "AD/LDAP attack path analysis"),
+    Agent("A43", "C2 Channel Assessor", _A, True, _IN, ("B71",), "C2 channel viability assessment"),
+    Agent("A44", "Cloud IAM Escalator", _A, True, _IN, ("B72",), "cloud IAM privilege escalation testing"),
+    Agent("A45", "RBAC Escape Specialist", _A, True, _IN, ("B73",), "role boundary escape testing"),
+    Agent("A46", "Bypass Weaponizer", _A, True, _IN, ("B74",), "defensive control bypass via encoding/protocol tricks"),
+    Agent("A47", "Reverse Engineer", _R, True, _IN, ("B75",), "client-side code analysis and endpoint extraction"),
+    Agent("A48", "Fuzzing Operator", _A, True, _IN, ("B76",), "input mutation and zero-day discovery"),
+    Agent("A49", "Exploit Composer", _A, True, _IN, ("B77",), "multi-finding exploit chain synthesis"),
+    Agent("A50", "EDR Bypass Specialist", _A, True, _IN, ("B78",), "detection control evasion testing"),
+    Agent("A51", "Evasion Specialist", _A, True, _IN, ("B79",), "adaptive behavioral evasion"),
+    Agent("A52", "Kill Chain Operator", _O, True, _IN, ("B80",), "end-to-end kill chain orchestration"),
+    # A53-A67: tool-integrated agents (test clone only)
+    Agent("A53", "Recursive Recon Agent", _R, True, _IN, ("B82",), "BBOT/Artemis recursive modular recon pipeline"),
+    Agent("A54", "Parameter Discovery Agent", _R, True, _IN, ("B83",), "NucleiFuzzer/XSSRocket parameter scanning"),
+    Agent("A55", "Hidden Path Hunter", _R, True, _IN, ("B84",), "AdminPBuster/CyberStrike hidden path discovery"),
+    Agent("A56", "Swarm Coordinator", _O, True, _IN, ("B85",), "XBOW/PentAGI/HexStrike multi-agent validation"),
+    Agent("A57", "BAS Operator", _A, True, _IN, ("B86",), "Cymulate/SafeBreach/AttackIQ breach & attack simulation"),
+    Agent("A58", "Attack Graph Analyst", _A, True, _IN, ("B87",), "BloodHound/XM Cyber attack graph analysis"),
+    Agent("A59", "Supply Chain Scanner", _R, True, _IN, ("B88",), "GitGuardian/TruffleHog/Gitleaks secret scanning"),
+    Agent("A60", "Coverage Fuzzer", _A, True, _IN, ("B89",), "AFL++/OSS-Fuzz coverage-guided fuzzing"),
+    Agent("A61", "PoC Validator", _A, True, _IN, ("B90",), "Shannon/Strix autonomous PoC validation"),
+    Agent("A62", "Payload Morpher", _A, True, _IN, ("B91",), "Dark-Moon/Decepticon adaptive payload morphing"),
+    Agent("A63", "Playbook Executor", _A, True, _IN, ("B92",), "Caldera/Atomic Red Team playbook execution"),
+    Agent("A64", "Schema API Tester", _A, True, _IN, ("B93",), "Shannon/Strix OpenAPI/GraphQL schema testing"),
+    Agent("A65", "Browser Probe Agent", _A, True, _IN, ("B94",), "BugTrace-AI/NyxStrike browser automation probing"),
+    Agent("A66", "Multi-Agent Orchestrator", _O, True, _IN, ("B95",), "T3MP3ST/RedAmon/Decepticon multi-agent orchestration"),
+    Agent("A67", "Distributed Test Agent", _O, True, _IN, ("B96",), "Pentera/CyberStrike/PentesterFlow distributed testing"),
 )
 
 # A1 and A17 are undocumented in the resolved backlog (RP-005). Recorded, never invented.
@@ -116,7 +146,7 @@ FLEET_SIZE = len(ROSTER) + len(KNOWN_GAPS)
 
 _BY_ID = {a.agent_id: a for a in ROSTER}
 assert len(_BY_ID) == len(ROSTER), "duplicate agent id in the roster"
-assert FLEET_SIZE == 37, f"declared fleet size should be 37, got {FLEET_SIZE}"
+assert FLEET_SIZE == 67, f"declared fleet size should be 67, got {FLEET_SIZE}"
 
 
 def roster() -> tuple[Agent, ...]:

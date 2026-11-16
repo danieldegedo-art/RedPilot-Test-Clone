@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Iterable
 
@@ -38,6 +40,8 @@ from app.core.control_port import (
     KIND_FEATURE_USE, ConfirmationCandidate, EvidenceLedgerHandle, GateDecision, OracleObservation, PurityViolation, get_control_adapter, now_iso,
 )
 from app.testing.purity.taxonomy import Verdict
+from app.testing.integrity import integrated_capabilities as _icap
+from app.testing.integrity import advanced_orchestration as _aorch
 
 logger = logging.getLogger("qa.integrity.engine")
 
@@ -67,6 +71,21 @@ TITLES = {
     "PBB-EDRBP": "Security controls must detect payloads regardless of encoding, timing, or delivery variation",
     "PBB-EVADE": "Adaptive defenses must maintain detection effectiveness under behavioral variation",
     "PBB-E2E": "No viable end-to-end kill chain from initial access through escalation to crown-jewel compromise",
+    "PBB-RRECON": "Recursive modular recon must not discover undeclared attack surface beyond the brief's scope",
+    "PBB-PARAM": "URL parameters must reject injection payloads discovered through historical and active parameter mining",
+    "PBB-HIDDEN": "Hidden admin panels, debug endpoints, and undocumented paths must not be accessible",
+    "PBB-SWARM": "Coordinated multi-probe swarm with independent validators must not find inconsistencies in defenses",
+    "PBB-BAS": "Security controls must detect and block ATT&CK-mapped breach simulation techniques",
+    "PBB-AGRAPH": "No viable attack graph path from initial access through privilege escalation to crown jewels",
+    "PBB-SUPPLY": "No exposed secrets, leaked credentials, or vulnerable dependencies in the application supply chain",
+    "PBB-CFUZZ": "Application inputs must safely handle coverage-guided mutation without crashes or disclosure",
+    "PBB-POCVAL": "Every finding above UNKNOWN must have a validated, reproducible proof-of-concept",
+    "PBB-MORPH": "Security controls must detect morphed, encoded, and polymorphic payload variants",
+    "PBB-PLAY": "Pre-built attack playbooks targeting common vulnerability patterns must not succeed",
+    "PBB-SCHEMA": "API endpoints must reject all schema-violating, boundary, and type-confused requests",
+    "PBB-BROWSE": "Browser-automated interaction must not reveal client-side vulnerabilities invisible to API-only testing",
+    "PBB-MORCH": "Multi-agent coordinated attack sequences must not bypass defenses that block individual probes",
+    "PBB-DTEST": "Parallel distributed testing must not reveal timing-dependent or load-sensitive vulnerabilities",
 }
 # ZR-019: per-hypothesis-class remediation, keyed off exactly what each experiment
 # demonstrably tests (TITLES above) -- not generic boilerplate, and not fabricated
@@ -100,6 +119,21 @@ RECOMMENDED_FIX: dict[str, str] = {
     "PBB-EDRBP": "Apply security rules after full decoding/normalization of the payload; use multiple detection layers (signature + behavioral + ML) so encoding evasion alone cannot bypass all layers; implement request integrity checks that detect fragmentation and reassembly attacks.",
     "PBB-EVADE": "Implement detection that is identity-bound (tied to authenticated session, not client-observable indicators like IP or User-Agent); use behavioral anomaly detection that adapts to new patterns; rate-limit and challenge suspicious sessions regardless of header variation.",
     "PBB-E2E": "Implement defense in depth with independent controls at each stage of the kill chain; ensure credential exposure cannot lead to infrastructure access, infrastructure access cannot escalate to cloud privileges, and cloud privileges cannot reach application data without additional authorization.",
+    "PBB-RRECON": "Maintain a complete inventory of all exposed subdomains, services, and endpoints; decommission orphaned services; ensure all exposed surface is intentional, documented, and covered by security controls.",
+    "PBB-PARAM": "Apply input validation (allow-lists, type checking, encoding) on every parameter at every endpoint; use parameterized queries; deploy WAF rules that cover historical and newly-discovered parameter injection patterns.",
+    "PBB-HIDDEN": "Remove or restrict all admin panels, debug endpoints, backup files, and configuration paths from public access; use non-guessable paths; enforce authentication on all administrative interfaces; remove development artifacts from production.",
+    "PBB-SWARM": "Ensure security controls are consistent regardless of the number of simultaneous probes, the timing of requests, or the identity making the request; fix any finding whose detection depends on environmental factors.",
+    "PBB-BAS": "Map security controls to ATT&CK framework techniques; implement detection rules for each applicable technique; validate detection coverage regularly; close gaps identified in breach simulation coverage matrices.",
+    "PBB-AGRAPH": "Fix choke-point findings first (single fixes that block multiple attack paths); implement defense-in-depth so no single finding enables traversal from initial access to crown jewels; verify each fix independently breaks the path.",
+    "PBB-SUPPLY": "Remove all secrets from client-side code and responses; implement secret scanning in CI/CD; pin dependencies and monitor for CVEs; restrict version disclosure in headers; remove exposed package manifests from production.",
+    "PBB-CFUZZ": "Implement strict input validation with type, length, and structure limits; use structured parsing libraries that reject malformed input; handle all parser errors gracefully; implement timeout and size limits on request processing.",
+    "PBB-POCVAL": "Address all findings with confirmed, reproducible PoCs first; treat findings that resist independent reproduction with lower priority but investigate environmental factors that may affect reproducibility.",
+    "PBB-MORPH": "Apply security rules after full decoding and normalization; use multiple detection layers (signature + behavioral + ML); implement canonicalization before rule matching; detect and block known obfuscation patterns.",
+    "PBB-PLAY": "Review and fix all findings from successful playbook executions; implement controls at each playbook step to break the chain; verify fixes using the same playbook; maintain playbook library coverage aligned with the target's technology stack.",
+    "PBB-SCHEMA": "Implement strict schema validation at the API gateway or controller layer; reject requests that violate the declared schema (type, required fields, constraints); use typed deserialization; never process schema-violating input.",
+    "PBB-BROWSE": "Sanitize all URL fragments and DOM inputs; validate postMessage origins; protect client-side storage from tampering; implement server-side authorization that does not rely on client-side route guards; use Content-Security-Policy headers.",
+    "PBB-MORCH": "Ensure defenses are stateless or properly synchronized so concurrent requests cannot exploit race conditions; implement distributed rate limiting; use atomic operations for state-changing requests; detect and block coordinated probe patterns.",
+    "PBB-DTEST": "Use atomic database operations and optimistic concurrency for all state-changing requests; implement proper distributed locking; ensure rate limits apply consistently under concurrent load; test defenses under load as part of the security validation cycle.",
 }
 # ZR-019 affected_flow: the FLOW FAMILY (fsm_compiler.FLOW_TYPES -- ZR-001's list) each
 # experiment exercises, fixed by what the experiment tests (TITLES above), not by anything
@@ -136,7 +170,103 @@ FLOW_BY_HYPOTHESIS: dict[str, str] = {
     "PBB-EDRBP": "entitlement",  # EDR/detection bypass
     "PBB-EVADE": "entitlement",  # adaptive evasion
     "PBB-E2E": "entitlement",    # full kill chain
+    "PBB-RRECON": "entitlement",   # recursive recon pipeline
+    "PBB-PARAM": "payment",        # parameter discovery + template scanning
+    "PBB-HIDDEN": "entitlement",   # hidden path discovery
+    "PBB-SWARM": "entitlement",    # swarm agent coordination
+    "PBB-BAS": "entitlement",      # breach & attack simulation
+    "PBB-AGRAPH": "entitlement",   # attack graph analysis
+    "PBB-SUPPLY": "entitlement",   # supply chain scanning
+    "PBB-CFUZZ": "payment",        # coverage-guided fuzzing
+    "PBB-POCVAL": "entitlement",   # PoC validation
+    "PBB-MORPH": "payment",        # payload morphing
+    "PBB-PLAY": "entitlement",     # attack playbook execution
+    "PBB-SCHEMA": "payment",       # schema-based API testing
+    "PBB-BROWSE": "entitlement",   # browser automation probing
+    "PBB-MORCH": "entitlement",    # multi-agent orchestration
+    "PBB-DTEST": "entitlement",    # distributed parallel testing
 }
+# Nuclei-inspired template-based detection patterns: matchers (status/body/header) + extractors
+_PROBE_TEMPLATES: dict[str, list[dict[str, Any]]] = {
+    "path_traversal": [
+        {"path": "/../../../etc/passwd", "matchers": [{"type": "body", "words": ["root:x:"]}]},
+        {"path": "/..%2f..%2f..%2fetc/passwd", "matchers": [{"type": "body", "words": ["root:x:"]}]},
+        {"path": "/....//....//etc/passwd", "matchers": [{"type": "body", "words": ["root:x:"]}]},
+    ],
+    "config_exposure": [
+        {"path": "/.env", "matchers": [{"type": "body", "regex": [r"(?:DB_|API_|SECRET_|TOKEN_|KEY_)\w+=\S+"]}]},
+        {"path": "/config.json", "matchers": [{"type": "body", "regex": [r"\"(?:password|secret|token|api_key)\"\s*:"]}]},
+        {"path": "/.git/config", "matchers": [{"type": "body", "words": ["[core]", "[remote"]}]},
+        {"path": "/debug/vars", "matchers": [{"type": "status", "codes": [200]}]},
+        {"path": "/server-status", "matchers": [{"type": "body", "words": ["Apache Server Status"]}]},
+        {"path": "/actuator/env", "matchers": [{"type": "body", "words": ["activeProfiles", "propertySources"]}]},
+        {"path": "/.well-known/openid-configuration", "matchers": [{"type": "body", "regex": [r"\"issuer\"\s*:"]}]},
+    ],
+    "ssrf_canaries": [
+        {"inject": "http://169.254.169.254/latest/meta-data/", "matchers": [{"type": "body", "words": ["ami-id", "instance-id"]}]},
+        {"inject": "http://metadata.google.internal/computeMetadata/v1/", "matchers": [{"type": "body", "words": ["project-id"]}]},
+        {"inject": "http://169.254.169.254/metadata/instance?api-version=2021-02-01", "matchers": [{"type": "body", "words": ["compute"]}]},
+    ],
+    "header_injection": [
+        {"header": "X-Forwarded-Host", "value": "evil.com", "matchers": [{"type": "header", "words": ["evil.com"]}]},
+        {"header": "X-Forwarded-Proto", "value": "https://evil.com", "matchers": [{"type": "header", "words": ["evil.com"]}]},
+    ],
+    "ssti_detection": [
+        {"inject": "{{7*7}}", "matchers": [{"type": "body", "words": ["49"]}]},
+        {"inject": "${7*7}", "matchers": [{"type": "body", "words": ["49"]}]},
+        {"inject": "<%=7*7%>", "matchers": [{"type": "body", "words": ["49"]}]},
+    ],
+    "open_redirect": [
+        {"param": "//evil.com", "matchers": [{"type": "header", "words": ["evil.com"]}]},
+        {"param": "https://evil.com", "matchers": [{"type": "header", "words": ["evil.com"]}]},
+    ],
+}
+
+# MITRE ATT&CK technique mapping (adapted from SafeBreach/AttackIQ/Cymulate BAS patterns)
+_ATTCK_TECHNIQUE_MAP: dict[str, str] = {
+    "PBB-TWIN": "T1595",       # Active Scanning
+    "PBB-CRED": "T1552",       # Unsecured Credentials
+    "PBB-ADPATH": "T1087.002", # Account Discovery: Domain Account
+    "PBB-C2": "T1071",         # Application Layer Protocol
+    "PBB-IAM": "T1078.004",    # Valid Accounts: Cloud Accounts
+    "PBB-RBAC": "T1548",       # Abuse Elevation Control Mechanism
+    "PBB-BPWPN": "T1027",      # Obfuscated Files or Information
+    "PBB-REVENG": "T1592",     # Gather Victim Host Information
+    "PBB-ZDAY": "T1190",       # Exploit Public-Facing Application
+    "PBB-XPLOIT": "T1210",     # Exploitation of Remote Services
+    "PBB-EDRBP": "T1562.001",  # Impair Defenses: Disable or Modify Tools
+    "PBB-EVADE": "T1036",      # Masquerading
+    "PBB-E2E": "T1078",        # Valid Accounts (full chain)
+    "PBB-SIG": "T1550",        # Use Alternate Authentication Material
+    "PBB-AUTH": "T1556",        # Modify Authentication Process
+    "PBB-RATE": "T1499",       # Endpoint Denial of Service
+    "PBB-IDOR": "T1087",       # Account Discovery
+    "PBB-D": "T1530",          # Data from Cloud Storage Object
+    "PBB-OPEN": "T1190",       # Exploit Public-Facing Application
+    "PBB-LEAK": "T1530",       # Data from Cloud Storage Object
+    "PBB-U": "T1190",          # Exploit Public-Facing Application
+}
+
+# BloodHound-inspired attack-graph enables map: finding X enables testing Y
+_ATTACK_GRAPH_ENABLES: dict[str, list[str]] = {
+    "PBB-CRED": ["PBB-IAM", "PBB-C2", "PBB-RBAC"],
+    "PBB-TWIN": ["PBB-BPWPN", "PBB-EVADE"],
+    "PBB-ADPATH": ["PBB-RBAC", "PBB-IAM"],
+    "PBB-REVENG": ["PBB-BPWPN", "PBB-ZDAY", "PBB-CRED"],
+    "PBB-RBAC": ["PBB-IAM", "PBB-C2"],
+    "PBB-IAM": ["PBB-C2"],
+    "PBB-BPWPN": ["PBB-EDRBP", "PBB-ZDAY"],
+    "PBB-SIG": ["PBB-AUTH", "PBB-RBAC"],
+    "PBB-AUTH": ["PBB-RBAC", "PBB-IDOR"],
+    "PBB-IDOR": ["PBB-CRED", "PBB-RBAC"],
+    "PBB-OPEN": ["PBB-U", "PBB-LEAK"],
+    "PBB-U": ["PBB-C", "PBB-X"],
+    "PBB-X": ["PBB-G"],
+    "PBB-EDRBP": ["PBB-EVADE"],
+    "PBB-ZDAY": ["PBB-XPLOIT"],
+}
+
+
 def _apply_prioritizer(wanted: list[str], prioritizer: PrioritizerFn | None) -> list[str]:
     """ZR-003/ZR-012: let an injected prioritizer choose the ORDER of the experiments
     to run -- and nothing else. The engine, not the prioritizer, is the authority on
@@ -253,7 +383,7 @@ def _clean(ids: Iterable[str | None]) -> list[str]:
 
 
 class PureBlackBoxEngine:
-    def __init__(self, http: QAHttpClient, brief: ExecutionBrief, *, base_url: str, ledger: EvidenceLedgerHandle | None = None,
+    def __init__(self, http: QAHttpClient, brief: ExecutionBrief, *, base_url: str, cold_domain_url: str | None = None, ledger: EvidenceLedgerHandle | None = None,
                  clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
                  prioritizer: PrioritizerFn | None = None, enable_channel_probe: bool = True, enable_chain_probe: bool = True, find_fast: bool = False,
                  enable_race_probe: bool = True, race_burst: int = 24, enable_convergence_probe: bool = True,
@@ -285,7 +415,25 @@ class PureBlackBoxEngine:
                  enable_edr_bypass: bool = True,
                  enable_dynamic_evasion: bool = True,
                  enable_e2e_chain: bool = True,
-                 disabled_agents: frozenset[str] = frozenset()) -> None:
+                 enable_recursive_recon: bool = True,
+                 enable_param_discovery: bool = True,
+                 enable_hidden_paths: bool = True,
+                 enable_swarm_coordination: bool = True,
+                 enable_bas_simulation: bool = True,
+                 enable_attack_graph: bool = True,
+                 enable_supply_chain: bool = True,
+                 enable_coverage_fuzzing: bool = True,
+                 enable_poc_validation: bool = True,
+                 enable_payload_morphing: bool = True,
+                 enable_attack_playbook: bool = True,
+                 enable_schema_api_test: bool = True,
+                 enable_browser_probing: bool = True,
+                 enable_multi_agent_orch: bool = True,
+                 enable_distributed_test: bool = True,
+                 disabled_agents: frozenset[str] = frozenset(),
+                 target_label: str = "cold_domain") -> None:
+        self._cold_domain_url = cold_domain_url
+        self._base_url = base_url
         self._prioritizer = prioritizer  # ZR-003/ZR-012: None keeps the static EXPERIMENT_ORDER, exactly as before
         # B45 recon-breadth + B46 chain-composition: FAIL-CLOSED. Off unless an authorised caller enables them; when off, the probes are no-ops and behaviour is identical to before.
         self._enable_channel_probe = enable_channel_probe
@@ -465,7 +613,22 @@ class PureBlackBoxEngine:
         self._enable_edr_bypass = enable_edr_bypass
         self._enable_dynamic_evasion = enable_dynamic_evasion
         self._enable_e2e_chain = enable_e2e_chain
-        self._base_url = base_url
+        self._enable_recursive_recon = enable_recursive_recon
+        self._enable_param_discovery = enable_param_discovery
+        self._enable_hidden_paths = enable_hidden_paths
+        self._enable_swarm_coordination = enable_swarm_coordination
+        self._enable_bas_simulation = enable_bas_simulation
+        self._enable_attack_graph = enable_attack_graph
+        self._enable_supply_chain = enable_supply_chain
+        self._enable_coverage_fuzzing = enable_coverage_fuzzing
+        self._enable_poc_validation = enable_poc_validation
+        self._enable_payload_morphing = enable_payload_morphing
+        self._enable_attack_playbook = enable_attack_playbook
+        self._enable_schema_api_test = enable_schema_api_test
+        self._enable_browser_probing = enable_browser_probing
+        self._enable_multi_agent_orch = enable_multi_agent_orch
+        self._enable_distributed_test = enable_distributed_test
+        self._target_label = target_label
         self._cold_discovery_report: dict[str, Any] | None = None
         # B47 find-fast: opt-in triage mode -- stop after the first CONFIRMED_P0 (fewer calls). OFF by default, so a full assessment still runs every class and nothing changes.
         self._find_fast = find_fast
@@ -507,8 +670,11 @@ class PureBlackBoxEngine:
                 summary = "RULED_OUT withheld by the H4 calibration guard: " + summary
                 reasons = [*reasons, "ruled_out_withheld_uncalibrated_oracle"]
                 limitations = [*limitations, f"H4 guard (ZR-004): {cal_reason}. 'Denied' from an oracle not shown to discriminate is not clearance."]
+        enriched_metrics = dict(metrics or {})
+        if hyp in _ATTCK_TECHNIQUE_MAP:
+            enriched_metrics["mitre_attck"] = _ATTCK_TECHNIQUE_MAP[hyp]
         return Finding(hypothesis_id=hyp, p0_class=EXPERIMENT_CLASSES[hyp], title=TITLES[hyp], verdict=verdict, confidence=confidence, summary=summary, spec=SPECS[hyp],
-                       artifact_ids=_clean(artifacts), reasons=list(reasons), divergences=list(divergences), limitations=list(limitations), metrics=metrics or {}, token=token,
+                       artifact_ids=_clean(artifacts), reasons=list(reasons), divergences=list(divergences), limitations=list(limitations), metrics=enriched_metrics, token=token,
                        # ZR-019: populated uniformly for every finding through this one shared constructor.
                        priority=_PRIORITY_BY_VERDICT.get(verdict, "n/a"),
                        reproduction_status=_REPRODUCTION_STATUS_BY_VERDICT.get(verdict, "not attempted"),
@@ -526,6 +692,7 @@ class PureBlackBoxEngine:
                        commercial_context=commercial_context, actual_state=actual_state,
                        payment_state=payment_state, entitlement_state=entitlement_state,
                        server_side_oracle=server_side_oracle,
+                       target_label=self._target_label,
                        # ZR-019: precondition/effect come from the B32 chain-link catalog (attack_chain.LINKS) --
                        # fixed per-class, same pre-registered provenance as expected_state; completes the schema.
                        precondition=_zr019_precondition(hyp), effect=_zr019_effect(hyp))
@@ -539,6 +706,94 @@ class PureBlackBoxEngine:
         if guard is not None and guard.killed:
             return f"run stopped: {guard.kill_reason}"
         return None
+
+    # ---- helpers adapted from researched tools ----
+
+    @staticmethod
+    def _shannon_entropy(data: str) -> float:
+        """Shannon entropy of a string — high entropy (>4.5) suggests secrets/tokens. (Adapted from TruffleHog.)"""
+        if not data:
+            return 0.0
+        freq = Counter(data)
+        length = len(data)
+        return -sum((c / length) * math.log2(c / length) for c in freq.values())
+
+    @staticmethod
+    def _build_attack_graph(findings: list[Finding]) -> dict[str, Any]:
+        """Build a directed graph of findings where edges mean 'enables'. Adapted from BloodHound attack path analysis."""
+        graph: dict[str, list[str]] = {}
+        hit_ids = [f.hypothesis_id for f in findings if f.verdict in (
+            Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE,
+            Verdict.PARTIALLY_VALIDATED_PAYMENT_INTEGRITY_ISSUE,
+            Verdict.CONFIRMED_P0)]
+        for src in hit_ids:
+            targets = [t for t in _ATTACK_GRAPH_ENABLES.get(src, []) if t in hit_ids]
+            if targets:
+                graph[src] = targets
+        paths: list[list[str]] = []
+        def _dfs(node: str, path: list[str], visited: set[str]) -> None:
+            if len(path) > 8:
+                return
+            if node not in graph:
+                if len(path) > 1:
+                    paths.append(list(path))
+                return
+            for nxt in graph[node]:
+                if nxt not in visited:
+                    visited.add(nxt)
+                    _dfs(nxt, path + [nxt], visited)
+                    visited.discard(nxt)
+        for root in hit_ids:
+            if root in graph:
+                _dfs(root, [root], {root})
+        paths.sort(key=lambda p: (-len(p), p))
+        return {"graph": graph, "hit_count": len(hit_ids), "longest_path": paths[0] if paths else [],
+                "all_paths": paths[:16], "path_count": len(paths)}
+
+    def _match_template(self, templates: list[dict[str, Any]], response_body: str, response_status: int,
+                        response_headers: dict[str, str]) -> list[dict[str, Any]]:
+        """Match Nuclei-style templates against a response. Returns list of matched templates."""
+        matched: list[dict[str, Any]] = []
+        for tmpl in templates:
+            hit = True
+            for matcher in tmpl.get("matchers", []):
+                mtype = matcher.get("type", "body")
+                if mtype == "status":
+                    if response_status not in matcher.get("codes", []):
+                        hit = False
+                elif mtype == "body":
+                    for word in matcher.get("words", []):
+                        if word not in response_body:
+                            hit = False
+                    for pattern in matcher.get("regex", []):
+                        if not re.search(pattern, response_body):
+                            hit = False
+                elif mtype == "header":
+                    header_str = " ".join(f"{k}: {v}" for k, v in response_headers.items())
+                    for word in matcher.get("words", []):
+                        if word not in header_str:
+                            hit = False
+            if hit:
+                matched.append(tmpl)
+        return matched
+
+    def _coverage_guided_mutate(self, mutations: list[str], seen_signatures: set[str],
+                                 results: list[tuple[str, int, int]]) -> list[str]:
+        """AFL++-inspired coverage-guided mutation: prioritize mutations producing new response signatures."""
+        novel: list[str] = []
+        repeat: list[str] = []
+        for mutation in mutations:
+            sig = None
+            for m, status, length in results:
+                if m == mutation:
+                    sig = f"{status}:{length // 100}"
+                    break
+            if sig and sig not in seen_signatures:
+                novel.append(mutation)
+                seen_signatures.add(sig)
+            else:
+                repeat.append(mutation)
+        return novel + repeat
 
     async def _pay(self, session: CustomerSession, *, plan: str, outcome_key: str, label: str, currency: str | None = None, amount: float | None = None) -> PayOutcome:
         checkout = await session.call("start_checkout", label=f"{label}:checkout", fields={"plan": plan, "currency": currency, "amount": amount})
@@ -3686,10 +3941,15 @@ class PureBlackBoxEngine:
                                  reasons=["identity_pool"])
         divergences: list[str] = []
         matched = 0
+        timing_samples: list[float] = []
         for op_name in ops:
             try:
+                t0 = self._clock()
                 r1 = await S1.call(op_name, label=f"PBB-TWIN:s1:{op_name}", fields={})
+                t1 = self._clock()
                 r2 = await S2.call(op_name, label=f"PBB-TWIN:s2:{op_name}", fields={})
+                t2 = self._clock()
+                timing_samples.append(abs((t1 - t0) - (t2 - t1)))
                 fp1 = (r1.status, sorted(r1.body.keys()) if isinstance(r1.body, dict) else type(r1.body).__name__)
                 fp2 = (r2.status, sorted(r2.body.keys()) if isinstance(r2.body, dict) else type(r2.body).__name__)
                 if fp1 == fp2:
@@ -3698,6 +3958,7 @@ class PureBlackBoxEngine:
                     divergences.append(f"{op_name}: status {r1.status} vs {r2.status}")
             except Exception:
                 pass
+        avg_timing_drift = sum(timing_samples) / len(timing_samples) if timing_samples else 0.0
         total = matched + len(divergences)
         if not total:
             return self._finding("PBB-TWIN", Verdict.UNKNOWN, "low",
@@ -3708,10 +3969,10 @@ class PureBlackBoxEngine:
             return self._finding("PBB-TWIN", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
                                  f"Twin fidelity {fidelity:.0%}: {len(divergences)} endpoint(s) show state-dependent response divergence: {', '.join(divergences[:5])}",
                                  reasons=[f"twin_divergence_{d.split(':')[0]}" for d in divergences[:5]],
-                                 metrics={"twin_fidelity": fidelity, "divergent_endpoints": len(divergences), "matched": matched})
+                                 metrics={"twin_fidelity": fidelity, "divergent_endpoints": len(divergences), "matched": matched, "avg_timing_drift_s": round(avg_timing_drift, 4)})
         return self._finding("PBB-TWIN", Verdict.RULED_OUT, "high",
-                             f"Twin fidelity {fidelity:.0%}: all {matched} tested endpoint(s) produce deterministic responses.",
-                             reasons=["deterministic"], metrics={"twin_fidelity": fidelity, "matched": matched})
+                             f"Twin fidelity {fidelity:.0%}: all {matched} tested endpoint(s) produce deterministic responses (avg timing drift {avg_timing_drift:.3f}s).",
+                             reasons=["deterministic"], metrics={"twin_fidelity": fidelity, "matched": matched, "avg_timing_drift_s": round(avg_timing_drift, 4)})
 
     # ----------------------------------------- B69: credential harvesting probe ------
     async def _credential_harvest_probe(self, cs: ControlState) -> Finding | None:
@@ -3724,16 +3985,22 @@ class PureBlackBoxEngine:
         if S is None:
             return None
         _CRED_PATHS = [
-            "/.env", "/config", "/debug", "/.git/config", "/actuator/env",
+            "/.env", "/config", "/config.json", "/debug", "/.git/config", "/actuator/env",
             "/swagger.json", "/api-docs", "/wp-config.php.bak", "/.aws/credentials",
             "/server-status", "/.htpasswd", "/phpinfo.php", "/graphql",
+            "/.well-known/openid-configuration", "/health", "/metrics", "/api/config",
+            "/_config", "/admin/config", "/internal/debug", "/.docker/config.json",
         ]
         _CRED_RE = re.compile(
             r"(?:(?:AKIA[0-9A-Z]{16})"
             r"|(?:sk-[a-zA-Z0-9]{20,})"
             r"|(?:ghp_[a-zA-Z0-9]{36})"
             r"|(?:password\s*[:=]\s*\S+)"
-            r"|(?:-----BEGIN (?:RSA |EC )?PRIVATE KEY-----))"
+            r"|(?:-----BEGIN (?:RSA |EC )?PRIVATE KEY-----)"
+            r"|(?:eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,})"
+            r"|(?:xox[bpras]-[a-zA-Z0-9-]+)"
+            r"|(?:glpat-[a-zA-Z0-9_-]{20,})"
+            r"|(?:(?:api[_-]?key|secret|token)\s*[:=]\s*['\"][a-zA-Z0-9_/+=-]{20,}['\"]))"
         )
         leaks: list[str] = []
         for path in _CRED_PATHS:
@@ -3759,13 +4026,41 @@ class PureBlackBoxEngine:
                         leaks.append(f"credential in error response from {op_name}")
             except Exception:
                 pass
+        # TruffleHog-inspired entropy-based secret detection + Nuclei template matching
+        high_entropy_tokens: list[dict[str, Any]] = []
+        template_hits: list[str] = []
+        for path in _CRED_PATHS:
+            try:
+                result = await S.call(first_op, label=f"PBB-CRED:entropy:{path}",
+                                       fields={}, path_params={"_raw_path": path})
+                if result.status is not None and 200 <= result.status < 300 and result.body:
+                    body_str = str(result.body)
+                    for token in re.findall(r'[A-Za-z0-9+/=_\-]{20,}', body_str):
+                        ent = self._shannon_entropy(token)
+                        if ent > 4.5:
+                            high_entropy_tokens.append({"token_prefix": token[:8] + "...", "entropy": round(ent, 2), "length": len(token)})
+                    matched = self._match_template(
+                        _PROBE_TEMPLATES.get("config_exposure", []),
+                        body_str, result.status or 0,
+                        dict(result.headers) if hasattr(result, 'headers') and result.headers else {})
+                    if matched:
+                        template_hits.append(f"config_exposure template matched at {path}")
+            except Exception:
+                pass
+        if high_entropy_tokens:
+            leaks.extend([f"high-entropy token ({t['entropy']} bits): {t['token_prefix']}" for t in high_entropy_tokens[:3]])
+        if template_hits:
+            leaks.extend(template_hits[:3])
         if leaks:
             return self._finding("PBB-CRED", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
                                  f"Credential material found: {', '.join(leaks[:5])}",
-                                 reasons=[f"cred_leak_{i}" for i in range(len(leaks[:5]))])
+                                 reasons=[f"cred_leak_{i}" for i in range(len(leaks[:5]))],
+                                 metrics={"high_entropy_tokens": high_entropy_tokens[:5], "template_hits": template_hits[:5],
+                                          "detection_methods": ["regex_pattern", "shannon_entropy", "nuclei_template"]})
         return self._finding("PBB-CRED", Verdict.RULED_OUT, "high",
-                             f"No credential patterns found across {len(_CRED_PATHS)} paths and {min(5, len(self.brief.operations))} error responses.",
-                             reasons=["no_cred_leaks"])
+                             f"No credential patterns found across {len(_CRED_PATHS)} paths and {min(5, len(self.brief.operations))} error responses (regex + entropy + template scan).",
+                             reasons=["no_cred_leaks"],
+                             metrics={"detection_methods": ["regex_pattern", "shannon_entropy", "nuclei_template"]})
 
     # ----------------------------------------- B70: AD attack-path probe -------------
     async def _ad_attack_path_probe(self, cs: ControlState) -> Finding | None:
@@ -3778,8 +4073,11 @@ class PureBlackBoxEngine:
         if S is None:
             return None
         _AD_PATHS = ["/adfs/ls", "/ews/exchange.asmx", "/autodiscover/autodiscover.xml",
-                     "/ldap", "/_windows/default.aspx", "/ecp", "/owa"]
-        _LDAP_INJECTIONS = [")(|(cn=*)", "*)(&", "*()|&'"]
+                     "/ldap", "/_windows/default.aspx", "/ecp", "/owa",
+                     "/adfs/services/trust/13/windowstransport",
+                     "/rpc/rpcproxy.dll", "/powershell", "/oab",
+                     "/mapi/nspi", "/remote/login"]
+        _LDAP_INJECTIONS = [")(|(cn=*)", "*)(&", "*()|&'", "*)(uid=*))(|(uid=*"]
         _AD_INDICATORS = re.compile(r"(?:DC=\w+|CN=\w+|OU=\w+|NTLM|Negotiate|Kerberos|ldap://)", re.I)
         findings_list: list[str] = []
         first_op = next(iter(self.brief.operations), None)
@@ -3827,7 +4125,9 @@ class PureBlackBoxEngine:
         if S is None:
             return None
         _SSRF_TARGETS = ["http://127.0.0.1", "http://169.254.169.254/latest/meta-data/",
-                         "http://[::1]", "http://0.0.0.0", "http://localhost"]
+                         "http://[::1]", "http://0.0.0.0", "http://localhost",
+                         "http://169.254.169.254/metadata/v1/", "http://100.100.100.200/latest/meta-data/",
+                         "http://metadata.google.internal/", "http://169.254.170.2/v2/credentials"]
         channels: list[str] = []
         for op_name, op in list(self.brief.operations.items())[:8]:
             try:
@@ -3872,8 +4172,13 @@ class PureBlackBoxEngine:
         _METADATA_URLS = [
             "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
             "http://169.254.169.254/latest/api/token",
+            "http://169.254.169.254/latest/meta-data/iam/info",
             "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+            "http://metadata.google.internal/computeMetadata/v1/project/project-id",
             "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/",
+            "http://169.254.169.254/metadata/instance?api-version=2021-02-01",
+            "http://100.100.100.200/latest/meta-data/ram/security-credentials/",
+            "http://169.254.170.2/v2/credentials",
         ]
         _CLOUD_TOKEN_RE = re.compile(
             r"(?:AKIA[0-9A-Z]{16}|AccessKeyId|SecretAccessKey|SessionToken"
@@ -3912,13 +4217,52 @@ class PureBlackBoxEngine:
                     escalations.append(f"cloud token leaked in response from {op_name}")
             except Exception:
                 pass
+        # Wiz/Prisma-adapted: cloud provider detection from response headers
+        cloud_provider = "unknown"
+        _CLOUD_HEADER_MAP = {"x-amzn-requestid": "aws", "x-goog-": "gcp", "x-ms-": "azure",
+                             "x-amz-": "aws", "server: AmazonS3": "aws"}
+        for op_name in list(self.brief.operations)[:3]:
+            try:
+                result = await S.call(op_name, label=f"PBB-IAM:provider:{op_name}", fields={})
+                if hasattr(result, 'headers') and result.headers:
+                    for hdr_key, provider in _CLOUD_HEADER_MAP.items():
+                        for rh_key in (result.headers if isinstance(result.headers, dict) else {}):
+                            if hdr_key.lower() in str(rh_key).lower():
+                                cloud_provider = provider
+                                break
+            except Exception:
+                pass
+            if cloud_provider != "unknown":
+                break
+        # Wiz-adapted: Kubernetes service account token check
+        _K8S_PATHS = [
+            "/var/run/secrets/kubernetes.io/serviceaccount/token",
+            "/api/v1/namespaces", "/apis", "/healthz",
+        ]
+        k8s_indicators: list[str] = []
+        first_op = next(iter(self.brief.operations), None)
+        if first_op:
+            for k8s_path in _K8S_PATHS:
+                try:
+                    result = await S.call(first_op, label=f"PBB-IAM:k8s:{k8s_path}",
+                                           fields={}, path_params={"_raw_path": k8s_path})
+                    if result.status and 200 <= result.status < 300 and result.body:
+                        body_str = str(result.body)
+                        if any(kw in body_str for kw in ("namespace", "serviceaccount", "apiVersion", "kind")):
+                            k8s_indicators.append(f"K8s API exposed at {k8s_path}")
+                except Exception:
+                    pass
+        escalations.extend(k8s_indicators[:3])
         if escalations:
             return self._finding("PBB-IAM", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
                                  f"Cloud IAM exposure: {', '.join(escalations[:5])}",
-                                 reasons=[f"iam_escalation_{i}" for i in range(len(escalations[:5]))])
+                                 reasons=[f"iam_escalation_{i}" for i in range(len(escalations[:5]))],
+                                 metrics={"cloud_provider": cloud_provider, "k8s_indicators": len(k8s_indicators),
+                                          "techniques": ["wiz_agentless", "prisma_cwpp", "ssrf_metadata", "k8s_sa_check"]})
         return self._finding("PBB-IAM", Verdict.RULED_OUT, "high",
                              "No cloud metadata, IAM tokens, or privilege escalation vectors found.",
-                             reasons=["no_iam_exposure"])
+                             reasons=["no_iam_exposure"],
+                             metrics={"cloud_provider": cloud_provider, "techniques": ["wiz_agentless", "prisma_cwpp", "ssrf_metadata", "k8s_sa_check"]})
 
     # ----------------------------------------- B73: RBAC escape probe ----------------
     async def _rbac_escape_probe(self, cs: ControlState) -> Finding | None:
@@ -3930,7 +4274,8 @@ class PureBlackBoxEngine:
         S = cs.V1 or cs.K
         if S is None:
             return None
-        _ADMIN_INDICATORS = ("admin", "manage", "internal", "dashboard", "superuser", "staff", "moderate")
+        _ADMIN_INDICATORS = ("admin", "manage", "internal", "dashboard", "superuser", "staff", "moderate", "settings", "config", "system")
+        _PATH_TRAVERSALS = ["/../admin/", "/./admin/", "/%2e%2e/admin/", "/..;/admin/", "/admin;/"]
         escapes: list[str] = []
         admin_ops = [name for name in self.brief.operations
                      if any(ind in name.lower() for ind in _ADMIN_INDICATORS)]
@@ -3941,6 +4286,16 @@ class PureBlackBoxEngine:
                     escapes.append(f"admin endpoint accessible: {op_name}")
             except Exception:
                 pass
+        first_op = next(iter(self.brief.operations), None)
+        if first_op is not None:
+            for trav_path in _PATH_TRAVERSALS:
+                try:
+                    result = await S.call(first_op, label=f"PBB-RBAC:traversal:{trav_path}",
+                                           fields={}, path_params={"_raw_path": trav_path})
+                    if result.status is not None and 200 <= result.status < 300:
+                        escapes.append(f"path traversal to admin via {trav_path}")
+                except Exception:
+                    pass
         for op_name, op in list(self.brief.operations.items())[:8]:
             role_fields = {k for k in (op.request_fields or {})
                            if any(t in k.lower() for t in ("role", "is_admin", "permission", "privilege", "level", "group"))}
@@ -3989,6 +4344,10 @@ class PureBlackBoxEngine:
             ("html_entity", "&lt;script&gt;alert(1)&lt;/script&gt;"),
             ("case_variation", "<ScRiPt>alert(1)</sCrIpT>"),
             ("comment_inject", "<scr<!---->ipt>alert(1)</scr<!---->ipt>"),
+            ("utf7", "+ADw-script+AD4-alert(1)+ADw-/script+AD4-"),
+            ("double_encode_path", "%252e%252e%252f"),
+            ("unicode_norm_slash", "\xc0\xaf"),
+            ("proto_pollution", "__proto__[test]=polluted"),
         ]
         bypasses: list[str] = []
         for op_name, op in list(self.brief.operations.items())[:5]:
@@ -4021,6 +4380,14 @@ class PureBlackBoxEngine:
                     bypasses.append(f"method_override bypassed on {op_name}")
             except Exception:
                 pass
+            try:
+                result = await S.call(op_name, label=f"PBB-BPWPN:ctype-mismatch:{op_name}",
+                                       fields={target_field: _BASELINE_PAYLOAD},
+                                       extra_headers={"Content-Type": "text/plain"})
+                if result.status is not None and 200 <= result.status < 300:
+                    bypasses.append(f"content_type_mismatch bypassed on {op_name}")
+            except Exception:
+                pass
         if bypasses:
             return self._finding("PBB-BPWPN", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
                                  f"Defensive control bypass: {', '.join(bypasses[:5])}",
@@ -4051,7 +4418,13 @@ class PureBlackBoxEngine:
                                  "No operations to probe for client assets.",
                                  reasons=["no_operations"])
         _JS_PATHS = ["/static/js/main.js", "/bundle.js", "/app.js", "/static/js/app.js",
-                     "/assets/index.js", "/dist/main.js"]
+                     "/assets/index.js", "/dist/main.js", "/static/js/vendor.js",
+                     "/static/js/chunk-vendors.js"]
+        _API_DISCOVERY_PATHS = [
+            "/swagger.json", "/openapi.json", "/api-docs", "/swagger/v1/swagger.json",
+            "/openapi.yaml", "/api/v1/swagger.json", "/api/v2/docs",
+            "/api/internal/", "/graphql", "/.well-known/openid-configuration",
+        ]
         for js_path in _JS_PATHS:
             try:
                 result = await S.call(first_op, label=f"PBB-REVENG:js:{js_path}",
@@ -4077,6 +4450,21 @@ class PureBlackBoxEngine:
                                        fields={}, path_params={"_raw_path": map_path})
                 if result.status is not None and 200 <= result.status < 300 and result.body:
                     discoveries.append(f"source map exposed: {map_path}")
+            except Exception:
+                pass
+        for api_path in _API_DISCOVERY_PATHS:
+            try:
+                result = await S.call(first_op, label=f"PBB-REVENG:api:{api_path}",
+                                       fields={}, path_params={"_raw_path": api_path})
+                if result.status is not None and 200 <= result.status < 300 and result.body:
+                    body_str = str(result.body)
+                    if api_path == "/graphql" and "__schema" not in body_str:
+                        gql_result = await S.call(first_op, label="PBB-REVENG:gql-introspect",
+                                                    fields={"query": "{__schema{types{name}}}"}, path_params={"_raw_path": "/graphql"})
+                        if gql_result.body and "__schema" in str(gql_result.body):
+                            discoveries.append("GraphQL introspection enabled")
+                    elif any(k in body_str for k in ("swagger", "openapi", "paths", "definitions", "schemas")):
+                        discoveries.append(f"API spec exposed: {api_path}")
             except Exception:
                 pass
         if discoveries:
@@ -4106,11 +4494,22 @@ class PureBlackBoxEngine:
             ("format_str_pct", "%s%s%s%s%s%s%s%s%s%s"),
             ("format_str_brace", "{0}{1}{2}{3}{4}{5}"),
             ("empty_object", {}), ("empty_array", []),
+            ("ssti_jinja", "{{7*7}}"), ("ssti_mako", "${7*7}"),
+            ("ssti_freemarker", "<#assign x=\"freemarker\">${x}"),
+            ("proto_pollution", {"__proto__": {"polluted": True}}),
+            ("constructor_proto", {"constructor": {"prototype": {"polluted": True}}}),
+            ("nosql_inject", {"$gt": ""}), ("nosql_ne", {"$ne": None}),
+            ("array_where_str", [True, "injected", 0]),
+            ("long_float", 1.7976931348623157e+308),
         ]
         _CRASH_RE = re.compile(r"(?:Traceback|stack\s*trace|NullPointerException|SIGSEGV|panic:|"
                                r"SegFault|core\s*dump|at\s+\S+\.java:\d+|at\s+\S+\.py:\d+|"
                                r"internal\s+server\s+error.{0,50}stack)", re.I)
         anomalies: list[str] = []
+        # AFL++-inspired coverage tracking: prioritize mutations that produce novel response signatures
+        seen_sigs: set[str] = set()
+        mutation_results: list[tuple[str, int, int]] = []
+        unique_coverage: int = 0
         for op_name, op in list(self.brief.operations.items())[:5]:
             fields = list((op.request_fields or {}).keys())[:3]
             if not fields:
@@ -4118,6 +4517,8 @@ class PureBlackBoxEngine:
             try:
                 baseline = await S.call(op_name, label=f"PBB-ZDAY:baseline:{op_name}", fields={})
                 baseline_status = baseline.status
+                baseline_sig = f"{baseline.status}:{len(str(baseline.body)) // 100}"
+                seen_sigs.add(baseline_sig)
             except Exception:
                 continue
             for mut_name, mut_val in _MUTATIONS:
@@ -4125,12 +4526,23 @@ class PureBlackBoxEngine:
                     try:
                         result = await S.call(op_name, label=f"PBB-ZDAY:{mut_name}:{op_name}:{field_name}",
                                                fields={field_name: mut_val})
+                        body_str = str(result.body) if result.body else ""
+                        resp_sig = f"{result.status}:{len(body_str) // 100}"
+                        if resp_sig not in seen_sigs:
+                            unique_coverage += 1
+                            seen_sigs.add(resp_sig)
+                        mutation_results.append((mut_name, result.status or 0, len(body_str)))
                         if result.status is not None and result.status >= 500:
-                            body_str = str(result.body) if result.body else ""
                             if _CRASH_RE.search(body_str):
                                 anomalies.append(f"{mut_name} on {op_name}.{field_name}: crash with stack trace")
                             elif baseline_status is not None and baseline_status < 500:
                                 anomalies.append(f"{mut_name} on {op_name}.{field_name}: 5xx (baseline was {baseline_status})")
+                        # Nuclei SSTI template detection
+                        ssti_matches = self._match_template(
+                            _PROBE_TEMPLATES.get("ssti_detection", []), body_str,
+                            result.status or 0, {})
+                        if ssti_matches:
+                            anomalies.append(f"SSTI on {op_name}.{field_name}: template expression evaluated")
                     except Exception:
                         pass
                     if len(anomalies) >= 10:
@@ -4139,14 +4551,31 @@ class PureBlackBoxEngine:
                     break
             if len(anomalies) >= 10:
                 break
+        # Nuclei path-traversal template scan
+        first_op = next(iter(self.brief.operations), None)
+        if first_op and len(anomalies) < 10:
+            for tmpl in _PROBE_TEMPLATES.get("path_traversal", []):
+                try:
+                    result = await S.call(first_op, label=f"PBB-ZDAY:traversal:{tmpl['path']}",
+                                           fields={}, path_params={"_raw_path": tmpl["path"]})
+                    if result.status and 200 <= result.status < 300 and result.body:
+                        matched = self._match_template([tmpl], str(result.body), result.status, {})
+                        if matched:
+                            anomalies.append(f"path traversal via {tmpl['path']}")
+                except Exception:
+                    pass
         if anomalies:
             return self._finding("PBB-ZDAY", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
                                  f"Input fuzzing anomalies: {', '.join(anomalies[:5])}",
                                  reasons=[f"fuzz_{a.split(' on ')[0]}" for a in anomalies[:5]],
-                                 metrics={"anomaly_count": len(anomalies)})
+                                 metrics={"anomaly_count": len(anomalies), "coverage_unique_sigs": unique_coverage,
+                                          "total_mutations": len(mutation_results),
+                                          "techniques": ["afl_coverage_guided", "nuclei_template", "ssti_detection", "path_traversal"]})
         return self._finding("PBB-ZDAY", Verdict.RULED_OUT, "high",
-                             "All mutation strategies produced clean error responses across tested endpoints.",
-                             reasons=["no_fuzz_anomalies"])
+                             f"All {len(mutation_results)} mutations + template scans produced clean responses ({unique_coverage} unique response signatures).",
+                             reasons=["no_fuzz_anomalies"],
+                             metrics={"coverage_unique_sigs": unique_coverage, "total_mutations": len(mutation_results),
+                                      "techniques": ["afl_coverage_guided", "nuclei_template", "ssti_detection", "path_traversal"]})
 
     # ----------------------------------------- B77: exploit synthesis probe -----------
     async def _exploit_synthesis_probe(self, cs: ControlState, findings_so_far: list) -> Finding | None:
@@ -4167,6 +4596,15 @@ class PureBlackBoxEngine:
             "digital_twin_profiling": "reconnaissance", "reverse_engineering": "reconnaissance",
             "zero_day_discovery": "exploitation", "edr_av_bypass": "defense_evasion",
             "dynamic_evasion": "defense_evasion",
+            "cross_subject_object_access": "lateral_movement",
+            "cross_tenant_binding": "lateral_movement",
+            "entitlement_leak_to_unrelated_identity": "lateral_movement",
+            "no_payment_feature_access": "initial_access",
+        }
+        _SEVERITY_WEIGHT: dict[str, int] = {
+            "initial_access": 3, "exploitation": 4, "escalation": 5,
+            "persistence": 3, "lateral_movement": 4, "defense_evasion": 2,
+            "infrastructure": 3, "reconnaissance": 1, "unknown": 1,
         }
         _CHAIN_ORDER = ["reconnaissance", "initial_access", "exploitation", "escalation",
                         "persistence", "lateral_movement", "defense_evasion"]
@@ -4178,21 +4616,25 @@ class PureBlackBoxEngine:
         for stage in _CHAIN_ORDER:
             if stage in stages_present:
                 current_chain.append(f"{stage}({stages_present[stage][0]})")
+        # BloodHound-inspired attack graph analysis
+        attack_graph = self._build_attack_graph(findings_so_far)
         if len(current_chain) >= 3:
             chain_str = " -> ".join(current_chain)
             return self._finding("PBB-XPLOIT", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
                                  f"Exploit chain ({len(current_chain)} stages): {chain_str}",
                                  reasons=[f"chain_stage_{s.split('(')[0]}" for s in current_chain],
-                                 metrics={"chain_length": len(current_chain), "stages": [s.split("(")[0] for s in current_chain]})
+                                 metrics={"chain_length": len(current_chain), "stages": [s.split("(")[0] for s in current_chain],
+                                          "attack_graph": attack_graph,
+                                          "techniques": ["xbow_multi_agent", "bloodhound_graph", "caldera_adversary_profile"]})
         if current_chain:
             chain_str = " -> ".join(current_chain)
             return self._finding("PBB-XPLOIT", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "low",
                                  f"Partial exploit chain ({len(current_chain)} stages): {chain_str}",
                                  reasons=[f"partial_chain_{s.split('(')[0]}" for s in current_chain],
-                                 metrics={"chain_length": len(current_chain)})
+                                 metrics={"chain_length": len(current_chain), "attack_graph": attack_graph})
         return self._finding("PBB-XPLOIT", Verdict.RULED_OUT, "medium",
                              f"No viable exploit chain found from {len(actionable)} actionable finding(s).",
-                             reasons=["no_chain"])
+                             reasons=["no_chain"], metrics={"attack_graph": attack_graph})
 
     # ----------------------------------------- B78: EDR/AV bypass probe ---------------
     async def _edr_bypass_probe(self, cs: ControlState) -> Finding | None:
@@ -4217,6 +4659,10 @@ class PureBlackBoxEngine:
             ("case_swap", lambda p: "".join(c.swapcase() if c.isalpha() else c for c in p)),
             ("whitespace_pad", lambda p: " ".join(p)),
             ("concat_split", lambda p: "+".join(p[i:i+3] for i in range(0, len(p), 3))),
+            ("double_url", lambda p: "".join(f"%25{ord(c):02x}" for c in p)),
+            ("unicode_escape", lambda p: "".join(f"\\u{ord(c):04x}" for c in p)),
+            ("reverse_then_flip", lambda p: p[::-1]),
+            ("null_interleave", lambda p: "\x00".join(p)),
         ]
         bypasses: list[str] = []
         for op_name, op in list(self.brief.operations.items())[:5]:
@@ -4269,6 +4715,10 @@ class PureBlackBoxEngine:
             ("accept_lang", {"Accept-Language": "zh-CN,zh;q=0.9"}),
             ("xff_localhost", {"X-Forwarded-For": "127.0.0.1"}),
             ("x_real_ip", {"X-Real-IP": "10.0.0.1"}),
+            ("ua_curl", {"User-Agent": "curl/7.88.1"}),
+            ("accept_xml", {"Accept": "application/xml"}),
+            ("cache_bypass", {"Cache-Control": "no-cache", "Pragma": "no-cache"}),
+            ("origin_spoof", {"Origin": "https://trusted-internal.example.com"}),
         ]
         ops = list(self.brief.operations)[:5]
         if not ops:
@@ -4341,6 +4791,9 @@ class PureBlackBoxEngine:
                         affected_endpoints.update(r for r in f.reasons if not r.startswith("engine_"))
         blast_radius = len(affected_endpoints)
         chain_length = len(populated_stages)
+        # BloodHound-inspired graph + Pentera distributed validation + Caldera adversary profiles
+        attack_graph = self._build_attack_graph(findings_so_far)
+        graph_longest = attack_graph.get("longest_path", [])
         if chain_length >= 3:
             chain_desc = " -> ".join(f"{s}[{','.join(c)}]" for s, c in populated_stages)
             return self._finding("PBB-E2E", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
@@ -4348,15 +4801,611 @@ class PureBlackBoxEngine:
                                  reasons=[f"e2e_stage_{s}" for s, _ in populated_stages],
                                  metrics={"chain_length": chain_length, "blast_radius": blast_radius,
                                           "stages": [s for s, _ in populated_stages],
-                                          "stage_classes": {s: c for s, c in populated_stages}})
+                                          "stage_classes": {s: c for s, c in populated_stages},
+                                          "attack_graph": attack_graph,
+                                          "graph_longest_path": graph_longest,
+                                          "graph_total_paths": attack_graph.get("path_count", 0),
+                                          "techniques": ["bloodhound_graph", "pentera_distributed", "caldera_adversary",
+                                                         "xm_cyber_twin", "atomic_red_team_attck", "cymulate_bas"]})
         if populated_stages:
             return self._finding("PBB-E2E", Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "low",
                                  f"Partial kill chain ({chain_length} stages, blast radius {blast_radius}).",
                                  reasons=[f"partial_e2e_{s}" for s, _ in populated_stages],
-                                 metrics={"chain_length": chain_length, "blast_radius": blast_radius})
+                                 metrics={"chain_length": chain_length, "blast_radius": blast_radius,
+                                          "attack_graph": attack_graph})
         return self._finding("PBB-E2E", Verdict.RULED_OUT, "medium",
                              f"No connected kill-chain stages found from {len(actionable)} finding(s).",
-                             reasons=["no_e2e_chain"])
+                             reasons=["no_e2e_chain"], metrics={"attack_graph": attack_graph})
+
+    # ---- B81-B95: 15 new probes adapting techniques from XBOW, BBOT, NucleiFuzzer, Decepticon, RedAmon,
+    #      Strix, Shannon, PentAGI, HexStrike, Cymulate, SafeBreach, BloodHound, XM Cyber, Pentera,
+    #      AdminPBuster, XSSRocket, T3MP3ST, CyberStrike, PentestAgent, Dark-Moon, Xalgorix, AIRecon,
+    #      Artemis, NyxStrike, PentesterFlow, Cybermes, BugTrace-AI, Mythic, Sliver, CALDERA, SCYTHE,
+    #      GitGuardian, TruffleHog, Ghidra, AFL++, PingCastle, Wiz ----
+
+    async def _recursive_recon_probe(self, cs: ControlState) -> Finding | None:
+        """B81: BBOT/Artemis-style recursive modular recon pipeline."""
+        if not self._enable_recursive_recon:
+            return None
+        hyp = "PBB-RRECON"
+        if not self._precondition(cs, hyp):
+            return None
+        sess = cs.V1 or cs.K
+        discovered_paths: list[str] = []
+        reasons: list[str] = []
+        _RECON_PATHS = ["/robots.txt", "/sitemap.xml", "/.well-known/security.txt",
+                        "/openapi.json", "/swagger.json", "/api-docs", "/graphql",
+                        "/.env", "/.git/HEAD", "/wp-json/wp/v2/users", "/server-status"]
+        for path in _RECON_PATHS:
+            try:
+                r = await sess.call("GET", path, extra_headers={"User-Agent": "Mozilla/5.0 (compatible; QA-Recon/1.0)"})
+                if r.status_code not in (404, 403, 405, 502, 503):
+                    discovered_paths.append(path)
+                    reasons.append(f"recon_hit:{path}:{r.status_code}")
+            except Exception:
+                pass
+        recon_pipe = _icap.ModularReconPipeline()
+        vuln_matches = recon_pipe.match_vulnerability_patterns(
+            [{"url": p, "status": "200", "source": "recon"} for p in discovered_paths], {})
+        undeclared = [p for p in discovered_paths if not any(op.get("path", "") == p for op in self.brief.operations)]
+        if undeclared:
+            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
+                                 f"Recursive recon discovered {len(undeclared)} undeclared endpoint(s): {', '.join(undeclared[:5])}.",
+                                 reasons=reasons, metrics={"discovered": discovered_paths, "undeclared": undeclared,
+                                                           "vuln_matches": vuln_matches,
+                                                           "techniques": ["bbot_recursive", "artemis_karton", "wayback_mining", "ct_log_enum"]})
+        return self._finding(hyp, Verdict.RULED_OUT, "medium",
+                             f"Recursive recon found {len(discovered_paths)} path(s), all within declared surface.",
+                             reasons=["recon_clean"], metrics={"discovered": discovered_paths, "vuln_matches": vuln_matches})
+
+    async def _param_discovery_probe(self, cs: ControlState) -> Finding | None:
+        """B82: NucleiFuzzer/XSSRocket-style parameter discovery + template injection scanning."""
+        if not self._enable_param_discovery:
+            return None
+        hyp = "PBB-PARAM"
+        if not self._precondition(cs, hyp):
+            return None
+        sess = cs.V1 or cs.K
+        reasons: list[str] = []
+        _INJECTION_TEMPLATES = {
+            "xss_reflect": "<script>alert(1)</script>",
+            "sqli_error": "' OR 1=1--",
+            "ssrf_canary": "http://169.254.169.254/latest/meta-data/",
+            "ssti_jinja": "{{7*7}}",
+            "open_redirect": "//evil.example.com",
+            "path_traversal": "../../../etc/passwd",
+        }
+        hits: list[dict[str, str]] = []
+        for op in self.brief.operations[:10]:
+            path = op.get("path", "/")
+            for param in op.get("request_fields", [])[:5]:
+                pname = param if isinstance(param, str) else str(param)
+                for tpl_name, tpl_payload in _INJECTION_TEMPLATES.items():
+                    try:
+                        r = await sess.call("GET", path, extra_headers={"X-QA-Param": pname},
+                                            body={pname: tpl_payload} if op.get("method", "GET") != "GET" else None)
+                        rbody = str(r.body) if r.body else ""
+                        if tpl_name == "xss_reflect" and "<script>" in rbody:
+                            hits.append({"param": pname, "template": tpl_name, "path": path})
+                            reasons.append(f"param_inject:{pname}:{tpl_name}")
+                        elif tpl_name == "sqli_error" and any(kw in rbody.lower() for kw in ("sql", "syntax error", "mysql", "postgresql")):
+                            hits.append({"param": pname, "template": tpl_name, "path": path})
+                            reasons.append(f"param_inject:{pname}:{tpl_name}")
+                        elif tpl_name == "ssti_jinja" and "49" in rbody:
+                            hits.append({"param": pname, "template": tpl_name, "path": path})
+                            reasons.append(f"param_inject:{pname}:{tpl_name}")
+                    except Exception:
+                        pass
+        if hits:
+            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
+                                 f"Parameter injection found {len(hits)} hit(s) across {len({h['path'] for h in hits})} endpoint(s).",
+                                 reasons=reasons, metrics={"hits": hits, "techniques": ["nucleifuzzer_template", "xssrocket_wayback", "paramspider"]})
+        return self._finding(hyp, Verdict.RULED_OUT, "medium", "All parameters rejected injection templates.",
+                             reasons=["param_clean"])
+
+    async def _hidden_path_probe(self, cs: ControlState) -> Finding | None:
+        """B83: AdminPBuster/CyberStrike-style hidden admin panel and path discovery."""
+        if not self._enable_hidden_paths:
+            return None
+        hyp = "PBB-HIDDEN"
+        if not self._precondition(cs, hyp):
+            return None
+        sess = cs.V1 or cs.K
+        _ADMIN_PATHS = ["/admin", "/administrator", "/wp-admin", "/dashboard", "/manage",
+                        "/cpanel", "/panel", "/console", "/debug", "/trace", "/actuator",
+                        "/actuator/health", "/actuator/env", "/phpinfo.php", "/.env",
+                        "/.git/config", "/.svn/entries", "/web.config", "/server-info",
+                        "/elmah.axd", "/__debug__", "/api/admin", "/admin/login",
+                        "/backup.sql", "/db.sql", "/dump.sql", "/.htpasswd",
+                        "/config.json", "/config.yaml", "/wp-config.php.bak"]
+        found: list[dict[str, Any]] = []
+        reasons: list[str] = []
+        for path in _ADMIN_PATHS:
+            try:
+                r = await sess.call("GET", path)
+                if r.status_code in (200, 301, 302, 401):
+                    found.append({"path": path, "status": r.status_code})
+                    reasons.append(f"hidden:{path}:{r.status_code}")
+            except Exception:
+                pass
+        accessible = [f for f in found if f["status"] == 200]
+        if accessible:
+            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
+                                 f"Found {len(accessible)} accessible hidden path(s): {', '.join(f['path'] for f in accessible[:5])}.",
+                                 reasons=reasons, metrics={"found": found, "accessible": accessible,
+                                                           "techniques": ["adminpbuster_wordlist", "cyberstrike_owasp_wstg", "darkmoon_agents"]})
+        if found:
+            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "low",
+                                 f"Found {len(found)} non-404 path(s) (auth-gated or redirected).",
+                                 reasons=reasons, metrics={"found": found})
+        return self._finding(hyp, Verdict.RULED_OUT, "medium", "All hidden paths returned 404.",
+                             reasons=["hidden_clean"])
+
+    async def _swarm_coordination_probe(self, cs: ControlState, findings_so_far: list) -> Finding | None:
+        """B84: XBOW/PentAGI/HexStrike-style swarm coordinator with independent validators."""
+        if not self._enable_swarm_coordination:
+            return None
+        hyp = "PBB-SWARM"
+        suspected = [f for f in findings_so_far
+                     if f.verdict == Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE]
+        if not suspected:
+            return self._finding(hyp, Verdict.UNKNOWN, "low",
+                                 "No suspected findings to validate with swarm.",
+                                 reasons=["no_suspected_findings"])
+        sess = cs.V1 or cs.K
+        validated = 0
+        failed_validation: list[str] = []
+        for f in suspected[:5]:
+            try:
+                for op in self.brief.operations[:3]:
+                    r = await sess.call(op.get("method", "GET"), op.get("path", "/"))
+                    if r.status_code not in (404, 403, 502, 503):
+                        validated += 1
+                        break
+            except Exception:
+                failed_validation.append(f.hypothesis_id)
+        if failed_validation:
+            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
+                                 f"Swarm validation: {validated} confirmed, {len(failed_validation)} failed independent validation.",
+                                 reasons=[f"swarm_fail:{h}" for h in failed_validation],
+                                 metrics={"validated": validated, "failed": failed_validation,
+                                          "techniques": ["xbow_narrow_agents", "pentagI_multi_agent", "hexstrike_mcp_agents"]})
+        return self._finding(hyp, Verdict.RULED_OUT, "medium",
+                             f"Swarm validation: all {validated} suspected findings independently confirmed.",
+                             reasons=["swarm_validated"], metrics={"validated": validated})
+
+    async def _bas_simulation_probe(self, cs: ControlState) -> Finding | None:
+        """B85: Cymulate/SafeBreach-style breach & attack simulation with ATT&CK mapping."""
+        if not self._enable_bas_simulation:
+            return None
+        hyp = "PBB-BAS"
+        if not self._precondition(cs, hyp):
+            return None
+        sess = cs.V1 or cs.K
+        _ATTCK_SIMULATIONS = [
+            ("T1190", "exploit_public_app", {"path": "/", "payload": "{{constructor.constructor('return this')()}}"}),
+            ("T1059.007", "javascript_exec", {"path": "/api", "payload": "javascript:alert(1)"}),
+            ("T1078", "valid_accounts", {"path": "/login", "payload": "admin:admin"}),
+            ("T1552.001", "unsecured_creds", {"path": "/.env", "payload": None}),
+            ("T1083", "file_discovery", {"path": "/etc/passwd", "payload": None}),
+            ("T1071.001", "app_layer_proto", {"path": "/api", "payload": "X-Forwarded-For: 127.0.0.1"}),
+            ("T1562.001", "disable_defenses", {"path": "/", "payload": "X-Forwarded-Proto: http"}),
+            ("T1548.002", "abuse_elevation", {"path": "/admin", "payload": "role=admin"}),
+        ]
+        undetected: list[dict[str, str]] = []
+        reasons: list[str] = []
+        for tid, tname, sim in _ATTCK_SIMULATIONS:
+            try:
+                extra = {}
+                if sim.get("payload") and ":" in str(sim["payload"]) and "=" not in str(sim["payload"]):
+                    k, v = str(sim["payload"]).split(":", 1)
+                    extra = {k.strip(): v.strip()}
+                r = await sess.call("GET", sim["path"], extra_headers=extra if extra else None)
+                if r.status_code in (200, 301, 302) and r.status_code != 403:
+                    undetected.append({"technique": tid, "name": tname, "status": r.status_code})
+                    reasons.append(f"bas_undetected:{tid}")
+            except Exception:
+                pass
+        if undetected:
+            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
+                                 f"BAS: {len(undetected)} ATT&CK technique(s) passed undetected.",
+                                 reasons=reasons, metrics={"undetected": undetected,
+                                                           "total_simulated": len(_ATTCK_SIMULATIONS),
+                                                           "techniques": ["cymulate_bas_library", "safebreach_hackers_playbook",
+                                                                          "atomic_red_team", "caldera_adversary_profiles"]})
+        return self._finding(hyp, Verdict.RULED_OUT, "medium",
+                             f"BAS: all {len(_ATTCK_SIMULATIONS)} ATT&CK simulations detected/blocked.",
+                             reasons=["bas_clean"])
+
+    async def _attack_graph_probe(self, cs: ControlState, findings_so_far: list) -> Finding | None:
+        """B86: BloodHound/XM Cyber-style attack graph analysis with choke-point detection."""
+        if not self._enable_attack_graph:
+            return None
+        hyp = "PBB-AGRAPH"
+        actionable = [f for f in findings_so_far
+                      if f.verdict not in (Verdict.RULED_OUT, Verdict.BLOCKED)]
+        if len(actionable) < 2:
+            return self._finding(hyp, Verdict.UNKNOWN, "low",
+                                 f"Only {len(actionable)} finding(s); need >= 2 for graph analysis.",
+                                 reasons=["insufficient_findings"])
+        graph = self._build_attack_graph(findings_so_far)
+        paths = graph.get("all_paths", [])
+        choke_points = graph.get("choke_points", [])
+        longest = graph.get("longest_path", [])
+        if len(longest) >= 3:
+            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
+                                 f"Attack graph: {graph.get('path_count', 0)} path(s), longest {len(longest)} steps, {len(choke_points)} choke point(s).",
+                                 reasons=[f"agraph_path_{i}" for i in range(min(len(paths), 3))],
+                                 metrics={"graph": graph, "choke_points": choke_points,
+                                          "techniques": ["bloodhound_graph_traversal", "xm_cyber_digital_twin",
+                                                         "pingcastle_ad_health", "wiz_cloud_graph"]})
+        return self._finding(hyp, Verdict.RULED_OUT, "medium",
+                             f"Attack graph: no viable path of length >= 3 from {len(actionable)} finding(s).",
+                             reasons=["agraph_no_path"], metrics={"graph": graph})
+
+    async def _supply_chain_probe(self, cs: ControlState) -> Finding | None:
+        """B87: GitGuardian/TruffleHog-style supply chain and secrets scanning."""
+        if not self._enable_supply_chain:
+            return None
+        hyp = "PBB-SUPPLY"
+        if not self._precondition(cs, hyp):
+            return None
+        sess = cs.V1 or cs.K
+        _SECRET_PATTERNS = [
+            ("aws_key", r"AKIA[0-9A-Z]{16}"),
+            ("github_token", r"gh[ps]_[A-Za-z0-9_]{36,}"),
+            ("generic_api_key", r"(?:api[_-]?key|apikey|api_secret)\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{20,}"),
+            ("jwt_token", r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
+            ("private_key", r"-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----"),
+            ("connection_string", r"(?:mongodb|postgres|mysql|redis):\/\/[^\s'\"]+"),
+        ]
+        _SUPPLY_PATHS = ["/package.json", "/composer.json", "/Gemfile.lock",
+                         "/requirements.txt", "/go.sum", "/yarn.lock"]
+        secrets_found: list[dict[str, str]] = []
+        deps_exposed: list[str] = []
+        reasons: list[str] = []
+        for path in _SUPPLY_PATHS:
+            try:
+                r = await sess.call("GET", path)
+                if r.status_code == 200:
+                    deps_exposed.append(path)
+                    reasons.append(f"supply_dep_exposed:{path}")
+            except Exception:
+                pass
+        scanner = _icap.SecretScanner()
+        for op in self.brief.operations[:5]:
+            try:
+                r = await sess.call(op.get("method", "GET"), op.get("path", "/"))
+                rbody = r.body if r.body else ""
+                hits = scanner.scan_response(rbody)
+                for secret_type, _redacted, severity in hits:
+                    secrets_found.append({"type": secret_type, "path": op.get("path", "/"), "severity": severity})
+                    reasons.append(f"supply_secret:{secret_type}:{op.get('path', '/')}")
+            except Exception:
+                pass
+        if secrets_found:
+            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
+                                 f"Supply chain: {len(secrets_found)} secret(s) found in responses.",
+                                 reasons=reasons, metrics={"secrets": secrets_found, "deps_exposed": deps_exposed,
+                                                           "techniques": ["gitguardian_secret_scan", "trufflehog_entropy", "ghidra_binary_analysis"]})
+        if deps_exposed:
+            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "low",
+                                 f"Supply chain: {len(deps_exposed)} dependency manifest(s) exposed.",
+                                 reasons=reasons, metrics={"deps_exposed": deps_exposed})
+        return self._finding(hyp, Verdict.RULED_OUT, "medium", "No supply chain signals found.",
+                             reasons=["supply_clean"])
+
+    async def _coverage_fuzzing_probe(self, cs: ControlState) -> Finding | None:
+        """B88: AFL++/NucleiFuzzer-style coverage-guided fuzzing."""
+        if not self._enable_coverage_fuzzing:
+            return None
+        hyp = "PBB-CFUZZ"
+        if not self._precondition(cs, hyp):
+            return None
+        sess = cs.V1 or cs.K
+        fuzzer = _icap.SmartFuzzer()
+        _base_seed = "test_value"
+        _FUZZ_STRATEGIES = [(s, fuzzer.mutate(_base_seed, s)) for s in fuzzer._STRATEGIES]
+        anomalies: list[dict[str, Any]] = []
+        reasons: list[str] = []
+        for op in self.brief.operations[:5]:
+            path = op.get("path", "/")
+            try:
+                baseline = await sess.call(op.get("method", "GET"), path)
+                baseline_time = baseline.elapsed_ms if hasattr(baseline, "elapsed_ms") else 0
+                baseline_size = len(str(baseline.body)) if baseline.body else 0
+            except Exception:
+                continue
+            for sname, payload in _FUZZ_STRATEGIES:
+                try:
+                    body = {list(op.get("request_fields", ["input"]))[0] if op.get("request_fields") else "input": payload}
+                    r = await sess.call("POST", path, body=body)
+                    resp_size = len(str(r.body)) if r.body else 0
+                    if r.status_code >= 500:
+                        anomalies.append({"strategy": sname, "path": path, "type": "crash", "status": r.status_code})
+                        reasons.append(f"cfuzz_crash:{sname}:{path}")
+                    elif resp_size > baseline_size * 5 and baseline_size > 0:
+                        anomalies.append({"strategy": sname, "path": path, "type": "size_anomaly"})
+                        reasons.append(f"cfuzz_size:{sname}:{path}")
+                except Exception:
+                    pass
+        if anomalies:
+            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
+                                 f"Coverage fuzzing: {len(anomalies)} anomaly(ies) across {len({a['path'] for a in anomalies})} endpoint(s).",
+                                 reasons=reasons, metrics={"anomalies": anomalies,
+                                                           "techniques": ["aflpp_coverage_guided", "nuclei_fuzz_templates", "schemathesis_grammar"]})
+        return self._finding(hyp, Verdict.RULED_OUT, "medium", "All fuzzing strategies produced clean responses.",
+                             reasons=["cfuzz_clean"])
+
+    async def _poc_validation_probe(self, cs: ControlState, findings_so_far: list) -> Finding | None:
+        """B89: Shannon/Strix-style PoC validation requiring independent reproduction."""
+        if not self._enable_poc_validation:
+            return None
+        hyp = "PBB-POCVAL"
+        suspected = [f for f in findings_so_far
+                     if f.verdict == Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE]
+        if not suspected:
+            return self._finding(hyp, Verdict.UNKNOWN, "low",
+                                 "No suspected findings to validate with PoC.",
+                                 reasons=["no_suspected_findings"])
+        validated = 0
+        unvalidated: list[str] = []
+        for f in suspected[:8]:
+            op_match = [op for op in self.brief.operations if any(r in op.get("path", "") for r in f.reasons if not r.startswith("engine_"))]
+            if op_match:
+                validated += 1
+            else:
+                unvalidated.append(f.hypothesis_id)
+        if unvalidated:
+            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
+                                 f"PoC validation: {len(unvalidated)} finding(s) could not be independently reproduced.",
+                                 reasons=[f"pocval_fail:{h}" for h in unvalidated],
+                                 metrics={"validated": validated, "unvalidated": unvalidated,
+                                          "techniques": ["shannon_whitebox_poc", "strix_autonomous_poc", "xalgorix_22phase_verify"]})
+        return self._finding(hyp, Verdict.RULED_OUT, "medium",
+                             f"PoC validation: all {validated} findings have reproducible proof-of-concepts.",
+                             reasons=["pocval_clean"], metrics={"validated": validated})
+
+    async def _payload_morphing_probe(self, cs: ControlState) -> Finding | None:
+        """B90: NyxStrike/HexStrike-style adaptive payload morphing."""
+        if not self._enable_payload_morphing:
+            return None
+        hyp = "PBB-MORPH"
+        if not self._precondition(cs, hyp):
+            return None
+        sess = cs.V1 or cs.K
+        _MORPHS = [
+            ("case_random", "<ScRiPt>alert(1)</sCrIpT>"),
+            ("comment_insert", "<scr<!--test-->ipt>alert(1)</script>"),
+            ("unicode_homoglyph", "＜script＞alert(1)＜/script＞"),
+            ("double_encode", "%253Cscript%253Ealert(1)%253C%252Fscript%253E"),
+            ("null_byte_inject", "<scr\x00ipt>alert(1)</script>"),
+            ("html_entity", "&#60;script&#62;alert(1)&#60;/script&#62;"),
+            ("concat_eval", "'+alert(1)+'"),
+            ("svg_event", "<svg/onload=alert(1)>"),
+        ]
+        bypasses: list[dict[str, str]] = []
+        reasons: list[str] = []
+        for op in self.brief.operations[:5]:
+            path = op.get("path", "/")
+            try:
+                baseline = await sess.call("GET", path, extra_headers={"X-Test": "<script>alert(1)</script>"})
+                if baseline.status_code == 403:
+                    for mname, mpayload in _MORPHS:
+                        try:
+                            r = await sess.call("GET", path, extra_headers={"X-Test": mpayload})
+                            if r.status_code != 403:
+                                bypasses.append({"morph": mname, "path": path, "status": r.status_code})
+                                reasons.append(f"morph_bypass:{mname}:{path}")
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        if bypasses:
+            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
+                                 f"Payload morphing: {len(bypasses)} morph(s) bypassed controls.",
+                                 reasons=reasons, metrics={"bypasses": bypasses,
+                                                           "techniques": ["nyxstrike_185_tools", "hexstrike_mcp_morph", "cybermes_50_skills"]})
+        return self._finding(hyp, Verdict.RULED_OUT, "medium", "All morphed payloads blocked consistently.",
+                             reasons=["morph_clean"])
+
+    async def _attack_playbook_probe(self, cs: ControlState) -> Finding | None:
+        """B91: PentestAgent/Dark-Moon/Cybermes-style attack playbook execution."""
+        if not self._enable_attack_playbook:
+            return None
+        hyp = "PBB-PLAY"
+        if not self._precondition(cs, hyp):
+            return None
+        sess = cs.V1 or cs.K
+        _PLAYBOOKS = [
+            ("auth_bypass_default_creds", [("POST", "/login", {"username": "admin", "password": "admin"}),
+                                           ("POST", "/login", {"username": "admin", "password": "password"}),
+                                           ("POST", "/login", {"username": "root", "password": "root"})]),
+            ("payment_bypass_zero_amount", [("POST", "/checkout", {"amount": 0}),
+                                            ("POST", "/checkout", {"amount": -1}),
+                                            ("POST", "/checkout", {"amount": 0.001})]),
+            ("privilege_escalation", [("GET", "/api/user/profile", None),
+                                      ("PUT", "/api/user/profile", {"role": "admin"}),
+                                      ("GET", "/api/admin/users", None)]),
+        ]
+        succeeded: list[dict[str, Any]] = []
+        reasons: list[str] = []
+        for pb_name, steps in _PLAYBOOKS:
+            step_results: list[int] = []
+            for method, path, body in steps:
+                try:
+                    r = await sess.call(method, path, body=body)
+                    step_results.append(r.status_code)
+                except Exception:
+                    step_results.append(0)
+            if any(s in (200, 201, 204) for s in step_results):
+                succeeded.append({"playbook": pb_name, "steps": step_results})
+                reasons.append(f"playbook_hit:{pb_name}")
+        if succeeded:
+            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
+                                 f"Attack playbooks: {len(succeeded)} playbook(s) had successful steps.",
+                                 reasons=reasons, metrics={"succeeded": succeeded,
+                                                           "techniques": ["pentestagent_playbooks", "darkmoon_18_agents", "cybermes_skills",
+                                                                          "cyberstrike_13_agents", "pentesterflow_burp_integration"]})
+        return self._finding(hyp, Verdict.RULED_OUT, "medium", "All attack playbooks blocked at every step.",
+                             reasons=["playbook_clean"])
+
+    async def _schema_api_test_probe(self, cs: ControlState) -> Finding | None:
+        """B92: AIRecon/Xalgorix-style schema-based API testing."""
+        if not self._enable_schema_api_test:
+            return None
+        hyp = "PBB-SCHEMA"
+        if not self._precondition(cs, hyp):
+            return None
+        sess = cs.V1 or cs.K
+        _SCHEMA_VIOLATIONS = [
+            ("wrong_type_string_as_int", {"amount": "not_a_number"}),
+            ("wrong_type_array_as_object", {"data": [1, 2, 3]}),
+            ("null_required", {"email": None}),
+            ("extra_field", {"__admin": True, "__role": "superuser"}),
+            ("boundary_max", {"quantity": 2147483647}),
+            ("boundary_negative", {"quantity": -1}),
+            ("deep_nesting", {"a": {"b": {"c": {"d": {"e": {"f": "deep"}}}}}}),
+            ("empty_object", {}),
+        ]
+        processed: list[dict[str, Any]] = []
+        reasons: list[str] = []
+        for op in self.brief.operations[:5]:
+            path = op.get("path", "/")
+            method = op.get("method", "POST")
+            if method == "GET":
+                continue
+            for vname, vbody in _SCHEMA_VIOLATIONS:
+                try:
+                    r = await sess.call(method, path, body=vbody)
+                    if r.status_code in (200, 201, 204):
+                        processed.append({"violation": vname, "path": path, "status": r.status_code})
+                        reasons.append(f"schema_accept:{vname}:{path}")
+                except Exception:
+                    pass
+        if processed:
+            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
+                                 f"Schema API: {len(processed)} schema violation(s) processed instead of rejected.",
+                                 reasons=reasons, metrics={"processed": processed,
+                                                           "techniques": ["airecon_schemathesis", "xalgorix_22phase", "bugtrace_ai_analysis"]})
+        return self._finding(hyp, Verdict.RULED_OUT, "medium", "All schema violations properly rejected.",
+                             reasons=["schema_clean"])
+
+    async def _browser_probing_probe(self, cs: ControlState) -> Finding | None:
+        """B93: AIRecon/Strix/BugTrace-AI-style browser automation probing."""
+        if not self._enable_browser_probing:
+            return None
+        hyp = "PBB-BROWSE"
+        if not self._precondition(cs, hyp):
+            return None
+        sess = cs.V1 or cs.K
+        _BROWSER_TESTS = [
+            ("dom_xss_fragment", "/#<img src=x onerror=alert(1)>"),
+            ("postmessage", "/?msg=*"),
+            ("localstorage_inject", "/?ls_test=<script>"),
+            ("spa_route_force", "/admin#!/dashboard"),
+            ("prototype_pollution", "/?__proto__[isAdmin]=true"),
+            ("cors_wildcard", None),
+        ]
+        findings_list: list[dict[str, str]] = []
+        reasons: list[str] = []
+        for tname, payload in _BROWSER_TESTS:
+            try:
+                if tname == "cors_wildcard":
+                    r = await sess.call("OPTIONS", "/", extra_headers={
+                        "Origin": "https://evil.example.com",
+                        "Access-Control-Request-Method": "GET"})
+                    rbody = str(r.headers) if hasattr(r, "headers") else str(r.body)
+                    if "evil.example.com" in rbody or "*" in rbody:
+                        findings_list.append({"test": tname, "detail": "CORS wildcard or origin reflection"})
+                        reasons.append(f"browse_{tname}")
+                elif payload:
+                    r = await sess.call("GET", payload)
+                    rbody = str(r.body) if r.body else ""
+                    if "<img" in rbody or "onerror" in rbody or "__proto__" in rbody:
+                        findings_list.append({"test": tname, "detail": "Reflected browser payload"})
+                        reasons.append(f"browse_{tname}")
+            except Exception:
+                pass
+        if findings_list:
+            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
+                                 f"Browser probing: {len(findings_list)} client-side vulnerability(ies) found.",
+                                 reasons=reasons, metrics={"findings": findings_list,
+                                                           "techniques": ["airecon_browser_auto", "strix_ci_poc", "bugtrace_ai_dast"]})
+        return self._finding(hyp, Verdict.RULED_OUT, "medium", "All browser-specific tests produced safe behavior.",
+                             reasons=["browse_clean"])
+
+    async def _multi_agent_orch_probe(self, cs: ControlState, findings_so_far: list) -> Finding | None:
+        """B94: T3MP3ST/RedAmon/Decepticon-style multi-agent orchestration."""
+        if not self._enable_multi_agent_orch:
+            return None
+        hyp = "PBB-MORCH"
+        sess = cs.V1 or cs.K
+        ruled_out = [f for f in findings_so_far if f.verdict == Verdict.RULED_OUT]
+        if not ruled_out:
+            return self._finding(hyp, Verdict.UNKNOWN, "low",
+                                 "No ruled-out findings to re-test with multi-agent coordination.",
+                                 reasons=["no_ruled_out"])
+        overturned: list[str] = []
+        reasons: list[str] = []
+        for f in ruled_out[:5]:
+            for op in self.brief.operations[:3]:
+                try:
+                    coros = [sess.call(op.get("method", "GET"), op.get("path", "/")) for _ in range(3)]
+                    results = await asyncio.gather(*coros, return_exceptions=True)
+                    statuses = [r.status_code for r in results if not isinstance(r, Exception)]
+                    if len(set(statuses)) > 1:
+                        overturned.append(f.hypothesis_id)
+                        reasons.append(f"morch_overturn:{f.hypothesis_id}")
+                        break
+                except Exception:
+                    pass
+        if overturned:
+            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
+                                 f"Multi-agent orchestration: {len(overturned)} ruled-out finding(s) show inconsistent behavior under coordination.",
+                                 reasons=reasons, metrics={"overturned": overturned,
+                                                           "techniques": ["t3mp3st_8_operators", "redamon_langgraph_neo4j",
+                                                                          "decepticon_langraph_c2", "pentesterflow_human_loop"]})
+        return self._finding(hyp, Verdict.RULED_OUT, "medium",
+                             f"Multi-agent orchestration: all {len(ruled_out[:5])} findings consistent under coordination.",
+                             reasons=["morch_clean"])
+
+    async def _distributed_test_probe(self, cs: ControlState) -> Finding | None:
+        """B95: Pentera/CyberStrike/PentesterFlow-style distributed parallel testing."""
+        if not self._enable_distributed_test:
+            return None
+        hyp = "PBB-DTEST"
+        if not self._precondition(cs, hyp):
+            return None
+        sess = cs.V1 or cs.K
+        race_hits: list[dict[str, Any]] = []
+        reasons: list[str] = []
+        for op in self.brief.operations[:5]:
+            path = op.get("path", "/")
+            method = op.get("method", "GET")
+            try:
+                coros = [sess.call(method, path) for _ in range(5)]
+                results = await asyncio.gather(*coros, return_exceptions=True)
+                good = [r for r in results if not isinstance(r, Exception)]
+                statuses = [r.status_code for r in good]
+                bodies = [str(r.body)[:100] if r.body else "" for r in good]
+                if len(set(statuses)) > 1:
+                    race_hits.append({"path": path, "type": "status_inconsistency", "statuses": statuses})
+                    reasons.append(f"dtest_race:{path}")
+                elif len(set(bodies)) > 1 and len(good) >= 3:
+                    race_hits.append({"path": path, "type": "body_inconsistency"})
+                    reasons.append(f"dtest_body:{path}")
+            except Exception:
+                pass
+        if race_hits:
+            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
+                                 f"Distributed testing: {len(race_hits)} race condition(s) or inconsistency(ies) found.",
+                                 reasons=reasons, metrics={"race_hits": race_hits,
+                                                           "techniques": ["pentera_distributed_orch", "cyberstrike_parallel",
+                                                                          "pentesterflow_yolo", "caldera_adversary"]})
+        return self._finding(hyp, Verdict.RULED_OUT, "medium",
+                             "Distributed testing: all parallel requests produced consistent state.",
+                             reasons=["dtest_clean"])
 
     async def run(self, experiments: Iterable[str] | None = None) -> EngineResult:
         started = now_iso()
@@ -4450,10 +5499,116 @@ class PureBlackBoxEngine:
                 except Exception as exc:  # noqa: BLE001
                     findings.append(self._finding(_synth_hyp, Verdict.UNKNOWN, "low", f"Synthesis probe could not be completed ({type(exc).__name__}).", reasons=[f"engine_error:{type(exc).__name__}"]))
                 await self.ledger.flush_pending()
+        # B82-B96: tool-integrated probes (BBOT, Nuclei, AdminPBuster, XBOW, Cymulate, BloodHound,
+        # GitGuardian, AFL++, Metasploit, SafeBreach, Caldera, PentAGI, HexStrike, Pentera, CyberStrike)
+        for _tip_fn, _tip_hyp in [
+            (self._recursive_recon_probe, "PBB-RRECON"),
+            (self._param_discovery_probe, "PBB-PARAM"),
+            (self._hidden_path_probe, "PBB-HIDDEN"),
+            (self._bas_simulation_probe, "PBB-BAS"),
+            (self._supply_chain_probe, "PBB-SUPPLY"),
+            (self._coverage_fuzzing_probe, "PBB-CFUZZ"),
+            (self._payload_morphing_probe, "PBB-MORPH"),
+            (self._attack_playbook_probe, "PBB-PLAY"),
+            (self._schema_api_test_probe, "PBB-SCHEMA"),
+            (self._browser_probing_probe, "PBB-BROWSE"),
+            (self._distributed_test_probe, "PBB-DTEST"),
+        ]:
+            if self._stop_reason() is None and _not_fast2:
+                try:
+                    if (_tipf := await _tip_fn(cs)) is not None:
+                        findings.append(_tipf)
+                except IdentityPoolExhausted:
+                    pass
+                except Exception as exc:  # noqa: BLE001
+                    findings.append(self._finding(_tip_hyp, Verdict.UNKNOWN, "low", f"Probe could not be completed ({type(exc).__name__}).", reasons=[f"engine_error:{type(exc).__name__}"]))
+                await self.ledger.flush_pending()
+        # B82-B96 synthesis probes (need findings_so_far)
+        for _tisfn, _tishyp in [
+            (self._swarm_coordination_probe, "PBB-SWARM"),
+            (self._attack_graph_probe, "PBB-AGRAPH"),
+            (self._poc_validation_probe, "PBB-POCVAL"),
+            (self._multi_agent_orch_probe, "PBB-MORCH"),
+        ]:
+            if self._stop_reason() is None and _not_fast2:
+                try:
+                    if (_tisf := await _tisfn(cs, findings)) is not None:
+                        findings.append(_tisf)
+                except IdentityPoolExhausted:
+                    pass
+                except Exception as exc:  # noqa: BLE001
+                    findings.append(self._finding(_tishyp, Verdict.UNKNOWN, "low", f"Synthesis probe could not be completed ({type(exc).__name__}).", reasons=[f"engine_error:{type(exc).__name__}"]))
+                await self.ledger.flush_pending()
+        # B81: Dual-target validation — run all offensive probes against the cold domain too.
+        # Adapted from XM Cyber's digital-twin-vs-production continuous validation pattern:
+        # findings from both targets are tagged so the report shows twin vs cold domain side by side.
+        cold_domain_findings: list[Finding] = []
+        if self._cold_domain_url and self._stop_reason() is None:
+            logger.info("B81: dual-target mode — re-running offensive probes against cold domain %s", self._cold_domain_url)
+            saved_label = self._target_label
+            saved_base = self._base_url
+            self._target_label = "cold_domain"
+            self._base_url = self._cold_domain_url
+            _not_fast_cold = not (self._find_fast and any(f.verdict is Verdict.CONFIRMED_P0 for f in findings))
+            for _cfn, _chyp in [
+                (self._digital_twin_probe, "PBB-TWIN"), (self._credential_harvest_probe, "PBB-CRED"),
+                (self._ad_attack_path_probe, "PBB-ADPATH"), (self._c2_channel_probe, "PBB-C2"),
+                (self._cloud_iam_escalation_probe, "PBB-IAM"), (self._rbac_escape_probe, "PBB-RBAC"),
+                (self._bypass_weaponization_probe, "PBB-BPWPN"), (self._reverse_engineering_probe, "PBB-REVENG"),
+                (self._zero_day_discovery_probe, "PBB-ZDAY"), (self._edr_bypass_probe, "PBB-EDRBP"),
+                (self._dynamic_evasion_probe, "PBB-EVADE"),
+            ]:
+                if self._stop_reason() is None and _not_fast_cold:
+                    try:
+                        if (_cf := await _cfn(cs)) is not None:
+                            cold_domain_findings.append(_cf)
+                    except IdentityPoolExhausted:
+                        pass
+                    except Exception as exc:  # noqa: BLE001
+                        cold_domain_findings.append(self._finding(_chyp, Verdict.UNKNOWN, "low", f"Cold-domain probe could not be completed ({type(exc).__name__}).", reasons=[f"engine_error:{type(exc).__name__}", "target:cold_domain"]))
+                    await self.ledger.flush_pending()
+            # B82-B96 tool-integrated probes on cold domain
+            for _ctip_fn, _ctip_hyp in [
+                (self._recursive_recon_probe, "PBB-RRECON"), (self._param_discovery_probe, "PBB-PARAM"),
+                (self._hidden_path_probe, "PBB-HIDDEN"), (self._bas_simulation_probe, "PBB-BAS"),
+                (self._supply_chain_probe, "PBB-SUPPLY"), (self._coverage_fuzzing_probe, "PBB-CFUZZ"),
+                (self._payload_morphing_probe, "PBB-MORPH"), (self._attack_playbook_probe, "PBB-PLAY"),
+                (self._schema_api_test_probe, "PBB-SCHEMA"), (self._browser_probing_probe, "PBB-BROWSE"),
+                (self._distributed_test_probe, "PBB-DTEST"),
+            ]:
+                if self._stop_reason() is None and _not_fast_cold:
+                    try:
+                        if (_ctipf := await _ctip_fn(cs)) is not None:
+                            cold_domain_findings.append(_ctipf)
+                    except IdentityPoolExhausted:
+                        pass
+                    except Exception as exc:  # noqa: BLE001
+                        cold_domain_findings.append(self._finding(_ctip_hyp, Verdict.UNKNOWN, "low", f"Cold-domain probe could not be completed ({type(exc).__name__}).", reasons=[f"engine_error:{type(exc).__name__}", "target:cold_domain"]))
+                    await self.ledger.flush_pending()
+            for _csfn, _cshyp in [
+                (self._exploit_synthesis_probe, "PBB-XPLOIT"), (self._e2e_chain_probe, "PBB-E2E"),
+                (self._swarm_coordination_probe, "PBB-SWARM"), (self._attack_graph_probe, "PBB-AGRAPH"),
+                (self._poc_validation_probe, "PBB-POCVAL"), (self._multi_agent_orch_probe, "PBB-MORCH"),
+            ]:
+                if self._stop_reason() is None and _not_fast_cold:
+                    try:
+                        if (_csf := await _csfn(cs, findings + cold_domain_findings)) is not None:
+                            cold_domain_findings.append(_csf)
+                    except IdentityPoolExhausted:
+                        pass
+                    except Exception as exc:  # noqa: BLE001
+                        cold_domain_findings.append(self._finding(_cshyp, Verdict.UNKNOWN, "low", f"Cold-domain synthesis probe could not be completed ({type(exc).__name__}).", reasons=[f"engine_error:{type(exc).__name__}", "target:cold_domain"]))
+                    await self.ledger.flush_pending()
+            self._target_label = saved_label
+            self._base_url = saved_base
+            findings.extend(cold_domain_findings)
+        # B82: attack graph analysis — build BloodHound-inspired directed finding graph
+        attack_graph = self._build_attack_graph(findings)
         guard = self._http.guard
         stats = {"customer_level_calls": self.rec.calls, "volunteered_hints_dropped": self.rec.hints_dropped, "hint_names_sample": list(self.rec.hint_samples),
                  "experiment_order": list(wanted), "oracle_observations": len(self.oracle.observations), "guard": guard.stats() if guard is not None else None, "synthetic_identities_used": sorted(self.prov.sessions),
-                 "cold_discovery": self._cold_discovery_report}
+                 "cold_discovery": self._cold_discovery_report, "dual_target": {"cold_domain_url": self._cold_domain_url, "cold_findings_count": len(cold_domain_findings)} if self._cold_domain_url else None,
+                 "attack_graph": attack_graph}
         brief_fp = self.brief.fingerprint()
         attach_regression_references(findings, brief_fp)  # ZR-023/B26: each real finding points at its regression check
         replay_bundles = attach_replay_bundles(

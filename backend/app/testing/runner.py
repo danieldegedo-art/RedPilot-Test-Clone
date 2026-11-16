@@ -76,6 +76,7 @@ class TestRunner:
         scope_policy: ScopePolicyView | None = None,
         persist_result: PersistResultFn | None = None,
         feature_registry: Any = None,
+        twin_url: str | None = None,
     ) -> None:
         # Pure Black-Box: only customer-level synthetic credentials and customer-facing surfaces may ever reach a target. Refused HERE,
         # before any request exists (defence in depth: start_run answers 400 earlier with the same reasons).
@@ -98,6 +99,7 @@ class TestRunner:
         # TestContext below. None => the PaymentIntegrityModule falls back to building
         # one itself (build_feature_registry), so the durable store is used either way.
         self._feature_registry: Any = feature_registry
+        self._twin_url: str | None = origin_of(twin_url) if twin_url else None
         self.collector = ResultCollector(run_id=run_id)
         self.status = RunStatus.QUEUED
         self._cancel_requested = False
@@ -151,6 +153,7 @@ class TestRunner:
             http=http_client,
             guard=self.guard,
             feature_registry=self._feature_registry,
+            twin_url=self._twin_url,
         )
 
         # A module planned for this scope but absent from the enabled-modules

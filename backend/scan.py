@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 import httpx
 
 
-async def scan(url: str) -> None:
+async def scan(url: str, twin_url: str | None = None) -> None:
     parsed = urlparse(url)
     if not parsed.scheme:
         url = f"https://{url}"
@@ -28,11 +28,17 @@ async def scan(url: str) -> None:
     api_base = "http://127.0.0.1:8420/api/v1"
 
     async with httpx.AsyncClient(timeout=30.0) as client:
+        mode = "DUAL-TARGET (cold domain + digital twin)" if twin_url else "FULL_REGRESSION (all 20 modules + cognitive + discovery + payment integrity)"
         print(f"Scanning: {url}")
-        print(f"Mode: FULL_REGRESSION (all 20 modules + cognitive + discovery + payment integrity)")
+        if twin_url:
+            print(f"Twin:     {twin_url}")
+        print(f"Mode: {mode}")
         print()
 
-        resp = await client.post(f"{api_base}/runs/scan", json={"url": url})
+        body: dict = {"url": url}
+        if twin_url:
+            body["twin_url"] = twin_url
+        resp = await client.post(f"{api_base}/runs/scan", json=body)
         if resp.status_code != 202:
             print(f"ERROR: {resp.status_code} {resp.text}")
             sys.exit(1)
@@ -80,11 +86,18 @@ async def scan(url: str) -> None:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python scan.py <url>")
+        print("Usage: python scan.py <url> [--twin <twin_url>]")
         print("Example: python scan.py https://example.com")
+        print("         python scan.py https://example.com --twin https://staging.example.com")
         sys.exit(1)
 
-    asyncio.run(scan(sys.argv[1]))
+    twin_url = None
+    if "--twin" in sys.argv:
+        idx = sys.argv.index("--twin")
+        if idx + 1 < len(sys.argv):
+            twin_url = sys.argv[idx + 1]
+
+    asyncio.run(scan(sys.argv[1], twin_url=twin_url))
 
 
 if __name__ == "__main__":

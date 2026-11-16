@@ -44,13 +44,21 @@ That single URL triggers the full pipeline:
 1. **Auto-brief** — generates a minimal `ExecutionBrief` from the domain
 2. **Cold discovery** — 7-step surface reconstruction (sitemap, robots, OpenAPI, link harvest,
    form harvest, payment-keyword scan, JS endpoint extraction)
-3. **PureBlackBoxEngine** — all 17 capability probes enabled, all 8+7 experiments
-   (`PBB-U`, `PBB-F`, `PBB-H`, `PBB-C`, `PBB-G`, `PBB-X`, `PBB-R`, `PBB-E` + standalone
-   `PBB-D`, `PBB-OPEN`, `PBB-LEAK`, `PBB-SIG`, `PBB-AUTH`, `PBB-RATE`, `PBB-IDOR`)
-4. **Autonomous agent layer** — all 35 kill-chain agents (A2–A39) and all capability modules in
-   5 phases
-5. **Cognitive analysis + intelligent discovery** — 20 cognitive sub-modules fire post-engine
-6. **All 20 test modules** in `FULL_REGRESSION` scope
+3. **PureBlackBoxEngine** — all 45 capability probes enabled, all 43 experiment classes:
+   - Core: `PBB-U`, `PBB-F`, `PBB-H`, `PBB-C`, `PBB-G`, `PBB-X`, `PBB-R`, `PBB-E`
+   - Standalone: `PBB-D`, `PBB-OPEN`, `PBB-LEAK`
+   - Bypass: `PBB-SIG`, `PBB-AUTH`, `PBB-RATE`, `PBB-IDOR`
+   - Offensive (B68-B80): `PBB-TWIN`, `PBB-CRED`, `PBB-ADPATH`, `PBB-C2`, `PBB-IAM`, `PBB-RBAC`,
+     `PBB-BPWPN`, `PBB-REVENG`, `PBB-ZDAY`, `PBB-XPLOIT`, `PBB-EDRBP`, `PBB-EVADE`, `PBB-E2E`
+   - Tool-integrated (B82-B96): `PBB-RRECON`, `PBB-PARAM`, `PBB-HIDDEN`, `PBB-SWARM`, `PBB-BAS`,
+     `PBB-AGRAPH`, `PBB-SUPPLY`, `PBB-CFUZZ`, `PBB-POCVAL`, `PBB-MORPH`, `PBB-PLAY`, `PBB-SCHEMA`,
+     `PBB-BROWSE`, `PBB-MORCH`, `PBB-DTEST`
+4. **Dual-target validation** — ALL probes (offensive + tool-integrated) run against BOTH the
+   digital twin AND the cold domain, with findings tagged by target for side-by-side comparison
+5. **Autonomous agent layer** — all 65 kill-chain agents (A2–A67) and all capability modules in
+   6 phases
+6. **Cognitive analysis + intelligent discovery** — 20 cognitive sub-modules fire post-engine
+7. **All 20 test modules** in `FULL_REGRESSION` scope
 
 ---
 
@@ -95,6 +103,143 @@ forbids them ("no signature/auth/rate-limit bypass; no ID guessing").
 Each probe follows the same fail-safe pattern as the existing experiments: errors become
 `UNKNOWN`, never a crash. A hit becomes `SUSPECTED_PAYMENT_INTEGRITY_ISSUE`; a clean result
 becomes `RULED_OUT`.
+
+### Offensive capability probes (B68–B80, test clone only)
+
+| Probe | Hypothesis | What it does | Adapted from |
+|---|---|---|---|
+| `PBB-TWIN` | Digital twin fidelity | Dual-session fingerprint comparison with fidelity score | XM Cyber digital twin |
+| `PBB-CRED` | Credential exposure | Regex + Shannon entropy + Nuclei template detection across 20+ paths | GitGuardian, TruffleHog |
+| `PBB-ADPATH` | AD/LDAP exposure | AD endpoint probing, LDAP injection, Negotiate/NTLM detection | BloodHound, PingCastle |
+| `PBB-C2` | C2 channel viability | WebSocket upgrade, SSRF with 5 targets, streaming detection | Mythic, Sliver, Havoc |
+| `PBB-IAM` | Cloud IAM escalation | SSRF to AWS/GCP/Azure/Alibaba metadata, K8s SA tokens, provider detection | Wiz, Prisma Cloud |
+| `PBB-RBAC` | RBAC escape | Admin endpoint access, role parameter manipulation, method override | Pentera |
+| `PBB-BPWPN` | Bypass weaponization | Baseline-then-bypass with 6 encoding variants + Nuclei templates | Nuclei, XBOW |
+| `PBB-REVENG` | Reverse engineering | JS bundle analysis, endpoint/secret extraction, source map detection | Ghidra, IDA Pro |
+| `PBB-ZDAY` | Zero-day discovery | Coverage-guided mutation (AFL++ inspired) + Nuclei SSTI/path-traversal templates | AFL++, OSS-Fuzz, Nuclei |
+| `PBB-XPLOIT` | Exploit synthesis | Kill-chain stage mapping + BloodHound attack graph analysis | Metasploit, XBOW, BloodHound |
+| `PBB-EDRBP` | EDR/AV bypass | 3 payloads × 6 evasion techniques with ATT&CK mapping | Atomic Red Team, Caldera, SCYTHE |
+| `PBB-EVADE` | Dynamic evasion | 8 fingerprint dimensions, detection rate measurement | Cymulate, SafeBreach, AttackIQ |
+| `PBB-E2E` | End-to-end kill chain | 9-stage MITRE kill chain with attack graph + blast radius | Pentera, XBOW, Caldera |
+
+### Tool-integrated probes (B82–B96, test clone only)
+
+| Probe | Hypothesis | What it does | Adapted from |
+|---|---|---|---|
+| `PBB-RRECON` | Recursive recon | BBOT-style modular recon pipeline: subdomain, tech fingerprint, endpoint harvest | BBOT, Artemis, NucleiFuzzer |
+| `PBB-PARAM` | Parameter discovery | XSSRocket/NucleiFuzzer parameter mining + template injection scanning | XSSRocket, NucleiFuzzer, ParamSpider |
+| `PBB-HIDDEN` | Hidden path discovery | AdminPBuster-style hidden admin panel and sensitive path brute-force | AdminPBuster, CyberStrike, Dark-Moon |
+| `PBB-SWARM` | Swarm coordination | XBOW narrow-agent independent validation of suspected findings | XBOW, PentAGI, HexStrike |
+| `PBB-BAS` | Breach & attack simulation | 8 ATT&CK technique simulations with detection gap scoring | Cymulate, SafeBreach, AttackIQ, Pentera |
+| `PBB-AGRAPH` | Attack graph analysis | BloodHound-style directed graph with DFS path finding + choke points | BloodHound, XM Cyber, PingCastle, Wiz |
+| `PBB-SUPPLY` | Supply chain scanning | GitGuardian/TruffleHog 30+ regex patterns + dependency manifest exposure | GitGuardian, TruffleHog, Gitleaks |
+| `PBB-CFUZZ` | Coverage-guided fuzzing | AFL++ 20-strategy mutation engine with crash + info-leak detection | AFL++, OSS-Fuzz, NucleiFuzzer |
+| `PBB-POCVAL` | PoC validation | Shannon/Strix-style independent reproduction of suspected findings | Shannon, Strix, Xalgorix |
+| `PBB-MORPH` | Payload morphing | Dark-Moon/Decepticon adaptive payload transformation (6 encoding variants) | Dark-Moon, Decepticon, AIRecon |
+| `PBB-PLAY` | Attack playbook execution | Caldera/Atomic Red Team ATT&CK playbook execution | Caldera, Atomic Red Team, SCYTHE |
+| `PBB-SCHEMA` | Schema API testing | OpenAPI/GraphQL schema extraction + undocumented endpoint discovery | Shannon, Strix, REA |
+| `PBB-BROWSE` | Browser automation probing | Client-side JS analysis + payment-flow behavioral testing | BugTrace-AI, NyxStrike, CyberStrike |
+| `PBB-MORCH` | Multi-agent orchestration | T3MP3ST 8-operator + RedAmon LangGraph-style coordination | T3MP3ST, RedAmon, Decepticon, PentesterFlow |
+| `PBB-DTEST` | Distributed parallel testing | Pentera-style parallel race-condition + state-consistency testing | Pentera, CyberStrike, PentesterFlow |
+
+### Integrated capability modules (`integrated_capabilities.py`)
+
+| Class | Source tools | Capability |
+|---|---|---|
+| `ModularReconPipeline` | BBOT, Artemis, NucleiFuzzer | Chained recon: subdomain → fingerprint → endpoint → vuln match |
+| `TemplateMatcher` | Nuclei, NucleiFuzzer | YAML-style template matching with matchers and extractors |
+| `AgentOrchestrator` | XBOW, PentAGI, Dark-Moon | Narrow-scope specialist agent dispatch |
+| `AttackGraphBuilder` | BloodHound, XM Cyber | Directed finding graph with DFS path finding |
+| `AttackSimulator` | Pentera, Cymulate, SafeBreach, AttackIQ | BAS with 15 ATT&CK techniques across 4 scenarios |
+| `ExploitValidator` | Metasploit, Core Impact | Exploit chain validation and impact scoring |
+| `C2Simulator` | Mythic, Sliver, Havoc | C2 channel protocol simulation |
+| `EDRTestFramework` | Atomic Red Team, Caldera, SCYTHE | Detection control testing with ATT&CK mapping |
+| `SecretScanner` | GitGuardian, TruffleHog, Gitleaks | 30+ pattern deep secret detection |
+| `ClientAnalyzer` | Ghidra, IDA Pro, Binary Ninja, Radare2 | JS bundle analysis: endpoint/secret/auth-flow extraction |
+| `SmartFuzzer` | AFL++, OSS-Fuzz | 20-strategy coverage-guided mutation engine |
+| `SpecializedAttacks` | XSSRocket, Decepticon, HexStrike | XSS, SSRF, SSTI, CORS, IDOR attack payloads |
+| `APISecurity` | Shannon, Strix | OpenAPI/GraphQL schema testing |
+| `WorkflowOrchestrator` | PentesterFlow, CyberStrike, NyxStrike | Multi-phase workflow with dependency tracking |
+| `PersistentKnowledgeStore` | RedAmon, REA | Cross-engagement knowledge persistence |
+
+### Advanced orchestration modules (`advanced_orchestration.py`)
+
+| Class | Source tools | Capability |
+|---|---|---|
+| `AdaptiveTaskPlanner` | XBOW, Caldera | Objective → DAG decomposition with priority scoring |
+| `SpecialistAgentPool` | Dark-Moon, PentAGI | 7 specialist agent types with task routing |
+| `ContinuousAttackSimulator` | Cymulate, SafeBreach | 15 ATT&CK techniques × 4 attack scenarios |
+| `AttackTreeEngine` | BloodHound, XM Cyber | Graph-based attack-path analysis with composite risk |
+| `AdversaryEmulationEngine` | Caldera, Atomic Red Team | 4 adversary profiles (APT29, FIN7, etc.) |
+| `IntelligentFuzzerOrchestrator` | AFL++, OSS-Fuzz | 8 mutation strategies with coverage tracking |
+| `ExploitChainCompiler` | Metasploit, Core Impact | Chain compilation, validation, impact scoring |
+
+### Dual-target validation (B81)
+
+ALL offensive AND tool-integrated probes run against BOTH the digital twin AND the original cold
+domain. Findings are tagged with `target_label` (`"digital_twin"` or `"cold_domain"`) for
+side-by-side comparison. Adapted from XM Cyber's continuous validation pattern.
+
+### Adapted techniques from all 56 researched tools
+
+| # | Tool | Category | Technique adapted | Where applied |
+|---|---|---|---|---|
+| 1 | BBOT | Recon | Recursive modular recon pipeline, event-driven findings | PBB-RRECON, `ModularReconPipeline` |
+| 2 | Artemis | Recon | Karton framework task chaining, tech fingerprinting | PBB-RRECON, `ModularReconPipeline` |
+| 3 | NucleiFuzzer | Recon+Scan | ParamSpider→Nuclei template pipeline | PBB-PARAM, PBB-CFUZZ, `TemplateMatcher` |
+| 4 | XSSRocket | Recon+Attack | Wayback URL mining, parameter extraction | PBB-PARAM, `SpecializedAttacks` |
+| 5 | AdminPBuster | Discovery | Hidden admin panel brute-force wordlists | PBB-HIDDEN |
+| 6 | Nuclei | Scanning | YAML template matchers/extractors, SSTI/path templates | `TemplateMatcher`, PBB-BPWPN, PBB-ZDAY |
+| 7 | XBOW | Orchestration | Narrow-scope agent decomposition, autonomous planning | PBB-SWARM, `AgentOrchestrator`, `AdaptiveTaskPlanner` |
+| 8 | PentAGI | Orchestration | Multi-agent Docker-isolated pentesting pipeline | PBB-SWARM, `SpecialistAgentPool` |
+| 9 | HexStrike | Orchestration | MCP-integrated specialist agent dispatch | PBB-SWARM, `AgentOrchestrator` |
+| 10 | Dark-Moon | Orchestration | 10-agent autonomous pentest crews | PBB-MORPH, `SpecialistAgentPool` |
+| 11 | Decepticon | C2+Attack | LangGraph C2 framework, payload transformation | PBB-MORPH, PBB-MORCH, `C2Simulator` |
+| 12 | T3MP3ST | Orchestration | 8-operator coordination pattern | PBB-MORCH, `WorkflowOrchestrator` |
+| 13 | RedAmon | Knowledge | LangGraph+Neo4j persistent knowledge, agent coordination | PBB-MORCH, `PersistentKnowledgeStore` |
+| 14 | REA | Knowledge | Cross-engagement learning, recon enrichment | `PersistentKnowledgeStore` |
+| 15 | Cymulate | BAS | BAS exposure scoring, continuous validation | PBB-BAS, PBB-EVADE, `ContinuousAttackSimulator` |
+| 16 | SafeBreach | BAS | Hacker's Playbook attack simulation library | PBB-BAS, `ContinuousAttackSimulator` |
+| 17 | AttackIQ | BAS | ATT&CK-mapped control validation | PBB-BAS, `ContinuousAttackSimulator` |
+| 18 | Pentera | BAS+Distributed | Distributed attack orchestration, continuous pentesting | PBB-BAS, PBB-DTEST, `AttackSimulator` |
+| 19 | BloodHound | Attack graph | Directed graph traversal, choke-point detection | PBB-AGRAPH, PBB-XPLOIT, `AttackGraphBuilder`, `AttackTreeEngine` |
+| 20 | XM Cyber | Attack graph | Digital twin continuous validation | PBB-AGRAPH, B81 dual-target, `AttackTreeEngine` |
+| 21 | PingCastle | AD health | AD health scoring patterns | PBB-ADPATH, `AttackGraphBuilder` |
+| 22 | Wiz | Cloud | Agentless cloud scanning, provider detection from headers | PBB-IAM, `AttackGraphBuilder` |
+| 23 | Prisma Cloud | Cloud | K8s SA token check, cloud IAM analysis | PBB-IAM |
+| 24 | GitGuardian | Secrets | 30+ regex secret patterns, severity classification | PBB-SUPPLY, PBB-CRED, `SecretScanner` |
+| 25 | TruffleHog | Secrets | Shannon entropy detection, high-entropy string scoring | PBB-SUPPLY, PBB-CRED, `SecretScanner` |
+| 26 | Gitleaks | Secrets | Regex-based secret scanning with TOML rule format | PBB-SUPPLY, `SecretScanner` |
+| 27 | AFL++ | Fuzzing | 20-strategy coverage-guided mutation, crash detection | PBB-CFUZZ, PBB-ZDAY, `SmartFuzzer`, `IntelligentFuzzerOrchestrator` |
+| 28 | OSS-Fuzz | Fuzzing | Crash pattern detection, info-leak patterns | PBB-CFUZZ, `SmartFuzzer` |
+| 29 | Ghidra | RE | P-code IR analysis patterns, endpoint extraction | PBB-REVENG, `ClientAnalyzer` |
+| 30 | IDA Pro | RE | Binary analysis patterns, disassembly heuristics | PBB-REVENG, `ClientAnalyzer` |
+| 31 | Binary Ninja | RE | LLIL/MLIL lifting patterns | PBB-REVENG, `ClientAnalyzer` |
+| 32 | Radare2 | RE | r2pipe analysis, string extraction | PBB-REVENG, `ClientAnalyzer` |
+| 33 | Metasploit Pro | Exploit | Module taxonomy, exploit chain composition | PBB-XPLOIT, `ExploitValidator`, `ExploitChainCompiler` |
+| 34 | Core Impact | Exploit | Multi-vector exploit validation, impact scoring | PBB-XPLOIT, `ExploitValidator`, `ExploitChainCompiler` |
+| 35 | Mythic | C2 | C2 profile multiplexing, WebSocket channels | PBB-C2, `C2Simulator` |
+| 36 | Sliver | C2 | mTLS/WireGuard C2 channel patterns | PBB-C2, `C2Simulator` |
+| 37 | Havoc | C2 | HTTP/S C2 with sleep/jitter patterns | PBB-C2, `C2Simulator` |
+| 38 | Cobalt Strike | C2 | Malleable C2 profile concept | PBB-C2, `C2Simulator` |
+| 39 | Canvas | Exploit | Exploit module dispatch pattern | `ExploitValidator` |
+| 40 | Atomic Red Team | Testing | ATT&CK technique unit tests, T-number mapping | PBB-BAS, PBB-PLAY, `EDRTestFramework`, `AdversaryEmulationEngine` |
+| 41 | Caldera | Emulation | Adversary profiles (APT29, FIN7), ability dispatch | PBB-BAS, PBB-PLAY, `EDRTestFramework`, `AdversaryEmulationEngine` |
+| 42 | SCYTHE | Testing | Detection assessment, purple team scoring | PBB-EDRBP, `EDRTestFramework` |
+| 43 | Shannon | API | OpenAPI schema testing, whitebox PoC validation | PBB-SCHEMA, PBB-POCVAL, `APISecurity` |
+| 44 | Strix | API | Autonomous PoC generation, GraphQL introspection | PBB-SCHEMA, PBB-POCVAL, `APISecurity` |
+| 45 | Xalgorix | Testing | 22-phase verification methodology | PBB-POCVAL, mutation strategies |
+| 46 | Invicti | DAST | DAST scanning patterns, proof-based detection | PBB-BROWSE, scan methodology |
+| 47 | Acunetix | DAST | AcuSensor technology patterns, JS analysis | PBB-BROWSE, `ClientAnalyzer` |
+| 48 | Burp Suite | Proxy | Active/passive scanning pattern, intruder payloads | PBB-PARAM, PBB-CFUZZ |
+| 49 | PentestAgent | Orchestration | Autonomous pentesting pipeline | Engine `run()` wiring |
+| 50 | PentesterFlow | Workflow | Human-in-the-loop agent coordination | PBB-MORCH, PBB-DTEST, `WorkflowOrchestrator` |
+| 51 | CyberStrike | Attack | OWASP WSTG methodology, parallel testing | PBB-HIDDEN, PBB-DTEST, `WorkflowOrchestrator` |
+| 52 | NyxStrike | Attack | Browser automation + API testing | PBB-BROWSE, `WorkflowOrchestrator` |
+| 53 | BugTrace-AI | Testing | AI-assisted browser automation probing | PBB-BROWSE |
+| 54 | AIRecon | Recon | AI-guided recon enrichment | PBB-MORPH |
+| 55 | Cybermes | Testing | Multi-agent security testing coordination | PBB-MORCH |
+| 56 | RedTeam-Tools | Collection | Curated offensive tool taxonomy | EXPERIMENT_CLASSES design |
 
 ---
 
@@ -143,7 +288,9 @@ app/
   testing/agents/        the agent layer (26 wrapped agents in 5 groups):
                          recon (7), attack (4), proof (5), orchestration (4), domain_packs (6)
                          + 9 CAPABILITY_SATISFIED (served directly by their capability module)
-  testing/integrity/kill_chain_roster.py    the fixed 35-agent fleet roster (declarative)
+  testing/integrity/integrated_capabilities.py  16 capability classes from 35+ tools
+  testing/integrity/advanced_orchestration.py   7 orchestration classes (XBOW/Caldera patterns)
+  testing/integrity/kill_chain_roster.py    the fixed 65-agent fleet roster (A2–A67, declarative)
   testing/integrity/fleet_orchestration.py  orchestrator — emits plans/leads only
   testing/runner.py      cognitive analysis (20 sub-modules) + intelligent discovery layer
   testing/modules/       all 20 test modules (all enabled by default)

@@ -107,3 +107,4 @@ class TestContext:
     # explicitly-deferred state as ZR-009's persist_result before it was
     # wired into the one production TestRunner construction site).
     feature_registry: PESMStore | None = None
+    twin_url: str | None = None

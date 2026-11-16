@@ -33,7 +33,7 @@ from typing import Any
 from app.testing.integrity.findings import EXPERIMENT_CLASSES
 
 MODULE_VERSION = "attack-chain/1.0"
-MAX_DEPTH_CAP = 6
+MAX_DEPTH_CAP = 10
 SEARCH_CAP = 1024   # hard ceiling on chains explored, so the search is always bounded
 
 # State atoms true at the start of an authorised engagement (a fresh synthetic identity
@@ -66,6 +66,40 @@ LINKS: dict[str, ChainLink] = {
     # PBB-D stands alone: a fresh authenticated identity reaches another subject's object directly
     # (no prior payment step). Its effect is a cross-subject access that no payment step consumes.
     "PBB-D": ChainLink(frozenset({"fresh_identity"}), frozenset({"cross_subject_object_access"})),
+    # B64-B67: bypass probes (test clone only)
+    "PBB-SIG": ChainLink(frozenset({"checkout_available"}), frozenset({"signature_bypass"})),
+    "PBB-AUTH": ChainLink(frozenset({"feature_denied_baseline"}), frozenset({"auth_bypass"})),
+    "PBB-RATE": ChainLink(frozenset({"feature_denied_baseline"}), frozenset({"ratelimit_bypass"})),
+    "PBB-IDOR": ChainLink(frozenset({"fresh_identity"}), frozenset({"object_reference_leak"})),
+    # B68-B80: offensive capability probes (test clone only)
+    "PBB-TWIN": ChainLink(frozenset({"fresh_identity"}), frozenset({"environment_profiled"})),
+    "PBB-CRED": ChainLink(frozenset({"fresh_identity"}), frozenset({"credential_exposed"})),
+    "PBB-ADPATH": ChainLink(frozenset({"fresh_identity"}), frozenset({"ad_path_exposed"})),
+    "PBB-C2": ChainLink(frozenset({"credential_exposed"}), frozenset({"c2_channel_viable"})),
+    "PBB-IAM": ChainLink(frozenset({"credential_exposed"}), frozenset({"cloud_privilege_escalated"})),
+    "PBB-RBAC": ChainLink(frozenset({"auth_bypass"}), frozenset({"role_boundary_broken"})),
+    "PBB-BPWPN": ChainLink(frozenset({"environment_profiled"}), frozenset({"defense_bypassed"})),
+    "PBB-REVENG": ChainLink(frozenset({"fresh_identity"}), frozenset({"hidden_endpoints_exposed"})),
+    "PBB-ZDAY": ChainLink(frozenset({"hidden_endpoints_exposed"}), frozenset({"input_handling_flaw"})),
+    "PBB-XPLOIT": ChainLink(frozenset({"credential_exposed", "role_boundary_broken"}), frozenset({"exploit_chain_viable"})),
+    "PBB-EDRBP": ChainLink(frozenset({"defense_bypassed"}), frozenset({"detection_evaded"})),
+    "PBB-EVADE": ChainLink(frozenset({"detection_evaded"}), frozenset({"persistent_evasion"})),
+    "PBB-E2E": ChainLink(frozenset({"exploit_chain_viable", "c2_channel_viable"}), frozenset({"full_kill_chain_achieved"})),
+    "PBB-RRECON": ChainLink(frozenset({"fresh_identity"}), frozenset({"recursive_recon_complete"})),
+    "PBB-PARAM": ChainLink(frozenset({"recursive_recon_complete"}), frozenset({"parameter_surface_mapped"})),
+    "PBB-HIDDEN": ChainLink(frozenset({"fresh_identity"}), frozenset({"hidden_paths_mapped"})),
+    "PBB-SWARM": ChainLink(frozenset({"exploit_chain_viable"}), frozenset({"swarm_validated"})),
+    "PBB-BAS": ChainLink(frozenset({"fresh_identity"}), frozenset({"bas_coverage_mapped"})),
+    "PBB-AGRAPH": ChainLink(frozenset({"exploit_chain_viable"}), frozenset({"attack_graph_built"})),
+    "PBB-SUPPLY": ChainLink(frozenset({"recursive_recon_complete"}), frozenset({"supply_chain_scanned"})),
+    "PBB-CFUZZ": ChainLink(frozenset({"parameter_surface_mapped"}), frozenset({"fuzzing_coverage_complete"})),
+    "PBB-POCVAL": ChainLink(frozenset({"exploit_chain_viable"}), frozenset({"poc_validated"})),
+    "PBB-MORPH": ChainLink(frozenset({"defense_bypassed"}), frozenset({"payload_morphed"})),
+    "PBB-PLAY": ChainLink(frozenset({"bas_coverage_mapped"}), frozenset({"playbook_executed"})),
+    "PBB-SCHEMA": ChainLink(frozenset({"recursive_recon_complete"}), frozenset({"schema_tested"})),
+    "PBB-BROWSE": ChainLink(frozenset({"fresh_identity"}), frozenset({"browser_probed"})),
+    "PBB-MORCH": ChainLink(frozenset({"exploit_chain_viable"}), frozenset({"multi_agent_validated"})),
+    "PBB-DTEST": ChainLink(frozenset({"fresh_identity"}), frozenset({"distributed_tested"})),
 }
 assert set(LINKS) == set(EXPERIMENT_CLASSES), "chain catalog must cover exactly the pre-registered classes"
 

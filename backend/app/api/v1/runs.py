@@ -218,7 +218,7 @@ async def _execute_and_persist(runner: TestRunner) -> None:
 
 
 @router.post("", response_model=RunSummarySchema, status_code=202)
-async def start_run(payload: RunCreateRequest, session: AsyncSession = Depends(get_session)) -> RunSummarySchema:
+async def start_run(payload: RunCreateRequest, session: AsyncSession = Depends(get_session), twin_url: str | None = None) -> RunSummarySchema:
     loaded_settings = await load_settings(session)
     run_settings = to_run_settings(loaded_settings)
     # Customer-declared integrity contract: a plain 0600 file, never a DB column (no migration). None => the
@@ -246,6 +246,7 @@ async def start_run(payload: RunCreateRequest, session: AsyncSession = Depends(g
         scope_policy=_scope_policy_for(payload),
         persist_result=_persist_result_db,
         feature_registry=feature_registry,
+        twin_url=twin_url,
     )
     active_runners[run_id] = runner
 
@@ -292,7 +293,7 @@ async def scan_cold_domain(payload: ScanRequest, session: AsyncSession = Depends
         scope=TestScope.FULL_REGRESSION,
         extra_allowed_hosts=[],
     )
-    return await start_run(run_request, session)
+    return await start_run(run_request, session, twin_url=str(payload.twin_url) if payload.twin_url else None)
 
 
 @router.get("", response_model=list[RunSummarySchema])

@@ -11,8 +11,10 @@ from app.testing.schema_version import SCHEMA_VERSION
 
 
 class ScanRequest(BaseModel):
-    """TEST CLONE: dead-simple cold-domain input. Paste a URL, press run."""
+    """TEST CLONE: dead-simple cold-domain input. Paste a URL, press run.
+    Optionally provide a twin_url for dual-target mode: all probes run against both."""
     url: HttpUrl
+    twin_url: HttpUrl | None = None
 
 
 class RunCreateRequest(BaseModel):
