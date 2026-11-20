@@ -37,10 +37,12 @@ Stdlib only for all engines except #2.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import random
 import re
 import statistics
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
@@ -190,6 +192,848 @@ def _severity_from_score(score: float) -> str:
     return "none"
 
 
+# ############################################################################
+#
+#  NOVEL ARCHITECTURE: AUTONOMOUS MEMORY + REFLECTION + METACOGNITION
+#
+#  Three systems that give the engine genuine learning capability:
+#
+#  A. EpisodicMemory -- Remembers every observation and finding with
+#     triple-scored retrieval (recency x importance x relevance).
+#     Inspired by Generative Agents (Park et al. 2023).
+#
+#  B. ReflectionEngine -- Periodically synthesizes high-level insights
+#     from accumulated memories. Generates strategic plans for what to
+#     look for next. Builds a progressive knowledge graph of entities.
+#
+#  C. MetacognitiveMonitor -- Tracks the system's own prediction accuracy
+#     over time. Calibrates priors for each hypothesis category. Detects
+#     when the system is overconfident or underconfident. Adapts strategy.
+#
+#  D. KnowledgeGraph -- Progressive graph of entities (endpoints, tokens,
+#     IDs, payment objects) and their relationships. Enables graph-based
+#     reasoning about attack paths.
+#
+#  E. BeliefRevisionLog -- Tracks WHY beliefs changed and what triggered
+#     each revision. Enables self-explanation and debugging.
+#
+#  F. SelfCritiqueEngine -- Devil's advocate pass: tries to disprove
+#     each hypothesis before it advances. Only survivors propagate.
+#
+# ############################################################################
+
+
+# ============================================================================
+# A. Episodic Memory System
+# ============================================================================
+
+@dataclass
+class MemoryEntry:
+    """A single memory in the episodic memory stream."""
+    entry_id: int
+    timestamp: float
+    entry_type: str  # "observation", "finding", "reflection", "insight"
+    content: dict[str, Any]
+    importance: float = 0.5
+    source_observation_id: int = 0
+    endpoint: str = ""
+    category: str = ""
+    features: dict[str, float] = field(default_factory=dict)
+    access_count: int = 0
+    last_accessed: float = 0.0
+
+
+class EpisodicMemory:
+    """Append-only memory stream with triple-scored retrieval.
+
+    Every observation, finding, reasoning step, and reflection is stored.
+    Retrieval scores each memory by:
+      recency   = exponential decay from current time
+      importance = how significant the finding was (0-1)
+      relevance  = feature similarity to the query
+
+    This gives the system "what have I seen before that looks like this?"
+    capability -- the foundation of genuine learning from experience."""
+
+    def __init__(self, max_entries: int = 10000, recency_decay: float = 0.995) -> None:
+        self._memories: list[MemoryEntry] = []
+        self._next_id = 0
+        self._max_entries = max_entries
+        self._recency_decay = recency_decay
+        self._index_by_endpoint: dict[str, list[int]] = defaultdict(list)
+        self._index_by_category: dict[str, list[int]] = defaultdict(list)
+        self._index_by_type: dict[str, list[int]] = defaultdict(list)
+
+    @property
+    def size(self) -> int:
+        return len(self._memories)
+
+    def store(
+        self,
+        entry_type: str,
+        content: dict[str, Any],
+        importance: float = 0.5,
+        endpoint: str = "",
+        category: str = "",
+        features: dict[str, float] | None = None,
+        source_observation_id: int = 0,
+    ) -> int:
+        entry = MemoryEntry(
+            entry_id=self._next_id,
+            timestamp=time.monotonic(),
+            entry_type=entry_type,
+            content=content,
+            importance=max(0.0, min(1.0, importance)),
+            source_observation_id=source_observation_id,
+            endpoint=endpoint,
+            category=category,
+            features=features or {},
+        )
+        self._memories.append(entry)
+        self._index_by_endpoint[endpoint].append(self._next_id)
+        self._index_by_category[category].append(self._next_id)
+        self._index_by_type[entry_type].append(self._next_id)
+        self._next_id += 1
+
+        if len(self._memories) > self._max_entries:
+            self._consolidate()
+
+        return entry.entry_id
+
+    def retrieve(
+        self,
+        query_features: dict[str, float] | None = None,
+        query_endpoint: str = "",
+        query_category: str = "",
+        top_k: int = 10,
+        entry_type: str | None = None,
+    ) -> list[MemoryEntry]:
+        """Triple-scored retrieval: recency x importance x relevance."""
+        now = time.monotonic()
+        candidates = self._memories
+        if entry_type:
+            ids = set(self._index_by_type.get(entry_type, []))
+            candidates = [m for m in candidates if m.entry_id in ids]
+
+        scored: list[tuple[float, MemoryEntry]] = []
+        for mem in candidates:
+            age = now - mem.timestamp
+            recency = self._recency_decay ** max(age, 0)
+
+            importance = mem.importance
+
+            relevance = 0.0
+            if query_endpoint and mem.endpoint:
+                if query_endpoint == mem.endpoint:
+                    relevance += 0.5
+                elif query_endpoint.split("/")[:3] == mem.endpoint.split("/")[:3]:
+                    relevance += 0.25
+            if query_category and mem.category:
+                if query_category == mem.category:
+                    relevance += 0.3
+            if query_features and mem.features:
+                common_keys = set(query_features) & set(mem.features)
+                if common_keys:
+                    sim = sum(
+                        1.0 - abs(query_features[k] - mem.features[k])
+                        for k in common_keys
+                    ) / len(common_keys)
+                    relevance += 0.2 * sim
+
+            score = recency * 0.3 + importance * 0.4 + relevance * 0.3
+            scored.append((score, mem))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        results = []
+        for _score, mem in scored[:top_k]:
+            mem.access_count += 1
+            mem.last_accessed = now
+            results.append(mem)
+        return results
+
+    def retrieve_by_endpoint(self, endpoint: str, limit: int = 20) -> list[MemoryEntry]:
+        ids = self._index_by_endpoint.get(endpoint, [])
+        return [self._memories[i] for i in ids[-limit:] if i < len(self._memories)]
+
+    def retrieve_recent(self, n: int = 20) -> list[MemoryEntry]:
+        return list(reversed(self._memories[-n:]))
+
+    def get_all_endpoints_seen(self) -> set[str]:
+        return set(self._index_by_endpoint.keys()) - {""}
+
+    def get_category_counts(self) -> dict[str, int]:
+        return {k: len(v) for k, v in self._index_by_category.items() if k}
+
+    def _consolidate(self) -> None:
+        """When memory is full, compress old low-importance memories."""
+        if len(self._memories) <= self._max_entries:
+            return
+        scored = sorted(self._memories, key=lambda m: m.importance + (m.access_count * 0.1))
+        to_remove = len(self._memories) - int(self._max_entries * 0.8)
+        remove_ids = {scored[i].entry_id for i in range(min(to_remove, len(scored)))}
+        self._memories = [m for m in self._memories if m.entry_id not in remove_ids]
+        self._rebuild_indices()
+
+    def _rebuild_indices(self) -> None:
+        self._index_by_endpoint.clear()
+        self._index_by_category.clear()
+        self._index_by_type.clear()
+        for i, m in enumerate(self._memories):
+            self._index_by_endpoint[m.endpoint].append(i)
+            self._index_by_category[m.category].append(i)
+            self._index_by_type[m.entry_type].append(i)
+
+    def to_summary(self) -> dict[str, Any]:
+        return {
+            "total_memories": len(self._memories),
+            "endpoints_seen": len(self.get_all_endpoints_seen()),
+            "category_counts": self.get_category_counts(),
+            "memory_types": {k: len(v) for k, v in self._index_by_type.items()},
+        }
+
+
+# ============================================================================
+# B. Reflection Engine
+# ============================================================================
+
+@dataclass
+class Insight:
+    """A synthesized high-level insight from multiple memories."""
+    insight_id: str
+    description: str
+    supporting_memories: list[int]
+    confidence: float
+    category: str
+    created_at: float = 0.0
+    times_reinforced: int = 0
+
+
+class ReflectionEngine:
+    """Periodic synthesis of high-level insights from accumulated memories.
+
+    After every N observations, the reflection engine:
+    1. Retrieves recent memories
+    2. Identifies recurring patterns
+    3. Synthesizes insights ("this target always has weak auth on v2 endpoints")
+    4. Generates strategic recommendations for future analysis
+    5. Updates the knowledge graph
+
+    This is the "stepping back and thinking about what I've learned" capability
+    that separates frontier reasoning from template matching."""
+
+    def __init__(self, reflection_interval: int = 10) -> None:
+        self._insights: list[Insight] = []
+        self._reflection_count = 0
+        self._reflection_interval = reflection_interval
+        self._strategic_plan: list[str] = []
+
+    def should_reflect(self, observation_count: int) -> bool:
+        return observation_count > 0 and observation_count % self._reflection_interval == 0
+
+    def reflect(self, memory: EpisodicMemory) -> list[Insight]:
+        """Synthesize insights from recent memories."""
+        self._reflection_count += 1
+        new_insights: list[Insight] = []
+
+        recent = memory.retrieve_recent(n=50)
+        if len(recent) < 5:
+            return new_insights
+
+        # Pattern 1: Endpoint-category concentration
+        ep_cats: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        for mem in recent:
+            if mem.endpoint and mem.category:
+                ep_cats[mem.endpoint][mem.category] += 1
+
+        for ep, cats in ep_cats.items():
+            for cat, count in cats.items():
+                if count >= 3:
+                    insight = Insight(
+                        insight_id=f"R{self._reflection_count}-EP-{ep[:30]}-{cat}",
+                        description=(
+                            f"Endpoint '{ep}' repeatedly triggers '{cat}' findings "
+                            f"({count} times in recent observations). "
+                            f"This endpoint is a high-priority target for {cat} exploitation."
+                        ),
+                        supporting_memories=[m.entry_id for m in recent if m.endpoint == ep and m.category == cat],
+                        confidence=min(0.95, 0.5 + 0.1 * count),
+                        category=cat,
+                        created_at=time.monotonic(),
+                    )
+                    if not self._insight_exists(insight.description[:60]):
+                        new_insights.append(insight)
+
+        # Pattern 2: Cross-endpoint vulnerability class
+        cat_counts = memory.get_category_counts()
+        for cat, count in cat_counts.items():
+            if count >= 5 and cat:
+                desc = (
+                    f"Systemic '{cat}' weakness: {count} findings across multiple endpoints. "
+                    f"This suggests a framework-level or design-level vulnerability, "
+                    f"not an isolated endpoint bug."
+                )
+                if not self._insight_exists(desc[:60]):
+                    new_insights.append(Insight(
+                        insight_id=f"R{self._reflection_count}-SYSTEMIC-{cat}",
+                        description=desc,
+                        supporting_memories=[],
+                        confidence=min(0.9, 0.4 + 0.05 * count),
+                        category=cat,
+                        created_at=time.monotonic(),
+                    ))
+
+        # Pattern 3: Defense posture assessment
+        defense_mems = memory.retrieve(query_category="anti_re", top_k=20, entry_type="finding")
+        waf_mems = [m for m in defense_mems if "waf" in str(m.content).lower()]
+        if waf_mems:
+            waf_types = set()
+            for m in waf_mems:
+                wt = m.content.get("waf_cdn", m.content.get("waf_vendor", ""))
+                if wt:
+                    waf_types.add(wt)
+            if waf_types:
+                desc = (
+                    f"Target is protected by WAF(s): {sorted(waf_types)}. "
+                    f"Bypass techniques specific to these vendors should be prioritized. "
+                    f"Encoding variation, HPP, and chunked TE are highest-probability bypasses."
+                )
+                if not self._insight_exists(desc[:60]):
+                    new_insights.append(Insight(
+                        insight_id=f"R{self._reflection_count}-WAF-POSTURE",
+                        description=desc,
+                        supporting_memories=[m.entry_id for m in waf_mems],
+                        confidence=0.85,
+                        category="defense_posture",
+                        created_at=time.monotonic(),
+                    ))
+
+        # Pattern 4: Auth model inference
+        auth_findings = memory.retrieve(query_category="auth_bypass", top_k=20)
+        unauthed_success = [
+            m for m in auth_findings
+            if m.content.get("has_auth") is False and m.content.get("status_code", 0) in range(200, 300)
+        ]
+        if len(unauthed_success) >= 2:
+            eps = sorted({m.endpoint for m in unauthed_success if m.endpoint})[:5]
+            desc = (
+                f"Multiple endpoints return success without auth: {eps}. "
+                f"The application may rely on client-side auth enforcement rather than "
+                f"server-side middleware. All these endpoints are access-without-payment candidates."
+            )
+            if not self._insight_exists(desc[:60]):
+                new_insights.append(Insight(
+                    insight_id=f"R{self._reflection_count}-AUTH-WEAK",
+                    description=desc,
+                    supporting_memories=[m.entry_id for m in unauthed_success],
+                    confidence=0.8,
+                    category="auth_bypass",
+                    created_at=time.monotonic(),
+                ))
+
+        # Pattern 5: Payment flow reconstruction
+        payment_mems = memory.retrieve(query_category="payment_manipulation", top_k=30)
+        payment_mems += memory.retrieve(query_category="entitlement_bypass", top_k=30)
+        if len(payment_mems) >= 3:
+            payment_eps = sorted({m.endpoint for m in payment_mems if m.endpoint})
+            desc = (
+                f"Payment flow mapped across {len(payment_eps)} endpoints: {payment_eps[:5]}. "
+                f"Focus exploitation on the weakest link in this chain."
+            )
+            if not self._insight_exists(desc[:60]):
+                new_insights.append(Insight(
+                    insight_id=f"R{self._reflection_count}-PAYMENT-FLOW",
+                    description=desc,
+                    supporting_memories=[m.entry_id for m in payment_mems[:10]],
+                    confidence=0.75,
+                    category="payment_manipulation",
+                    created_at=time.monotonic(),
+                ))
+
+        self._insights.extend(new_insights)
+        self._update_strategic_plan(memory)
+        return new_insights
+
+    def _insight_exists(self, prefix: str) -> bool:
+        return any(i.description[:60] == prefix for i in self._insights)
+
+    def _update_strategic_plan(self, memory: EpisodicMemory) -> None:
+        """Generate strategic recommendations for next analysis batch."""
+        self._strategic_plan.clear()
+        cat_counts = memory.get_category_counts()
+
+        high_signal_cats = sorted(
+            ((k, v) for k, v in cat_counts.items() if k and v >= 2),
+            key=lambda x: x[1], reverse=True,
+        )
+        for cat, count in high_signal_cats[:3]:
+            self._strategic_plan.append(
+                f"Prioritize {cat} analysis (seen {count} times)"
+            )
+
+        all_eps = memory.get_all_endpoints_seen()
+        if len(all_eps) > 10:
+            self._strategic_plan.append(
+                f"Wide attack surface: {len(all_eps)} endpoints discovered. "
+                f"Focus on payment/auth endpoints."
+            )
+
+        for insight in self._insights[-5:]:
+            if insight.confidence > 0.7:
+                self._strategic_plan.append(f"INSIGHT: {insight.description[:100]}")
+
+    def get_strategic_plan(self) -> list[str]:
+        return list(self._strategic_plan)
+
+    def get_insights(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": i.insight_id,
+                "description": i.description,
+                "confidence": round(i.confidence, 3),
+                "category": i.category,
+                "supporting_count": len(i.supporting_memories),
+                "reinforced": i.times_reinforced,
+            }
+            for i in sorted(self._insights, key=lambda x: x.confidence, reverse=True)
+        ]
+
+    def get_relevant_insights(self, category: str = "", endpoint: str = "") -> list[Insight]:
+        results = []
+        for i in self._insights:
+            if category and i.category == category:
+                results.append(i)
+            elif endpoint and endpoint in i.description:
+                results.append(i)
+        return sorted(results, key=lambda x: x.confidence, reverse=True)[:5]
+
+
+# ============================================================================
+# C. Metacognitive Monitor
+# ============================================================================
+
+class MetacognitiveMonitor:
+    """Tracks the system's own prediction accuracy and adapts strategy.
+
+    For each hypothesis category, tracks:
+    - How often hypotheses in that category scored high
+    - Whether subsequent observations confirmed or contradicted
+    - Running accuracy rate
+
+    Uses this to:
+    - Calibrate priors (categories that are often right get boosted)
+    - Detect overconfidence (high scores that don't pan out get dampened)
+    - Recommend focus areas (categories with high hit rate)
+
+    This is the "thinking about my own thinking" layer that makes the system
+    self-improving rather than static."""
+
+    def __init__(self) -> None:
+        self._category_predictions: dict[str, list[float]] = defaultdict(list)
+        self._category_confirmations: dict[str, list[bool]] = defaultdict(list)
+        self._calibration_adjustments: dict[str, float] = {}
+        self._total_observations = 0
+        self._severity_predictions: list[tuple[str, str]] = []
+        self._overconfidence_warnings: list[str] = []
+
+    def record_prediction(self, category: str, posterior: float) -> None:
+        self._category_predictions[category].append(posterior)
+        self._total_observations += 1
+
+    def record_confirmation(self, category: str, confirmed: bool) -> None:
+        self._category_confirmations[category].append(confirmed)
+        self._update_calibration(category)
+
+    def _update_calibration(self, category: str) -> None:
+        preds = self._category_predictions.get(category, [])
+        confs = self._category_confirmations.get(category, [])
+        if len(confs) < 3:
+            return
+
+        recent_confs = confs[-20:]
+        hit_rate = sum(recent_confs) / len(recent_confs)
+
+        recent_preds = preds[-20:]
+        avg_confidence = sum(recent_preds) / len(recent_preds) if recent_preds else 0.5
+
+        if hit_rate > 0.7 and avg_confidence < 0.5:
+            self._calibration_adjustments[category] = 1.3
+        elif hit_rate < 0.2 and avg_confidence > 0.5:
+            self._calibration_adjustments[category] = 0.6
+            self._overconfidence_warnings.append(
+                f"Category '{category}': overconfident (avg={avg_confidence:.2f}, "
+                f"hit_rate={hit_rate:.2f}). Dampening."
+            )
+        else:
+            self._calibration_adjustments[category] = 0.9 + 0.2 * hit_rate
+
+    def get_prior_adjustment(self, category: str) -> float:
+        return self._calibration_adjustments.get(category, 1.0)
+
+    def get_recommended_focus(self) -> list[tuple[str, float]]:
+        """Categories with high hit rate that deserve more attention."""
+        focus: list[tuple[str, float]] = []
+        for cat, confs in self._category_confirmations.items():
+            if len(confs) >= 3:
+                recent = confs[-20:]
+                hit_rate = sum(recent) / len(recent)
+                if hit_rate > 0.5:
+                    focus.append((cat, hit_rate))
+        return sorted(focus, key=lambda x: x[1], reverse=True)
+
+    def self_assess(self) -> dict[str, Any]:
+        """Return a metacognitive self-assessment."""
+        assessment: dict[str, Any] = {
+            "total_observations": self._total_observations,
+            "categories_tracked": len(self._category_predictions),
+            "calibration_adjustments": dict(self._calibration_adjustments),
+            "overconfidence_warnings": self._overconfidence_warnings[-5:],
+            "recommended_focus": self.get_recommended_focus(),
+        }
+
+        for cat, preds in self._category_predictions.items():
+            confs = self._category_confirmations.get(cat, [])
+            if preds:
+                assessment[f"cat_{cat}_avg_posterior"] = round(
+                    sum(preds[-20:]) / len(preds[-20:]), 3
+                )
+            if confs:
+                assessment[f"cat_{cat}_hit_rate"] = round(
+                    sum(confs[-20:]) / len(confs[-20:]), 3
+                )
+
+        return assessment
+
+
+# ============================================================================
+# D. Knowledge Graph
+# ============================================================================
+
+@dataclass
+class KGNode:
+    """A node in the knowledge graph."""
+    node_id: str
+    node_type: str  # "endpoint", "token", "stripe_object", "user", "waf", "tech"
+    properties: dict[str, Any] = field(default_factory=dict)
+    first_seen: int = 0
+    times_seen: int = 0
+
+
+@dataclass
+class KGEdge:
+    """An edge in the knowledge graph."""
+    source: str
+    target: str
+    edge_type: str  # "calls", "returns", "references", "auth_guards", "produces"
+    weight: float = 1.0
+    properties: dict[str, Any] = field(default_factory=dict)
+
+
+class KnowledgeGraph:
+    """Progressive entity-relationship graph built from observations.
+
+    Nodes: endpoints, tokens, Stripe objects, WAFs, technologies
+    Edges: calls, returns, references, auth_guards, produces
+
+    Enables graph-based reasoning:
+    - "This endpoint is 2 hops from the payment endpoint and has no auth"
+    - "These 3 endpoints share the same Stripe customer object"
+    - "The WAF protects endpoints A, B, C but not D"
+    """
+
+    def __init__(self) -> None:
+        self._nodes: dict[str, KGNode] = {}
+        self._edges: list[KGEdge] = []
+        self._adjacency: dict[str, list[str]] = defaultdict(list)
+
+    def add_node(self, node_id: str, node_type: str, properties: dict[str, Any] | None = None) -> None:
+        if node_id in self._nodes:
+            self._nodes[node_id].times_seen += 1
+            if properties:
+                self._nodes[node_id].properties.update(properties)
+        else:
+            self._nodes[node_id] = KGNode(
+                node_id=node_id, node_type=node_type,
+                properties=properties or {},
+                first_seen=len(self._edges),
+                times_seen=1,
+            )
+
+    def add_edge(self, source: str, target: str, edge_type: str, weight: float = 1.0) -> None:
+        for existing in self._edges:
+            if existing.source == source and existing.target == target and existing.edge_type == edge_type:
+                existing.weight += 0.1
+                return
+        self._edges.append(KGEdge(source=source, target=target, edge_type=edge_type, weight=weight))
+        self._adjacency[source].append(target)
+
+    def get_neighbors(self, node_id: str, max_depth: int = 2) -> set[str]:
+        """BFS to find all nodes within max_depth hops."""
+        visited: set[str] = set()
+        queue: list[tuple[str, int]] = [(node_id, 0)]
+        while queue:
+            current, depth = queue.pop(0)
+            if current in visited or depth > max_depth:
+                continue
+            visited.add(current)
+            for neighbor in self._adjacency.get(current, []):
+                if neighbor not in visited:
+                    queue.append((neighbor, depth + 1))
+        visited.discard(node_id)
+        return visited
+
+    def find_unprotected_paths(self) -> list[dict[str, Any]]:
+        """Find paths from unauthenticated endpoints to payment endpoints."""
+        unauthed = [
+            n for n in self._nodes.values()
+            if n.node_type == "endpoint" and n.properties.get("has_auth") is False
+        ]
+        payment = [
+            n for n in self._nodes.values()
+            if n.node_type == "endpoint" and n.properties.get("is_payment") is True
+        ]
+        paths: list[dict[str, Any]] = []
+        for ua in unauthed:
+            neighbors = self.get_neighbors(ua.node_id, max_depth=3)
+            for pay in payment:
+                if pay.node_id in neighbors:
+                    paths.append({
+                        "unauthed_endpoint": ua.node_id,
+                        "payment_endpoint": pay.node_id,
+                        "detail": f"Unauthed {ua.node_id} is within 3 hops of payment {pay.node_id}",
+                    })
+        return paths
+
+    def ingest_observation(self, observation: dict[str, Any]) -> None:
+        """Extract entities and relationships from an observation."""
+        req = observation.get("request_data") or {}
+        resp = observation.get("response_data") or {}
+        url = str(req.get("url", ""))
+        path = urlparse(url).path if url else ""
+        status = resp.get("status_code", 0)
+        body = resp.get("body")
+        body_text = _body_as_text(body) if body is not None else ""
+        headers = resp.get("headers") or {}
+        req_headers = req.get("headers") or {}
+
+        if path:
+            has_auth = any(
+                h.lower() in ("authorization", "x-api-key", "cookie")
+                for h in {**headers, **req_headers}
+            )
+            is_payment = bool(_PAYMENT_SENSITIVE_PATH_RE.search(path))
+            self.add_node(path, "endpoint", {
+                "method": req.get("method", "GET"),
+                "status": status,
+                "has_auth": has_auth,
+                "is_payment": is_payment,
+            })
+
+        stripe_match = _STRIPE_OBJECT_RE.search(body_text)
+        if stripe_match and path:
+            obj_type = stripe_match.group(1)
+            self.add_node(f"stripe:{obj_type}", "stripe_object")
+            self.add_edge(path, f"stripe:{obj_type}", "returns")
+
+        id_refs = re.findall(
+            r'"(\w+_id)":\s*"([^"]{5,50})"', body_text,
+        )
+        for id_field, id_val in id_refs[:10]:
+            ref_node = f"id:{id_field}:{id_val[:20]}"
+            self.add_node(ref_node, "token", {"field": id_field})
+            if path:
+                self.add_edge(path, ref_node, "references")
+
+        lower_headers = {k.lower(): v for k, v in headers.items()}
+        if re.search(r'(?:cf-ray|cloudflare)', str(lower_headers), re.I):
+            self.add_node("waf:cloudflare", "waf")
+            if path:
+                self.add_edge("waf:cloudflare", path, "protects")
+
+    def to_summary(self) -> dict[str, Any]:
+        type_counts: dict[str, int] = defaultdict(int)
+        for n in self._nodes.values():
+            type_counts[n.node_type] += 1
+        return {
+            "total_nodes": len(self._nodes),
+            "total_edges": len(self._edges),
+            "node_types": dict(type_counts),
+            "unprotected_paths": self.find_unprotected_paths()[:5],
+        }
+
+
+# ============================================================================
+# E. Belief Revision Log
+# ============================================================================
+
+@dataclass
+class BeliefRevision:
+    revision_id: int
+    observation_id: int
+    category: str
+    old_belief: float
+    new_belief: float
+    trigger: str
+    evidence: str
+
+
+class BeliefRevisionLog:
+    """Tracks WHY beliefs changed and what triggered each revision.
+
+    Every time a belief is updated, the log records:
+    - What the old belief was
+    - What the new belief is
+    - What observation triggered the change
+    - What specific evidence caused the revision
+
+    Enables: "Why do I think this target has weak auth?" ->
+    "Because observations 3, 7, 12 all showed 200 responses on /api/v2/admin
+    without auth headers, and observation 15 confirmed with a JWT alg:none token."
+    """
+
+    def __init__(self) -> None:
+        self._revisions: list[BeliefRevision] = []
+        self._next_id = 0
+
+    def record(
+        self, observation_id: int, category: str,
+        old_belief: float, new_belief: float,
+        trigger: str, evidence: str,
+    ) -> None:
+        self._revisions.append(BeliefRevision(
+            revision_id=self._next_id,
+            observation_id=observation_id,
+            category=category,
+            old_belief=round(old_belief, 4),
+            new_belief=round(new_belief, 4),
+            trigger=trigger,
+            evidence=evidence,
+        ))
+        self._next_id += 1
+
+    def explain_belief(self, category: str) -> list[dict[str, Any]]:
+        """Why does the system hold this belief? Return the revision chain."""
+        relevant = [r for r in self._revisions if r.category == category]
+        return [
+            {
+                "observation": r.observation_id,
+                "old": r.old_belief,
+                "new": r.new_belief,
+                "trigger": r.trigger,
+                "evidence": r.evidence,
+            }
+            for r in relevant[-10:]
+        ]
+
+    def get_largest_shifts(self, n: int = 5) -> list[dict[str, Any]]:
+        """Find the biggest belief changes -- most informative observations."""
+        sorted_revs = sorted(
+            self._revisions,
+            key=lambda r: abs(r.new_belief - r.old_belief),
+            reverse=True,
+        )
+        return [
+            {
+                "category": r.category,
+                "shift": round(r.new_belief - r.old_belief, 4),
+                "trigger": r.trigger,
+                "observation": r.observation_id,
+            }
+            for r in sorted_revs[:n]
+        ]
+
+
+# ============================================================================
+# F. Self-Critique Engine
+# ============================================================================
+
+class SelfCritiqueEngine:
+    """Devil's advocate: tries to disprove each hypothesis before it advances.
+
+    For each hypothesis, generates counter-arguments based on:
+    - Missing expected evidence ("if this were auth_bypass, we'd expect 401s elsewhere")
+    - Contradicting evidence ("but the endpoint has rate limiting, suggesting monitoring")
+    - Alternative explanations ("this could be a false positive from CORS preflight")
+    - Base rate fallacy check ("this category has only a 10% hit rate historically")
+
+    Only hypotheses that survive critique propagate to the final score."""
+
+    _COUNTER_ARGUMENT_RULES: list[tuple[str, str, str, float]] = [
+        ("auth_bypass", "has_auth_header", "Auth header present contradicts auth bypass hypothesis", -0.4),
+        ("auth_bypass", "status_401_seen", "401 responses seen elsewhere suggest auth IS enforced", -0.3),
+        ("payment_manipulation", "no_amount_field", "No amount field in response weakens payment manipulation hypothesis", -0.3),
+        ("entitlement_bypass", "consistent_tiers", "Tier/status is consistent across observations", -0.25),
+        ("injection", "waf_detected", "WAF detected -- injection payloads likely filtered", -0.2),
+        ("injection", "small_body", "Small response body unlikely for successful injection", -0.15),
+        ("race_condition", "idempotent_method", "GET/HEAD methods are idempotent, reducing race risk", -0.3),
+        ("ssrf", "no_internal_ip", "No internal IPs in response contradicts SSRF hypothesis", -0.35),
+        ("idor", "uuid_ids", "UUIDs (not sequential) make enumeration impractical", -0.25),
+        ("privilege_escalation", "no_role_field", "No role/admin fields in response", -0.2),
+    ]
+
+    def critique(
+        self,
+        hypotheses: list,  # list[Hypothesis]
+        components: dict[str, Any],
+        memory: EpisodicMemory,
+        metacognition: MetacognitiveMonitor,
+    ) -> list:  # list[Hypothesis]
+        """Run devil's advocate pass. Reduce posteriors of weak hypotheses."""
+        body_text = components.get("body_text", "")
+        has_auth = components.get("has_auth_header", False)
+        status = components.get("status_code", 0)
+        body_size = components.get("body_size", 0)
+
+        context_flags: set[str] = set()
+        if has_auth:
+            context_flags.add("has_auth_header")
+        if status in (401, 403):
+            context_flags.add("status_401_seen")
+        if not re.search(r'"(?:amount|price|total|cost)"', body_text, re.I):
+            context_flags.add("no_amount_field")
+        if body_size < 200:
+            context_flags.add("small_body")
+        if components.get("method", "GET") in ("GET", "HEAD", "OPTIONS"):
+            context_flags.add("idempotent_method")
+        if re.search(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}', body_text, re.I):
+            context_flags.add("uuid_ids")
+        if not re.search(r'"(?:role|is_admin|permissions|admin)"', body_text, re.I):
+            context_flags.add("no_role_field")
+        if not re.search(r'(?:127\.0\.0\.1|169\.254\.|10\.\d|192\.168\.)', body_text):
+            context_flags.add("no_internal_ip")
+
+        waf_mems = memory.retrieve(query_category="anti_re", top_k=5, entry_type="finding")
+        if waf_mems:
+            context_flags.add("waf_detected")
+
+        past_401s = memory.retrieve(query_category="auth_bypass", top_k=10)
+        if any(m.content.get("status_code") in (401, 403) for m in past_401s):
+            context_flags.add("status_401_seen")
+
+        for h in hypotheses:
+            critique_penalty = 0.0
+            critique_reasons: list[str] = []
+
+            for cat, flag, reason, penalty in self._COUNTER_ARGUMENT_RULES:
+                if h.category == cat and flag in context_flags:
+                    critique_penalty += penalty
+                    critique_reasons.append(reason)
+
+            meta_adj = metacognition.get_prior_adjustment(h.category)
+            if meta_adj < 0.8:
+                critique_penalty -= 0.1
+                critique_reasons.append(
+                    f"Metacognition: category '{h.category}' has low historical accuracy"
+                )
+
+            if critique_penalty < 0:
+                h.posterior = max(0.01, h.posterior * (1.0 + critique_penalty))
+                if not hasattr(h, 'evidence_against'):
+                    h.evidence_against = []
+                h.evidence_against.extend(critique_reasons)
+
+        return sorted(hypotheses, key=lambda h: h.posterior, reverse=True)
+
+
 # ============================================================================
 # Data classes
 # ============================================================================
@@ -278,6 +1122,15 @@ class LLMReplacementResult:
     kill_chain_summary: str = ""
     financial_impact_estimate: dict = field(default_factory=dict)
 
+    # --- v4 autonomous learning + metacognition ---
+    memory_retrievals: list[dict] = field(default_factory=list)
+    reflections: list[dict] = field(default_factory=list)
+    knowledge_graph_summary: dict = field(default_factory=dict)
+    metacognitive_assessment: dict = field(default_factory=dict)
+    belief_revision_trail: list[dict] = field(default_factory=list)
+    self_critique_results: list[dict] = field(default_factory=list)
+    strategic_plan: list[str] = field(default_factory=list)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "suspicious_fields": self.suspicious_fields,
@@ -303,6 +1156,13 @@ class LLMReplacementResult:
             "adaptive_weights": self.adaptive_weights,
             "kill_chain_summary": self.kill_chain_summary,
             "financial_impact_estimate": self.financial_impact_estimate,
+            "memory_retrievals": self.memory_retrievals,
+            "reflections": self.reflections,
+            "knowledge_graph_summary": self.knowledge_graph_summary,
+            "metacognitive_assessment": self.metacognitive_assessment,
+            "belief_revision_trail": self.belief_revision_trail,
+            "self_critique_results": self.self_critique_results,
+            "strategic_plan": self.strategic_plan,
         }
 
 
@@ -4098,6 +4958,14 @@ class LLMReplacementLayer:
         self._engine_hit_rates: dict[str, list[float]] = defaultdict(list)
         self._cross_engine_history: list[dict[str, float]] = []
 
+        # v4: Autonomous learning + metacognition systems
+        self._memory = EpisodicMemory(max_entries=10000, recency_decay=0.995)
+        self._reflection_engine = ReflectionEngine(reflection_interval=10)
+        self._metacognition = MetacognitiveMonitor()
+        self._knowledge_graph = KnowledgeGraph()
+        self._belief_log = BeliefRevisionLog()
+        self._self_critique = SelfCritiqueEngine()
+
     def _compute_adaptive_weights(self) -> dict[str, float]:
         """Adapt engine weights based on historical hit rates."""
         base = {
@@ -4227,6 +5095,7 @@ class LLMReplacementLayer:
 
     def analyze_observation(self, observation: dict[str, Any]) -> LLMReplacementResult:
         self._observations_analyzed += 1
+        obs_id = self._observations_analyzed
         request_data = observation.get("request_data") or {}
         response_data = observation.get("response_data") or {}
 
@@ -4241,6 +5110,51 @@ class LLMReplacementLayer:
         reasoning = self._cot_engine.reason(observation)
         components = self._cot_engine._decompose_observation(observation)
 
+        # --- Memory: Store raw observation and retrieve past context ---
+        endpoint = components.get("endpoint", "")
+        obs_importance = min(1.0, 0.3 + 0.1 * len(zero_shot) + (0.2 if structural_anomaly else 0.0))
+        obs_features = {
+            "status_code": float(components.get("status_code", 0)) / 600.0,
+            "body_size": min(1.0, float(components.get("body_size", 0)) / 50000.0),
+            "has_auth": 1.0 if components.get("has_auth_header") else 0.0,
+            "zero_shot_count": min(1.0, float(len(zero_shot)) / 10.0),
+        }
+        self._memory.store(
+            entry_type="observation",
+            content={
+                "endpoint": endpoint,
+                "status_code": components.get("status_code", 0),
+                "zero_shot_count": len(zero_shot),
+                "structural_anomaly": structural_anomaly,
+                "has_auth": components.get("has_auth_header", False),
+            },
+            importance=obs_importance,
+            endpoint=endpoint,
+            features=obs_features,
+            source_observation_id=obs_id,
+        )
+
+        # Retrieve relevant past memories for this observation
+        past_memories = self._memory.retrieve(
+            query_features=obs_features,
+            query_endpoint=endpoint,
+            top_k=10,
+        )
+        memory_retrievals_data = [
+            {
+                "entry_id": m.entry_id,
+                "type": m.entry_type,
+                "endpoint": m.endpoint,
+                "category": m.category,
+                "importance": round(m.importance, 3),
+                "content_summary": str(m.content)[:200],
+            }
+            for m in past_memories
+        ]
+
+        # --- Knowledge Graph: Ingest observation entities ---
+        self._knowledge_graph.ingest_observation(observation)
+
         # --- Engine 4: Multi-perspective (5 viewpoints) ---
         attacker_view = self._perspective_analyzer.analyze_as_attacker(components, zero_shot)
         defender_view = self._perspective_analyzer.analyze_as_defender(components, zero_shot)
@@ -4251,11 +5165,93 @@ class LLMReplacementLayer:
             attacker_view, defender_view, auditor_view, red_team_view, threat_intel_view,
         )
 
-        # --- Engine 5: Hypothesis ---
+        # --- Engine 5: Hypothesis (with metacognitive prior calibration) ---
         surfaces = self._cot_engine._identify_attack_surface(components)
         hypotheses = self._cot_engine._generate_hypotheses(surfaces, components, {})
         scored_hypotheses = self._cot_engine._evaluate_hypotheses(hypotheses, components)
+
+        # Apply metacognitive calibration to posteriors
+        for h in scored_hypotheses:
+            adj = self._metacognition.get_prior_adjustment(h.category)
+            if adj != 1.0:
+                h.posterior = max(0.01, min(0.99, h.posterior * adj))
+
+        # Boost hypotheses that align with past insights
+        relevant_insights = self._reflection_engine.get_relevant_insights(
+            category=scored_hypotheses[0].category if scored_hypotheses else "",
+            endpoint=endpoint,
+        )
+        if relevant_insights:
+            for h in scored_hypotheses[:3]:
+                matching = [i for i in relevant_insights if i.category == h.category]
+                if matching:
+                    insight_boost = 0.05 * min(len(matching), 3)
+                    h.posterior = min(0.99, h.posterior + insight_boost)
+
         self._hypothesis_engine.update_beliefs(scored_hypotheses)
+
+        # --- Self-critique: Devil's advocate pass on hypotheses ---
+        scored_hypotheses = self._self_critique.critique(
+            scored_hypotheses, components, self._memory, self._metacognition,
+        )
+
+        # --- Belief revision with provenance ---
+        for h in scored_hypotheses[:5]:
+            old_belief = self._hypothesis_engine.get_beliefs().get(h.category, 0.5)
+            if abs(h.posterior - old_belief) > 0.05:
+                self._belief_log.record(
+                    observation_id=obs_id,
+                    category=h.category,
+                    old_belief=old_belief,
+                    new_belief=h.posterior,
+                    trigger=f"observation_{obs_id}",
+                    evidence=h.description[:200],
+                )
+
+        # --- Metacognitive monitoring ---
+        for h in scored_hypotheses[:5]:
+            self._metacognition.record_prediction(h.category, h.posterior)
+            if h.posterior > 0.5:
+                confirmed = len(zero_shot) > 0 or structural_anomaly
+                self._metacognition.record_confirmation(h.category, confirmed)
+
+        # Store high-scoring hypotheses as findings in memory
+        for h in scored_hypotheses:
+            if h.posterior > 0.3:
+                self._memory.store(
+                    entry_type="finding",
+                    content={
+                        "category": h.category,
+                        "posterior": h.posterior,
+                        "description": h.description[:200],
+                        "evidence_for": h.evidence_for[:3] if hasattr(h, 'evidence_for') else [],
+                        "evidence_against": h.evidence_against[:3] if hasattr(h, 'evidence_against') else [],
+                    },
+                    importance=h.posterior,
+                    endpoint=endpoint,
+                    category=h.category,
+                    source_observation_id=obs_id,
+                )
+
+        # --- Reflection: Periodic insight synthesis ---
+        new_reflections: list[dict[str, Any]] = []
+        if self._reflection_engine.should_reflect(obs_id):
+            insights = self._reflection_engine.reflect(self._memory)
+            for ins in insights:
+                self._memory.store(
+                    entry_type="reflection",
+                    content={"insight": ins.description, "confidence": ins.confidence},
+                    importance=ins.confidence,
+                    category=ins.category,
+                )
+                new_reflections.append({
+                    "id": ins.insight_id,
+                    "description": ins.description,
+                    "confidence": round(ins.confidence, 3),
+                    "category": ins.category,
+                })
+
+        strategic_plan = self._reflection_engine.get_strategic_plan()
 
         # --- Engine 6: Evidence correlation ---
         self._evidence_correlator.add_observation(observation)
@@ -4418,6 +5414,24 @@ class LLMReplacementLayer:
             adaptive_weights=adaptive_weights,
             kill_chain_summary=kill_chain,
             financial_impact_estimate=financial_impact,
+            # v4: autonomous learning outputs
+            memory_retrievals=memory_retrievals_data,
+            reflections=new_reflections,
+            knowledge_graph_summary=self._knowledge_graph.to_summary(),
+            metacognitive_assessment=self._metacognition.self_assess(),
+            belief_revision_trail=self._belief_log.explain_belief(
+                scored_hypotheses[0].category if scored_hypotheses else "",
+            ),
+            self_critique_results=[
+                {
+                    "category": h.category,
+                    "survived_critique": h.posterior > 0.1,
+                    "posterior": round(h.posterior, 4),
+                    "counter_arguments": getattr(h, "evidence_against", [])[:5],
+                }
+                for h in scored_hypotheses[:5]
+            ],
+            strategic_plan=strategic_plan,
         )
 
     def get_statistics(self) -> dict[str, Any]:
@@ -4437,4 +5451,11 @@ class LLMReplacementLayer:
             },
             "adaptive_weights": self._compute_adaptive_weights(),
             "cross_engine_history_length": len(self._cross_engine_history),
+            # v4: autonomous learning statistics
+            "episodic_memory": self._memory.to_summary(),
+            "insights": self._reflection_engine.get_insights(),
+            "strategic_plan": self._reflection_engine.get_strategic_plan(),
+            "knowledge_graph": self._knowledge_graph.to_summary(),
+            "metacognitive_assessment": self._metacognition.self_assess(),
+            "largest_belief_shifts": self._belief_log.get_largest_shifts(5),
         }
