@@ -218,9 +218,11 @@ async def _execute_and_persist(runner: TestRunner) -> None:
 
 
 @router.post("", response_model=RunSummarySchema, status_code=202)
-async def start_run(payload: RunCreateRequest, session: AsyncSession = Depends(get_session), twin_url: str | None = None) -> RunSummarySchema:
+async def start_run(payload: RunCreateRequest, session: AsyncSession = Depends(get_session), twin_url: str | None = None, session_cookies: str | None = None) -> RunSummarySchema:
     loaded_settings = await load_settings(session)
     run_settings = to_run_settings(loaded_settings)
+    if session_cookies:
+        run_settings.custom_headers["Cookie"] = session_cookies
     # Customer-declared integrity contract: a plain 0600 file, never a DB column (no migration). None => the
     # payment_integrity module sends no traffic and only reports the capability gaps.
     run_settings.integrity_brief = get_control_adapter().load_brief(app_settings.integrity_brief_path)
@@ -293,7 +295,7 @@ async def scan_cold_domain(payload: ScanRequest, session: AsyncSession = Depends
         scope=TestScope.FULL_REGRESSION,
         extra_allowed_hosts=[],
     )
-    return await start_run(run_request, session, twin_url=str(payload.twin_url) if payload.twin_url else None)
+    return await start_run(run_request, session, twin_url=str(payload.twin_url) if payload.twin_url else None, session_cookies=payload.session_cookies)
 
 
 @router.get("", response_model=list[RunSummarySchema])

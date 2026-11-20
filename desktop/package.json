@@ -1,0 +1,16 @@
+{
+  "name": "redpilot-desktop",
+  "version": "1.0.0",
+  "description": "RedPilot — Payment Security QA Terminal",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "setup": "npm install && npx playwright install chromium"
+  },
+  "dependencies": {
+    "playwright": "^1.40.0"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0"
+  }
+}

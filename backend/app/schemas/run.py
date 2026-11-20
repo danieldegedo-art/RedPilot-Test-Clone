@@ -15,6 +15,7 @@ class ScanRequest(BaseModel):
     Optionally provide a twin_url for dual-target mode: all probes run against both."""
     url: HttpUrl
     twin_url: HttpUrl | None = None
+    session_cookies: str | None = None
 
 
 class RunCreateRequest(BaseModel):

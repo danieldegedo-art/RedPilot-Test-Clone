@@ -108,3 +108,4 @@ class TestContext:
     # wired into the one production TestRunner construction site).
     feature_registry: PESMStore | None = None
     twin_url: str | None = None
+    session_cookies: str | None = None

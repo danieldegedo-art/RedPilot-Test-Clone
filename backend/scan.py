@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 import httpx
 
 
-async def scan(url: str, twin_url: str | None = None) -> None:
+async def scan(url: str, twin_url: str | None = None, cookies: str | None = None) -> None:
     parsed = urlparse(url)
     if not parsed.scheme:
         url = f"https://{url}"
@@ -38,6 +38,8 @@ async def scan(url: str, twin_url: str | None = None) -> None:
         body: dict = {"url": url}
         if twin_url:
             body["twin_url"] = twin_url
+        if cookies:
+            body["session_cookies"] = cookies
         resp = await client.post(f"{api_base}/runs/scan", json=body)
         if resp.status_code != 202:
             print(f"ERROR: {resp.status_code} {resp.text}")
@@ -92,12 +94,17 @@ def main() -> None:
         sys.exit(1)
 
     twin_url = None
+    cookies = None
     if "--twin" in sys.argv:
         idx = sys.argv.index("--twin")
         if idx + 1 < len(sys.argv):
             twin_url = sys.argv[idx + 1]
+    if "--cookies" in sys.argv:
+        idx = sys.argv.index("--cookies")
+        if idx + 1 < len(sys.argv):
+            cookies = sys.argv[idx + 1]
 
-    asyncio.run(scan(sys.argv[1], twin_url=twin_url))
+    asyncio.run(scan(sys.argv[1], twin_url=twin_url, cookies=cookies))
 
 
 if __name__ == "__main__":

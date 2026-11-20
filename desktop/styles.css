@@ -1,0 +1,171 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #0a0a0f;
+  --bg-alt: #0f0f1a;
+  --text: #cccccc;
+  --text-dim: #666666;
+  --red: #e94560;
+  --red-dark: #b8001f;
+  --green: #00ff41;
+  --white: #ffffff;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Menlo", "Monaco", "Cascadia Mono", "Consolas", "Courier New", monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow: hidden;
+  height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+#terminal {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 0 20px 10px;
+}
+
+#drag-region {
+  -webkit-app-region: drag;
+  height: 32px;
+  flex-shrink: 0;
+}
+
+/* --- Banner --- */
+
+#banner {
+  white-space: pre;
+  font-size: 11px;
+  line-height: 1.15;
+  text-align: center;
+  margin-bottom: 8px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+/* --- Animated Red Chrome gradient --- */
+
+@keyframes redChrome {
+  0%   { background-position: 0% 50%; }
+  100% { background-position: 300% 50%; }
+}
+
+.chrome {
+  background: linear-gradient(
+    90deg,
+    #ff0000, #ff3333, #ffffff, #ffaaaa, #ff0000,
+    #ff4444, #ffffff, #ff0000, #ff6666, #ffffff
+  );
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: redChrome 4s linear infinite;
+  font-weight: bold;
+}
+
+.chrome-static {
+  background: linear-gradient(90deg, #ff0000, #ff4444, #ffffff, #ff4444, #ff0000);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: redChrome 6s linear infinite;
+}
+
+.chrome-banner {
+  background: linear-gradient(
+    90deg,
+    #8b0000, #ff0000, #ff3333, #ffffff, #ff6666,
+    #ff0000, #cc0000, #ffffff, #ff3333, #8b0000
+  );
+  background-size: 400% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: redChrome 5s linear infinite;
+  font-weight: normal;
+}
+
+/* --- Output area --- */
+
+#output {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 4px 0;
+  scrollbar-width: thin;
+  scrollbar-color: #333 transparent;
+}
+
+#output::-webkit-scrollbar { width: 6px; }
+#output::-webkit-scrollbar-track { background: transparent; }
+#output::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+#output::-webkit-scrollbar-thumb:hover { background: #555; }
+
+.line { padding: 1px 0; word-wrap: break-word; white-space: pre-wrap; }
+.line-error { color: #ff4444; }
+.line-pass { color: #555555; }
+.line-detail { color: #888888; }
+.line-green { color: var(--green); }
+.line-dim { color: var(--text-dim); }
+.line-echo {
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+.line-divider {
+  border-top: 1px solid #222;
+  margin: 8px 0;
+  height: 0;
+}
+
+/* --- Input area --- */
+
+#input-area {
+  flex-shrink: 0;
+  border-top: 1px solid #1a1a2e;
+  padding-top: 6px;
+}
+
+.prompt-line {
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.prompt-user { color: var(--text-dim); }
+.prompt-name { font-weight: bold; }
+.prompt-path { color: #4488ff; }
+.prompt-arrow { color: var(--red); font-weight: bold; }
+
+.input-row {
+  display: flex;
+  align-items: center;
+}
+
+#cmd {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--white);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  outline: none;
+  caret-color: var(--white);
+  padding: 0;
+}
+
+#cmd::placeholder { color: #333; }
+
+/* --- Status bar (optional) --- */
+
+.status-text {
+  color: var(--text-dim);
+  font-size: 11px;
+  text-align: right;
+  padding: 2px 0;
+}
