@@ -3272,6 +3272,8 @@ class BrainstormEngine:
     ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         endpoint = components.get("endpoint", "")
+        body_text = components.get("body_text", "")
+        resp_headers = components.get("response_headers") or {}
 
         for category, ideas in self._BYPASS_IDEAS.items():
             relevance = 0.0
@@ -3285,9 +3287,17 @@ class BrainstormEngine:
                 relevance = 0.4
             elif category == "injection":
                 relevance = 0.3
+            elif category == "waf_bypass":
+                if any(re.search(r"(?:cf-ray|x-akamai|incap_ses|x-datadome|_px\d)", k, re.I) for k in resp_headers):
+                    relevance = 0.85
+            elif category == "subscription_abuse":
+                if components.get("stripe_object") in ("subscription", "invoice", "customer"):
+                    relevance = 0.90
+                elif _PAYMENT_SENSITIVE_PATH_RE.search(endpoint):
+                    relevance = 0.70
 
             if relevance > 0.2:
-                for idea in ideas[:5]:
+                for idea in ideas[:7]:
                     results.append({
                         "category": category,
                         "idea": idea,
@@ -3308,7 +3318,7 @@ class BrainstormEngine:
                     "relevance": 0.95,
                 })
 
-        return sorted(results, key=lambda x: x["relevance"], reverse=True)[:15]
+        return sorted(results, key=lambda x: x["relevance"], reverse=True)[:20]
 
     def brainstorm_bypass_techniques(
         self, defense_indicators: list[str],
@@ -3326,9 +3336,28 @@ class BrainstormEngine:
                 bypasses.append({"defense": indicator, "bypass": "Test accessibility audio challenge path", "confidence": 0.4})
                 bypasses.append({"defense": indicator, "bypass": "Test repeated soft-block vs hard-block behavior", "confidence": 0.3})
             if "waf" in ind_lower or "firewall" in ind_lower:
-                bypasses.append({"defense": indicator, "bypass": "Test encoding variation bypass (double-URL, unicode)", "confidence": 0.5})
-                bypasses.append({"defense": indicator, "bypass": "Test HTTP parameter pollution", "confidence": 0.4})
-                bypasses.append({"defense": indicator, "bypass": "Test chunked transfer encoding bypass", "confidence": 0.3})
+                for idea in self._BYPASS_IDEAS["waf_bypass"][:8]:
+                    bypasses.append({"defense": indicator, "bypass": idea, "confidence": 0.5})
+            if "cdn" in ind_lower or "cloudflare" in ind_lower:
+                bypasses.append({"defense": indicator, "bypass": "Test origin IP discovery via DNS history records", "confidence": 0.6})
+                bypasses.append({"defense": indicator, "bypass": "Test direct-to-origin request bypassing CDN edge", "confidence": 0.5})
+                bypasses.append({"defense": indicator, "bypass": "Test CDN cache poisoning via unkeyed Host header", "confidence": 0.4})
+                bypasses.append({"defense": indicator, "bypass": "Test CDN PoP-sharding to reach different edge with different rules", "confidence": 0.4})
+            if "bot" in ind_lower or "fingerprint" in ind_lower:
+                bypasses.append({"defense": indicator, "bypass": "Test TLS/HTTP fingerprint impersonation (curl_cffi, impersonate-proxy)", "confidence": 0.5})
+                bypasses.append({"defense": indicator, "bypass": "Test headless browser with stealth plugins (puppeteer-extra-stealth)", "confidence": 0.5})
+                bypasses.append({"defense": indicator, "bypass": "Test API-only path that skips browser fingerprinting entirely", "confidence": 0.6})
+                bypasses.append({"defense": indicator, "bypass": "Test mobile User-Agent to trigger different detection path", "confidence": 0.4})
+            if "cors" in ind_lower:
+                bypasses.append({"defense": indicator, "bypass": "Test wildcard Origin reflection (*) for credential-bearing requests", "confidence": 0.5})
+                bypasses.append({"defense": indicator, "bypass": "Test null Origin acceptance for sandboxed iframe bypass", "confidence": 0.5})
+                bypasses.append({"defense": indicator, "bypass": "Test subdomain origin trust (attacker.target.com)", "confidence": 0.4})
+            if "jwt" in ind_lower or "token" in ind_lower:
+                bypasses.append({"defense": indicator, "bypass": "Test alg:none JWT signature stripping", "confidence": 0.5})
+                bypasses.append({"defense": indicator, "bypass": "Test RS256-to-HS256 key confusion with public key as HMAC secret", "confidence": 0.5})
+                bypasses.append({"defense": indicator, "bypass": "Test JWT kid header path traversal to known file", "confidence": 0.4})
+                bypasses.append({"defense": indicator, "bypass": "Test expired JWT acceptance (clock skew tolerance)", "confidence": 0.4})
+                bypasses.append({"defense": indicator, "bypass": "Test JWK injection via jku/x5u header", "confidence": 0.3})
         return bypasses
 
     def brainstorm_chain_compositions(
@@ -3337,18 +3366,39 @@ class BrainstormEngine:
         chains: list[dict[str, Any]] = []
         categories = {f.category for f in findings}
 
-        chain_templates = [
-            ({"critical_secret", "sensitive_field_name"}, "Secret leak -> credential reuse -> lateral movement"),
-            ({"injection_artifact_sqli"}, "SQLi -> data exfiltration -> credential theft -> account takeover"),
-            ({"injection_artifact_xss", "sensitive_field_name"}, "XSS -> session hijack -> data theft"),
-            ({"injection_artifact_ssrf"}, "SSRF -> cloud metadata -> IAM credential theft -> infrastructure takeover"),
+        chain_templates: list[tuple[set[str], str, str]] = [
+            ({"critical_secret", "sensitive_field_name"}, "Secret leak -> credential reuse -> lateral movement", "critical"),
+            ({"injection_artifact_sqli"}, "SQLi -> data exfiltration -> credential theft -> account takeover", "critical"),
+            ({"injection_artifact_xss", "sensitive_field_name"}, "XSS -> session hijack -> data theft", "critical"),
+            ({"injection_artifact_ssrf"}, "SSRF -> cloud metadata -> IAM credential theft -> infrastructure takeover", "critical"),
+            ({"critical_secret"}, "Info leak reveals auth mechanism -> targeted bypass -> full access", "critical"),
+            ({"injection_artifact_xss"}, "Stored XSS -> admin session hijack -> privilege escalation -> data exfil", "critical"),
+            ({"sensitive_field_name"}, "Payment data exposure -> credential harvest -> fraudulent transactions", "high"),
         ]
-        for required, chain_desc in chain_templates:
+        for required, chain_desc, severity in chain_templates:
             if required & categories:
                 chains.append({
                     "chain": chain_desc,
                     "triggered_by": sorted(required & categories),
-                    "severity": "critical",
+                    "severity": severity,
+                })
+
+        # Additional context-free chain templates (always emitted if any findings exist)
+        if categories:
+            always_chains = [
+                ("Race checkout + zero amount -> free purchase", "critical"),
+                ("Forge payment webhook -> instant premium entitlement", "critical"),
+                ("Poison cache -> serve malicious auth response -> session hijack", "high"),
+                ("GraphQL introspection -> schema leak -> targeted exploit chain", "high"),
+                ("Subscription trial abuse -> perpetual free access -> revenue loss", "high"),
+                ("Refund processed but entitlement not revoked -> free product", "critical"),
+                ("Error oracle enumeration -> valid accounts -> credential stuffing -> takeover", "high"),
+            ]
+            for chain_desc, severity in always_chains:
+                chains.append({
+                    "chain": chain_desc,
+                    "triggered_by": ["contextual_inference"],
+                    "severity": severity,
                 })
 
         return chains
@@ -3361,12 +3411,44 @@ class BrainstormEngine:
                 {"idea": "What if the success_url is called directly without completing payment?", "category": "entitlement_bypass", "likelihood": "medium"},
                 {"idea": "What if the session is reused after expiry to access post-payment resources?", "category": "business_logic", "likelihood": "medium"},
                 {"idea": "What if metadata fields can inject a custom plan_id?", "category": "mass_assignment", "likelihood": "low"},
+                {"idea": "What if the client_secret from the session allows completing payment with $0?", "category": "payment_manipulation", "likelihood": "medium"},
             ])
         elif stripe_obj == "subscription":
             ideas.extend([
                 {"idea": "What if cancellation doesn't revoke access immediately?", "category": "entitlement_bypass", "likelihood": "high"},
                 {"idea": "What if downgrade retains premium features until next billing cycle?", "category": "entitlement_bypass", "likelihood": "high"},
                 {"idea": "What if trial_end can be set to a future date via API?", "category": "business_logic", "likelihood": "medium"},
+                {"idea": "What if re-subscribing with a 100% coupon grants permanent premium?", "category": "subscription_abuse", "likelihood": "medium"},
+                {"idea": "What if switching plans mid-cycle leaves prorated credit exploitable?", "category": "subscription_abuse", "likelihood": "medium"},
+            ])
+        elif stripe_obj == "payment_intent":
+            ideas.extend([
+                {"idea": "What if the amount is modified after creation but before confirmation?", "category": "payment_manipulation", "likelihood": "high"},
+                {"idea": "What if capture_method=manual allows indefinite hold without payment?", "category": "business_logic", "likelihood": "medium"},
+                {"idea": "What if the payment_intent ID is predictable and reusable cross-session?", "category": "auth_bypass", "likelihood": "low"},
+            ])
+        elif stripe_obj == "invoice":
+            ideas.extend([
+                {"idea": "What if invoice is marked paid without actual payment processing?", "category": "payment_manipulation", "likelihood": "high"},
+                {"idea": "What if line items can be modified after invoice creation?", "category": "business_logic", "likelihood": "medium"},
+                {"idea": "What if voiding and re-creating invoice resets payment requirements?", "category": "subscription_abuse", "likelihood": "medium"},
+            ])
+        elif stripe_obj == "refund":
+            ideas.extend([
+                {"idea": "What if refund is processed but entitlement/access is not revoked?", "category": "entitlement_bypass", "likelihood": "high"},
+                {"idea": "What if partial refund amount can be manipulated to exceed original?", "category": "payment_manipulation", "likelihood": "medium"},
+                {"idea": "What if refund webhook is replayed to trigger double credit?", "category": "business_logic", "likelihood": "medium"},
+            ])
+        elif stripe_obj == "coupon":
+            ideas.extend([
+                {"idea": "What if a coupon with 100% discount has no max_redemptions limit?", "category": "subscription_abuse", "likelihood": "high"},
+                {"idea": "What if coupon ID is predictable and can be applied to any subscription?", "category": "business_logic", "likelihood": "medium"},
+                {"idea": "What if stacking a 100% coupon with a trial gives perpetual free access?", "category": "subscription_abuse", "likelihood": "high"},
+            ])
+        elif stripe_obj == "payment_link":
+            ideas.extend([
+                {"idea": "What if payment link session ID is predictable/enumerable?", "category": "idor", "likelihood": "medium"},
+                {"idea": "What if payment link can be completed with modified price_data?", "category": "payment_manipulation", "likelihood": "medium"},
             ])
 
         if components.get("anomalies"):
@@ -3375,6 +3457,12 @@ class BrainstormEngine:
                     ideas.append({
                         "idea": "What if ALL premium endpoints are accessible, not just the one observed?",
                         "category": "entitlement_bypass",
+                        "likelihood": "high",
+                    })
+                if "zero_payment" in a:
+                    ideas.append({
+                        "idea": "What if the zero-amount path bypasses all downstream entitlement checks?",
+                        "category": "payment_manipulation",
                         "likelihood": "high",
                     })
 
