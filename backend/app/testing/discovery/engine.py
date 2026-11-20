@@ -1,4 +1,4 @@
-"""Intelligent Finding Discovery layer.
+"""Intelligent Finding Discovery layer -- six-phase pipeline.
 
 Runs AFTER all 10 test modules complete (see runner.py), with access to
 every TestResult they collected -- every response body, status code,
@@ -25,42 +25,79 @@ line, not just the cautious one:
      seeing the cross-module pattern in data that already exists, which a
      single-module, single-purpose test case structurally cannot do.
 
-Nine analyzers (see analyzers.py), each independent and individually
-skippable if its preconditions aren't met (e.g. coverage-gap analysis
-needs Recon's FunctionMap; timing analysis needs 4+ comparable samples):
+Pipeline architecture (adapted from Cloudflare security-audit-skill's
+six-phase methodology for retrospective analysis):
 
-  1. Sensitive-data / secret exposure       -- every response body, not just errors
-  2. Cross-endpoint resource consistency    -- generalizes LIFECYCLE-004 to every resource
-  3. Response shape anomalies               -- undocumented/inconsistent/debug fields
-  4. Timing outliers                        -- same-endpoint response-time side channels
-  5. Coverage gaps                          -- FunctionMap routes nothing ever tested
-  6. Systemic pattern synthesis             -- aggregates OTHER modules' own per-route results
-  7. Route-pattern consistency (Anforderung 1 / CC7.2)        -- ROLE-002-MATRIX grouped by structural similarity
-  8. Format-dependent consistency (Anforderung 2 / ISO 25010) -- ROLE-002-MATRIX x FORMAT-MATRIX correlation
-  9. Cross-module correlation (Anforderung 3)                 -- ROLE-003 weak-auth x ROLE-002 injection correlation
+  Phase 1 -- Reconnaissance & Surface Mapping
+      coverage_gaps, attack_surface_completeness, response_shapes,
+      header_security
+  Phase 2 -- Deep Pattern Hunting (12 independent detectors)
+      sensitive_data, timing_outliers, injection_artifacts,
+      trust_boundary_violations, auth_bypass_patterns, idor_indicators,
+      business_logic_flaws, privilege_escalation, ssrf_indicators,
+      hunting_skill_application, entitlement_drift,
+      response_fingerprinting
+  Phase 3 -- Cross-Module Correlation (7 correlators)
+      cross_endpoint_consistency, systemic_patterns,
+      route_pattern_consistency, format_consistency,
+      cross_module_correlation, vulnerability_chains,
+      cve_chain_correlation
+  Phase 4 -- Adversarial Validation
+      Re-examines every finding from Phases 1-3; classifies confidence
+      (confirmed / needs_validation / low_confidence)
+  Phase 5 -- Severity Scoring & Chain Synthesis
+      CVSS v3.1 base scores, exploit-chain matching against known
+      CVE chain templates, deduplication
+  Phase 6 -- Reporting
+      Severity-sorted emission, chain summaries, coverage summaries
 
-Toggle: `RunSettings.discovery_layer_enabled` (default True). Not part of
-`enabled_modules`/`SCOPE_MODULES` since it isn't module-shaped -- it has no
-scope of its own, only the union of whatever scope already ran.
+Toggle: ``RunSettings.discovery_layer_enabled`` (default True).
 """
 from __future__ import annotations
 
 import logging
+import time
+from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 
 from app.testing.discovery.analyzers import (
+    # Phase 1 -- Reconnaissance & Surface Mapping
     analyze_coverage_gaps,
-    analyze_cross_endpoint_consistency,
-    analyze_cross_module_correlation,
-    analyze_format_consistency,
     analyze_response_shapes,
-    analyze_route_pattern_consistency,
+    analyze_attack_surface_completeness,
+    analyze_header_security,
+    # Phase 2 -- Deep Pattern Hunting
     analyze_sensitive_data,
-    analyze_systemic_patterns,
     analyze_timing_outliers,
+    analyze_injection_artifacts,
+    analyze_trust_boundary_violations,
+    analyze_auth_bypass_patterns,
+    analyze_idor_indicators,
+    analyze_business_logic_flaws,
+    analyze_privilege_escalation,
+    analyze_ssrf_indicators,
+    analyze_hunting_skill_application,
+    analyze_entitlement_drift,
+    analyze_response_fingerprinting,
+    # Phase 3 -- Cross-Module Correlation
+    analyze_cross_endpoint_consistency,
+    analyze_systemic_patterns,
+    analyze_route_pattern_consistency,
+    analyze_format_consistency,
+    analyze_cross_module_correlation,
+    analyze_vulnerability_chains,
+    analyze_cve_chain_correlation,
+    # Phase 4 -- Adversarial Validation
+    analyze_adversarial_validation,
 )
 from app.testing.discovery.findings import Finding
+from app.testing.discovery.vuln_knowledge import (
+    CATEGORY_CVSS_DEFAULTS,
+    CVE_CHAIN_TEMPLATES,
+    VulnCategory,
+    match_cve_chains,
+)
 from app.testing.enums import ResultStatus, TestCategory
 from app.testing.models import TestResult
 from app.testing.recon.function_mapper import FunctionMap
@@ -69,6 +106,8 @@ EmitFn = Callable[[TestResult], Awaitable[None]]
 
 logger = logging.getLogger("qa.discovery")
 
+_SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "none": 4}
+
 
 class DiscoveryEngine:
     category = TestCategory.INTELLIGENT_DISCOVERY
@@ -76,68 +115,274 @@ class DiscoveryEngine:
     def __init__(self, all_results: list[TestResult], function_map: FunctionMap | None) -> None:
         self.all_results = all_results
         self.function_map = function_map
-        # Populated by _run_analyzers(); read by run() to emit a summary of
-        # which analyzers (if any) raised, so a bug in one doesn't just
-        # silently reduce coverage with nothing in the evidence to show it.
         self._analyzer_errors: list[tuple[str, str]] = []
+        self._phase_timings: list[tuple[str, float, int]] = []
 
-    def _run_analyzers(self) -> list[Finding]:
-        """Each of the nine analyzers is independent by design (see this
-        module's docstring: "each independent and individually skippable if
-        its preconditions aren't met"). This extends that same guarantee to
-        an analyzer that raises, not just one that decides to skip itself:
-        one analyzer's bug must not discard the other eight's findings, and
-        must not discard the ten modules' worth of evidence this engine was
-        constructed with in the first place (see runner.py, which no longer
-        lets an exception here escape the run either -- this is the
-        belt-and-suspenders half of that same fix, isolating the individual
-        analyzer, not just the layer as a whole)."""
-        analyzers: list[tuple[str, Callable[[], list[Finding]]]] = [
-            ("sensitive_data", lambda: analyze_sensitive_data(self.all_results)),
-            ("cross_endpoint_consistency", lambda: analyze_cross_endpoint_consistency(self.all_results)),
-            ("response_shapes", lambda: analyze_response_shapes(self.all_results)),
-            ("timing_outliers", lambda: analyze_timing_outliers(self.all_results)),
+    # ------------------------------------------------------------------
+    # phase runners
+    # ------------------------------------------------------------------
+
+    def _run_phase(
+        self,
+        phase_name: str,
+        analyzers: list[tuple[str, Callable[[], list[Finding]]]],
+    ) -> list[Finding]:
+        """Run a list of analyzers with per-analyzer fault isolation.
+        Returns all findings produced in the phase."""
+        t0 = time.monotonic()
+        findings: list[Finding] = []
+        for name, analyzer in analyzers:
+            try:
+                findings.extend(analyzer())
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Discovery analyzer %r raised in %s", name, phase_name)
+                self._analyzer_errors.append((name, f"{type(exc).__name__}: {exc}"))
+        elapsed = time.monotonic() - t0
+        self._phase_timings.append((phase_name, round(elapsed * 1000, 1), len(findings)))
+        logger.info(
+            "Discovery %s complete: %d finding(s) in %.1fms",
+            phase_name, len(findings), elapsed * 1000,
+        )
+        return findings
+
+    def _phase_1_reconnaissance(self) -> list[Finding]:
+        return self._run_phase("Phase 1: Reconnaissance", [
             ("coverage_gaps", lambda: analyze_coverage_gaps(self.all_results, self.function_map)),
+            ("attack_surface_completeness", lambda: analyze_attack_surface_completeness(self.all_results)),
+            ("response_shapes", lambda: analyze_response_shapes(self.all_results)),
+            ("header_security", lambda: analyze_header_security(self.all_results)),
+        ])
+
+    def _phase_2_hunting(self) -> list[Finding]:
+        return self._run_phase("Phase 2: Deep Hunting", [
+            ("sensitive_data", lambda: analyze_sensitive_data(self.all_results)),
+            ("timing_outliers", lambda: analyze_timing_outliers(self.all_results)),
+            ("injection_artifacts", lambda: analyze_injection_artifacts(self.all_results)),
+            ("trust_boundary_violations", lambda: analyze_trust_boundary_violations(self.all_results)),
+            ("auth_bypass_patterns", lambda: analyze_auth_bypass_patterns(self.all_results)),
+            ("idor_indicators", lambda: analyze_idor_indicators(self.all_results)),
+            ("business_logic_flaws", lambda: analyze_business_logic_flaws(self.all_results)),
+            ("privilege_escalation", lambda: analyze_privilege_escalation(self.all_results)),
+            ("ssrf_indicators", lambda: analyze_ssrf_indicators(self.all_results)),
+            ("hunting_skill_application", lambda: analyze_hunting_skill_application(self.all_results)),
+            ("entitlement_drift", lambda: analyze_entitlement_drift(self.all_results)),
+            ("response_fingerprinting", lambda: analyze_response_fingerprinting(self.all_results)),
+        ])
+
+    def _phase_3_correlation(self) -> list[Finding]:
+        return self._run_phase("Phase 3: Correlation", [
+            ("cross_endpoint_consistency", lambda: analyze_cross_endpoint_consistency(self.all_results)),
             ("systemic_patterns", lambda: analyze_systemic_patterns(self.all_results)),
             ("route_pattern_consistency", lambda: analyze_route_pattern_consistency(self.all_results)),
             ("format_consistency", lambda: analyze_format_consistency(self.all_results)),
             ("cross_module_correlation", lambda: analyze_cross_module_correlation(self.all_results)),
-        ]
-        findings: list[Finding] = []
-        self._analyzer_errors = []
-        for name, analyzer in analyzers:
-            try:
-                findings.extend(analyzer())
-            except Exception as exc:  # noqa: BLE001 -- deliberately broad, see docstring above
-                logger.exception("Discovery analyzer %r raised", name)
-                self._analyzer_errors.append((name, f"{type(exc).__name__}: {exc}"))
-        return findings
+            ("vulnerability_chains", lambda: analyze_vulnerability_chains(self.all_results)),
+            ("cve_chain_correlation", lambda: analyze_cve_chain_correlation(self.all_results)),
+        ])
+
+    def _phase_4_validation(self, all_findings: list[Finding]) -> list[Finding]:
+        """Adversarial validation: re-examine every finding from Phases 1-3
+        and classify confidence.  The validator is a *separate checker* from
+        the finders (Cloudflare six-phase principle)."""
+        t0 = time.monotonic()
+        validated: list[Finding] = []
+        try:
+            validated = analyze_adversarial_validation(self.all_results, all_findings)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Adversarial validation raised")
+            self._analyzer_errors.append(("adversarial_validation", f"{type(exc).__name__}: {exc}"))
+            validated = all_findings
+        elapsed = time.monotonic() - t0
+        self._phase_timings.append(("Phase 4: Validation", round(elapsed * 1000, 1), len(validated)))
+        logger.info(
+            "Discovery Phase 4: Validation complete: %d finding(s) in %.1fms",
+            len(validated), elapsed * 1000,
+        )
+        return validated
+
+    def _phase_5_scoring(self, findings: list[Finding]) -> list[Finding]:
+        """Assign CVSS v3.1 scores, synthesize exploit chains, and
+        deduplicate overlapping findings."""
+        t0 = time.monotonic()
+
+        for finding in findings:
+            if finding.cvss_score is None and finding.vuln_category:
+                try:
+                    cat = VulnCategory(finding.vuln_category)
+                    vec = CATEGORY_CVSS_DEFAULTS.get(cat)
+                    if vec:
+                        finding.cvss_score = vec.base_score()
+                        finding.cvss_vector = vec.vector_string()
+                        finding.severity_label = vec.severity_label()
+                except (ValueError, KeyError):
+                    pass
+
+            if finding.cvss_score is None:
+                if finding.status == ResultStatus.FAIL:
+                    finding.cvss_score = 7.0
+                    finding.severity_label = "high"
+                elif finding.status == ResultStatus.WARNING:
+                    finding.cvss_score = 4.0
+                    finding.severity_label = "medium"
+                else:
+                    finding.cvss_score = 2.0
+                    finding.severity_label = "low"
+
+        observed_cats: set[VulnCategory] = set()
+        for f in findings:
+            if f.vuln_category:
+                try:
+                    observed_cats.add(VulnCategory(f.vuln_category))
+                except ValueError:
+                    pass
+
+        chain_findings: list[Finding] = []
+        matched_chains = match_cve_chains(observed_cats)
+        for chain in matched_chains:
+            step_finding_ids = []
+            for step_cat in chain.steps:
+                for f in findings:
+                    if f.vuln_category == step_cat.value:
+                        step_finding_ids.append(f.finding_id)
+                        break
+
+            chain_finding = Finding(
+                finding_id=f"DISCOVERY-CHAIN-{chain.chain_id}",
+                title=f"Exploit chain detected: {chain.name}",
+                description=chain.description,
+                status=ResultStatus.FAIL,
+                observation=(
+                    f"All prerequisite vulnerability categories for chain "
+                    f"'{chain.name}' are present in this run's findings. "
+                    f"Steps: {' -> '.join(s.value for s in chain.steps)}. "
+                    f"Combined CVSS: {chain.combined_cvss}."
+                ),
+                standard_reference=chain.reference,
+                source_test_case_ids=step_finding_ids,
+                recommendation=(
+                    f"This exploit chain represents compounded risk exceeding "
+                    f"any individual finding. Prioritize remediation of the "
+                    f"chain entry point ({chain.steps[0].value}) to break "
+                    f"the chain."
+                ),
+                evidence={
+                    "chain_id": chain.chain_id,
+                    "chain_steps": [s.value for s in chain.steps],
+                    "combined_cvss": chain.combined_cvss,
+                    "enterprise_context": chain.enterprise_context,
+                    "contributing_findings": step_finding_ids,
+                },
+                cvss_score=chain.combined_cvss,
+                cvss_vector=None,
+                severity_label="critical" if chain.combined_cvss >= 9.0 else "high",
+                confidence="confirmed" if len(step_finding_ids) == len(chain.steps) else "needs_validation",
+                vuln_category=chain.steps[-1].value,
+                chain_id=chain.chain_id,
+            )
+
+            for idx, fid in enumerate(step_finding_ids):
+                for f in findings:
+                    if f.finding_id == fid:
+                        f.chain_id = chain.chain_id
+                        f.chain_position = idx
+                        break
+
+            chain_findings.append(chain_finding)
+
+        all_findings = findings + chain_findings
+
+        seen_signatures: dict[str, Finding] = {}
+        deduplicated: list[Finding] = []
+        for f in all_findings:
+            sig = (f.vuln_category or "", f.title, f.observation[:80] if f.observation else "")
+            sig_key = str(sig)
+            existing = seen_signatures.get(sig_key)
+            if existing is None:
+                seen_signatures[sig_key] = f
+                deduplicated.append(f)
+            else:
+                existing.source_test_case_ids = list(
+                    dict.fromkeys(existing.source_test_case_ids + f.source_test_case_ids)
+                )
+                if f.cvss_score and (existing.cvss_score is None or f.cvss_score > existing.cvss_score):
+                    existing.cvss_score = f.cvss_score
+                    existing.cvss_vector = f.cvss_vector
+                    existing.severity_label = f.severity_label
+
+        elapsed = time.monotonic() - t0
+        self._phase_timings.append(("Phase 5: Scoring", round(elapsed * 1000, 1), len(deduplicated)))
+        logger.info(
+            "Discovery Phase 5: Scoring complete: %d finding(s), %d chain(s) in %.1fms",
+            len(deduplicated), len(chain_findings), elapsed * 1000,
+        )
+        return deduplicated
+
+    # ------------------------------------------------------------------
+    # main entry point
+    # ------------------------------------------------------------------
 
     async def run(self, emit: EmitFn) -> None:
         if not self.all_results:
             await emit(self._info_result("No test results were available to analyze this run."))
             return
 
-        findings = self._run_analyzers()
+        overall_t0 = time.monotonic()
+
+        phase_1_findings = self._phase_1_reconnaissance()
+        phase_2_findings = self._phase_2_hunting()
+        phase_3_findings = self._phase_3_correlation()
+
+        all_raw = phase_1_findings + phase_2_findings + phase_3_findings
+
+        validated = self._phase_4_validation(all_raw)
+        scored = self._phase_5_scoring(validated)
+
+        overall_elapsed = time.monotonic() - overall_t0
+
         if self._analyzer_errors:
             await emit(self._analyzer_error_result())
 
-        if not findings:
-            skipped = f" ({len(self._analyzer_errors)} of nine analyzer(s) raised and were skipped -- see DISCOVERY-ANALYZER-ERROR above.)" if self._analyzer_errors else ""
-            await emit(
-                self._info_result(
-                    f"Analyzed {len(self.all_results)} result(s) from this run across all nine techniques "
-                    "(sensitive-data scanning, cross-endpoint consistency, response-shape anomalies, timing "
-                    "outliers, coverage gaps, systemic pattern synthesis, route-pattern consistency, "
-                    "format-dependent consistency, cross-module correlation) -- no additional finding surfaced "
-                    f"beyond what the 10 modules already reported directly.{skipped}"
+        if not scored:
+            skipped_note = ""
+            if self._analyzer_errors:
+                skipped_note = (
+                    f" ({len(self._analyzer_errors)} analyzer(s) raised and "
+                    f"were skipped -- see DISCOVERY-ANALYZER-ERROR above.)"
                 )
-            )
+            await emit(self._info_result(
+                f"Analyzed {len(self.all_results)} result(s) from this run across "
+                f"all 24 analyzers in 6 phases ({overall_elapsed * 1000:.0f}ms) "
+                f"-- no additional finding surfaced beyond what the 10 modules "
+                f"already reported directly.{skipped_note}"
+            ))
             return
 
-        for finding in findings:
+        severity_counts: dict[str, int] = defaultdict(int)
+        chain_ids: set[str] = set()
+        confidence_counts: dict[str, int] = defaultdict(int)
+        for f in scored:
+            severity_counts[f.severity_label or "none"] += 1
+            confidence_counts[f.confidence] += 1
+            if f.chain_id:
+                chain_ids.add(f.chain_id)
+
+        sorted_findings = sorted(
+            scored,
+            key=lambda f: (
+                _SEVERITY_ORDER.get(f.severity_label or "none", 99),
+                -(f.cvss_score or 0),
+                0 if f.confidence == "confirmed" else (1 if f.confidence == "needs_validation" else 2),
+            ),
+        )
+
+        for finding in sorted_findings:
             await emit(self._to_test_result(finding))
-        await emit(self._summary_result(findings))
+
+        await emit(self._summary_result(scored, severity_counts, confidence_counts, chain_ids, overall_elapsed))
+
+    # ------------------------------------------------------------------
+    # TestResult converters
+    # ------------------------------------------------------------------
 
     def _analyzer_error_result(self) -> TestResult:
         now = datetime.now(timezone.utc)
@@ -148,19 +393,17 @@ class DiscoveryEngine:
             category=self.category,
             name="One or more discovery analyzers failed",
             description=(
-                "Each of the nine discovery analyzers runs independently and is individually "
-                "fault-isolated (see _run_analyzers in discovery/engine.py): one raising an exception "
-                "no longer discards the findings the other analyzers already produced this run, or the "
-                "test modules' evidence this layer was analyzing."
+                "Each of the 24 discovery analyzers runs independently and is individually "
+                "fault-isolated: one raising an exception does not discard the findings the "
+                "other analyzers already produced this run."
             ),
             input_parameters={"failed_analyzers": failed_names, "failed_count": len(failed_names)},
-            expected="All nine analyzers complete without raising.",
-            actual=f"{len(failed_names)} of nine analyzer(s) raised and were skipped: {details}",
+            expected="All 24 analyzers complete without raising.",
+            actual=f"{len(failed_names)} analyzer(s) raised and were skipped: {details}",
             status=ResultStatus.WARNING,
             recommendation=(
-                "Check backend logs for the full traceback of each failed analyzer (logger \"qa.discovery\") "
-                "and fix the underlying bug -- that analyzer's usual findings were not produced this run, "
-                "which may mean reduced coverage for whatever it checks."
+                "Check backend logs for the full traceback of each failed analyzer "
+                "(logger \"qa.discovery\") and fix the underlying bug."
             ),
             started_at=now,
             finished_at=now,
@@ -174,11 +417,20 @@ class DiscoveryEngine:
             category=self.category,
             name="Intelligent Finding Discovery",
             description=(
-                "Retrospective, cross-module analysis of every response body, status code, timing, and request "
-                "the 10 test modules collected this run -- correlates already-observed evidence into findings "
-                "no single module's own test case was checking for. Sends no new requests to the target."
+                "Six-phase retrospective analysis of every response body, status code, "
+                "timing, and request the 10 test modules collected this run. Phase 1: "
+                "surface mapping. Phase 2: deep pattern hunting (12 detectors). Phase 3: "
+                "cross-module correlation (7 correlators). Phase 4: adversarial validation. "
+                "Phase 5: CVSS scoring and exploit-chain synthesis. Phase 6: severity-ranked "
+                "reporting. Sends no new requests to the target."
             ),
-            input_parameters={"results_analyzed": len(self.all_results)},
+            input_parameters={
+                "results_analyzed": len(self.all_results),
+                "phase_timings": [
+                    {"phase": name, "duration_ms": ms, "findings": count}
+                    for name, ms, count in self._phase_timings
+                ],
+            },
             expected="N/A - informational.",
             actual=actual,
             status=ResultStatus.INFO,
@@ -189,12 +441,47 @@ class DiscoveryEngine:
 
     def _to_test_result(self, finding: Finding) -> TestResult:
         now = datetime.now(timezone.utc)
+
+        evidence = dict(finding.evidence)
+        evidence["source_test_case_ids"] = finding.source_test_case_ids
+
+        if finding.cvss_score is not None:
+            evidence["cvss_score"] = finding.cvss_score
+        if finding.cvss_vector:
+            evidence["cvss_vector"] = finding.cvss_vector
+        if finding.severity_label:
+            evidence["severity_label"] = finding.severity_label
+        if finding.confidence:
+            evidence["confidence"] = finding.confidence
+        if finding.vuln_category:
+            evidence["vuln_category"] = finding.vuln_category
+        if finding.chain_id:
+            evidence["chain_id"] = finding.chain_id
+            if finding.chain_position is not None:
+                evidence["chain_position"] = finding.chain_position
+        if finding.trust_boundaries:
+            evidence["trust_boundaries"] = finding.trust_boundaries
+        if finding.hunting_skill_id:
+            evidence["hunting_skill_id"] = finding.hunting_skill_id
+        if finding.corroborating_modules:
+            evidence["corroborating_modules"] = finding.corroborating_modules
+        if finding.confidence_factors:
+            evidence["confidence_factors"] = finding.confidence_factors
+        if finding.attack_complexity:
+            evidence["attack_complexity"] = finding.attack_complexity
+
+        desc = f"{finding.description} Standard reference: {finding.standard_reference}."
+        if finding.severity_label and finding.cvss_score is not None:
+            desc += f" Severity: {finding.severity_label.upper()} (CVSS {finding.cvss_score:.1f})."
+        if finding.confidence:
+            desc += f" Confidence: {finding.confidence}."
+
         return TestResult(
             test_case_id=finding.finding_id,
             category=self.category,
             name=finding.title,
-            description=f"{finding.description} Standard reference: {finding.standard_reference}.",
-            input_parameters={**finding.evidence, "source_test_case_ids": finding.source_test_case_ids},
+            description=desc,
+            input_parameters=evidence,
             expected="N/A - this is a derived finding, not a pass/fail check against a single expectation.",
             actual=finding.observation,
             status=finding.status,
@@ -204,29 +491,66 @@ class DiscoveryEngine:
             duration_ms=0.0,
         )
 
-    def _summary_result(self, findings: list[Finding]) -> TestResult:
+    def _summary_result(
+        self,
+        findings: list[Finding],
+        severity_counts: dict[str, int],
+        confidence_counts: dict[str, int],
+        chain_ids: set[str],
+        overall_elapsed: float,
+    ) -> TestResult:
         now = datetime.now(timezone.utc)
-        counts: dict[str, int] = {}
-        for finding in findings:
-            key = finding.status.value if hasattr(finding.status, "value") else str(finding.status)
-            counts[key] = counts.get(key, 0) + 1
-        counts_desc = ", ".join(f"{count} {status}" for status, count in sorted(counts.items()))
-        rollup = ResultStatus.FAIL if counts.get("FAIL") else (ResultStatus.WARNING if counts.get("WARNING") else ResultStatus.INFO)
+
+        severity_desc = ", ".join(
+            f"{count} {label}"
+            for label, count in sorted(
+                severity_counts.items(),
+                key=lambda x: _SEVERITY_ORDER.get(x[0], 99),
+            )
+        )
+
+        confidence_desc = ", ".join(
+            f"{count} {label}" for label, count in sorted(confidence_counts.items())
+        )
+
+        chain_desc = f"{len(chain_ids)} exploit chain(s) detected" if chain_ids else "no exploit chains"
+
+        rollup = ResultStatus.FAIL
+        if not severity_counts.get("critical") and not severity_counts.get("high"):
+            rollup = ResultStatus.WARNING if severity_counts.get("medium") else ResultStatus.INFO
 
         return TestResult(
             test_case_id="DISCOVERY-SUMMARY",
             category=self.category,
-            name="Intelligent Finding Discovery (summary)",
+            name="Intelligent Finding Discovery (six-phase summary)",
             description=(
-                "Aggregate rollup of every finding the discovery layer derived this run from the 10 modules' "
-                "own collected evidence (see DISCOVERY-* above for each finding's full evidence and standard "
-                "reference)."
+                "Aggregate rollup of every finding the six-phase discovery pipeline "
+                "derived this run. Phase 1: reconnaissance & surface mapping. "
+                "Phase 2: deep pattern hunting. Phase 3: cross-module correlation. "
+                "Phase 4: adversarial validation. Phase 5: CVSS scoring & chain "
+                "synthesis. Phase 6: severity-ranked reporting."
             ),
-            input_parameters={"finding_count": len(findings)},
+            input_parameters={
+                "finding_count": len(findings),
+                "severity_distribution": dict(severity_counts),
+                "confidence_distribution": dict(confidence_counts),
+                "chain_count": len(chain_ids),
+                "chain_ids": sorted(chain_ids),
+                "total_duration_ms": round(overall_elapsed * 1000, 1),
+                "phase_timings": [
+                    {"phase": name, "duration_ms": ms, "findings": count}
+                    for name, ms, count in self._phase_timings
+                ],
+            },
             expected="N/A - aggregate rollup.",
-            actual=f"{len(findings)} finding(s) derived from {len(self.all_results)} result(s) this run: {counts_desc}.",
+            actual=(
+                f"{len(findings)} finding(s) derived from {len(self.all_results)} "
+                f"result(s) in {overall_elapsed * 1000:.0f}ms. "
+                f"Severity: {severity_desc}. Confidence: {confidence_desc}. "
+                f"{chain_desc.capitalize()}."
+            ),
             status=rollup,
             started_at=now,
             finished_at=now,
-            duration_ms=0.0,
+            duration_ms=round(overall_elapsed * 1000, 1),
         )
