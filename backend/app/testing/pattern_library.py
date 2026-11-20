@@ -624,6 +624,44 @@ REVERSE_ENGINEERING_ARTIFACTS: list[tuple[str, re.Pattern[str]]] = [
     ("anti_debug_js", re.compile(r"(?:debugger\s*;|Function\(\"debugger\"\)|setInterval.*?debugger)", re.I)),
     ("anti_tamper_check", re.compile(r"(?:integrity\s*check|tamper\s*detect|checksum\s*mismatch|signature\s*invalid)", re.I)),
     ("obfuscation_layer", re.compile(r"(?:_0x[a-f0-9]{4,}|\\x[0-9a-f]{2}(?:\\x[0-9a-f]{2}){5,})", re.I)),
+    # --- WAF/CDN fingerprinting artifacts ---
+    ("waf_cloudflare_sig", re.compile(r"(?:cf-ray|cf-cache-status|__cfduid|cf-request-id|server:\s*cloudflare|Attention Required)", re.I)),
+    ("waf_akamai_sig", re.compile(r"(?:x-akamai-|akamai-origin|ak_bmsc|bm_sz|_abck|AkamaiGHost)", re.I)),
+    ("waf_incapsula_sig", re.compile(r"(?:incap_ses_|visid_incap_|x-iinfo|Incapsula incident ID)", re.I)),
+    ("waf_datadome_sig", re.compile(r"(?:datadome|_dd_s|x-datadome)", re.I)),
+    ("waf_perimeterx_sig", re.compile(r"(?:_px[0-9]|px-|perimeterx|x-px-|_pxhd|__pxvid)", re.I)),
+    ("waf_shape_sig", re.compile(r"(?:_imp_apg_|x-distil-|distil_)", re.I)),
+    ("waf_kasada_sig", re.compile(r"(?:x-kpsdk-|kpsdk-|kasada)", re.I)),
+    ("waf_f5_sig", re.compile(r"(?:BigIP|BIGipServer|x-cnection|f5-|TS[0-9a-f]{6,})", re.I)),
+    ("waf_modsecurity_sig", re.compile(r"(?:mod_security|NOYB|modsecurity|ModSecurity)", re.I)),
+    ("waf_sucuri_sig", re.compile(r"(?:x-sucuri-|sucuri-|x-sucuri-id|x-sucuri-cache)", re.I)),
+    ("waf_barracuda_sig", re.compile(r"(?:barra_counter_session|barracuda)", re.I)),
+    ("waf_fortiweb_sig", re.compile(r"(?:FORTIWAFSID=|fortiweb|fortigate)", re.I)),
+    ("waf_netscaler_sig", re.compile(r"(?:ns_af=|NSC_|nnCoection|Citrix-TransactionId)", re.I)),
+    ("waf_wallarm_sig", re.compile(r"(?:x-wallarm-|wallarm|nginx-wallarm)", re.I)),
+    ("waf_wordfence_sig", re.compile(r"(?:wordfence|wfvt_|wf_loginalerted)", re.I)),
+    ("waf_block_page", re.compile(r"(?:Access Denied|Request Blocked|Security Policy|Captcha Required|Challenge Required|Automated Request Detected)", re.I)),
+    # --- Bot detection / fingerprinting JS ---
+    ("browser_fingerprint_js", re.compile(r"(?:fp\.js|fingerprint\.js|fpjs|botd|device-detect|clientjs)", re.I)),
+    ("canvas_fingerprint", re.compile(r"(?:canvas.*?toDataURL|getImageData|toBlob).*?(?:fingerprint|track|identify)", re.I | re.S)),
+    ("webgl_fingerprint", re.compile(r"(?:WebGLRenderingContext|WEBGL_debug_renderer_info|getParameter\(.*?RENDERER\))", re.I)),
+    ("audio_fingerprint", re.compile(r"(?:AudioContext.*?createOscillator|OfflineAudioContext|analyser\.getFloatFrequencyData)", re.I | re.S)),
+    ("navigator_probe", re.compile(r"(?:navigator\.(?:plugins|languages|hardwareConcurrency|deviceMemory|maxTouchPoints|userAgent))", re.I)),
+    ("bot_tracking_cookie", re.compile(r"(?:__cf_bm|_abck|ak_bmsc|bm_sz|reese84|cf_clearance|_pxhd|__pxvid|__bot)", re.I)),
+    # --- JWT / token structure ---
+    ("jwt_token_exposed", re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*")),
+    ("jwt_alg_none_indicator", re.compile(r'"alg"\s*:\s*"(?:none|None|NONE|nOnE)"', re.I)),
+    # --- Error oracle / info leak ---
+    ("error_user_enumeration", re.compile(r"(?:user not found|email not found|does not exist|no such user|unknown user|no account)", re.I)),
+    ("error_field_validation_leak", re.compile(r'"(?:errors|detail|violations)":\s*\[\s*\{.*?"(?:field|property|param)"', re.I | re.S)),
+    ("error_db_schema_leak", re.compile(r"(?:relation\s+\"\w+\"\s+does not exist|Unknown column|table\s+\'\w+\'\s+doesn)", re.I)),
+    # --- Rate limit info leak ---
+    ("ratelimit_header_leak", re.compile(r"(?:x-ratelimit-(?:limit|remaining|reset)|retry-after:\s*\d+)", re.I)),
+    ("ratelimit_config_body", re.compile(r'"(?:rate_limit|rateLimit|throttle)"\s*:\s*\{', re.I)),
+    # --- Tech stack leak ---
+    ("tech_stack_server", re.compile(r"server:\s*(?:apache|nginx|iis|express|gunicorn|uvicorn|openresty|jetty|tomcat|caddy|lighttpd)", re.I)),
+    ("tech_stack_powered_by", re.compile(r"x-powered-by:\s*(?:express|php|asp\.net|django|flask|next\.js|nuxt|rails|fastapi)", re.I)),
+    ("tech_stack_framework_error", re.compile(r"(?:werkzeug|Traceback|spring.*?whitelabel|laravel|__CakePHP|Yii\\|Slim\\Application)", re.I)),
 ]
 
 

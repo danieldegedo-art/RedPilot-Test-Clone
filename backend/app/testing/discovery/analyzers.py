@@ -3025,20 +3025,120 @@ _OBFUSCATION_RE = re.compile(
     re.I,
 )
 
+# WAF/CDN fingerprint signatures (vendor, header/cookie/body regex, weight)
+_WAF_FINGERPRINT_SIGS: list[tuple[str, re.Pattern[str], str, float]] = [
+    ("cloudflare", re.compile(r'(?:cf-ray|cf-cache-status|__cfduid|cf-request-id|server:\s*cloudflare)', re.I), "header", 0.95),
+    ("aws_waf", re.compile(r'(?:x-amzn-requestid|x-amz-cf-id|x-amz-apigw-id|AWSALB)', re.I), "header+cookie", 0.90),
+    ("aws_cloudfront", re.compile(r'(?:x-amz-cf-id|x-amz-cf-pop|via.*cloudfront)', re.I), "header", 0.90),
+    ("akamai", re.compile(r'(?:x-akamai-|akamai-origin|ak_bmsc|bm_sz|_abck)', re.I), "header+cookie", 0.90),
+    ("fastly", re.compile(r'(?:x-served-by.*cache|x-cache.*fastly|fastly-)', re.I), "header", 0.85),
+    ("incapsula", re.compile(r'(?:incap_ses_|visid_incap_|x-cdn.*incapsula|_incapsula)', re.I), "header+cookie", 0.90),
+    ("sucuri", re.compile(r'(?:x-sucuri-|sucuri-|x-sucuri-cache|x-sucuri-id)', re.I), "header", 0.85),
+    ("f5_bigip", re.compile(r'(?:BigIP|BIGipServer|x-cnection|f5-|TS[0-9a-f]{6,})', re.I), "header+cookie", 0.85),
+    ("modsecurity", re.compile(r'(?:mod_security|NOYB|modsecurity)', re.I), "header+body", 0.80),
+    ("datadome", re.compile(r'(?:datadome|_dd_s|x-datadome)', re.I), "header+cookie", 0.90),
+    ("perimeterx", re.compile(r'(?:_px[0-9]|px-|perimeterx|x-px-)', re.I), "header+cookie", 0.90),
+    ("kasada", re.compile(r'(?:x-kpsdk-|kpsdk-|kasada)', re.I), "header", 0.85),
+    ("shape_security", re.compile(r'(?:_imp_apg_|x-distil-|distil_)', re.I), "header+cookie", 0.85),
+    ("reblaze", re.compile(r'(?:rbzid|x-reblaze-|reblaze)', re.I), "header+cookie", 0.80),
+    ("vercel", re.compile(r'(?:x-vercel-|x-now-|__vercel)', re.I), "header+cookie", 0.80),
+    ("netlify", re.compile(r'(?:x-nf-|netlify)', re.I), "header", 0.75),
+    ("barracuda", re.compile(r'(?:barra_counter_session|barracuda)', re.I), "cookie", 0.85),
+    ("fortiweb", re.compile(r'(?:FORTIWAFSID=|fortiweb|fortigate)', re.I), "cookie+header", 0.85),
+    ("citrix_netscaler", re.compile(r'(?:ns_af=|NSC_|nnCoection)', re.I), "cookie+header", 0.85),
+    ("wallarm", re.compile(r'(?:x-wallarm-|wallarm|nginx-wallarm)', re.I), "header", 0.80),
+    ("wordfence", re.compile(r'(?:wordfence|wfvt_|wf_loginalerted)', re.I), "header+cookie", 0.80),
+    ("sqreen", re.compile(r'(?:x-sqreen-|sqreen)', re.I), "header", 0.80),
+]
+
+# Tech stack fingerprinting patterns
+_TECH_STACK_SIGS: list[tuple[str, re.Pattern[str], str]] = [
+    ("express", re.compile(r'x-powered-by:\s*express', re.I), "header"),
+    ("django", re.compile(r'(?:csrftoken|csrfmiddlewaretoken|django|wsgiserver)', re.I), "header+body"),
+    ("rails", re.compile(r'(?:x-runtime|x-request-id.*[a-f0-9-]{36}|_rails_|action_dispatch)', re.I), "header+body"),
+    ("flask", re.compile(r'(?:werkzeug|flask|jinja2)', re.I), "header+body"),
+    ("fastapi", re.compile(r'(?:fastapi|uvicorn|starlette)', re.I), "header+body"),
+    ("spring", re.compile(r'(?:x-application-context|spring|whitelabel.*error)', re.I), "header+body"),
+    ("laravel", re.compile(r'(?:laravel_session|XSRF-TOKEN|laravel)', re.I), "header+cookie"),
+    ("nextjs", re.compile(r'(?:x-nextjs-|__next|next-router|_next/)', re.I), "header+body"),
+    ("aspnet", re.compile(r'(?:asp\.net|__viewstate|__eventvalidation|x-aspnet-version)', re.I), "header+body"),
+    ("php", re.compile(r'(?:x-powered-by:\s*php|PHPSESSID|\.php)', re.I), "header+cookie+body"),
+    ("golang", re.compile(r'(?:x-powered-by:\s*go|gorilla|fiber|gin-gonic)', re.I), "header"),
+    ("node", re.compile(r'(?:x-powered-by:\s*node|connect\.sid)', re.I), "header+cookie"),
+    ("stripe_sdk", re.compile(r'(?:stripe-version|stripe-account|idempotency-key)', re.I), "header"),
+    ("graphql", re.compile(r'(?:__typename|"data"\s*:\s*\{.*?"errors"\s*:)', re.I), "body"),
+    ("grpc", re.compile(r'(?:application/grpc|grpc-status|grpc-message)', re.I), "header"),
+]
+
+# JWT token regex
+_JWT_TOKEN_RE = re.compile(r'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*')
+
+# Bot detection / browser fingerprinting patterns
+_BOT_DETECTION_RE = re.compile(
+    r'(?:fp\.js|fingerprint\.js|fpjs|botd|device-detect|'
+    r'clientjs|canvas.*?toDataURL|navigator\.(?:plugins|languages|hardwareConcurrency)|'
+    r'screen\.(?:width|height|colorDepth)|WebGLRenderingContext|'
+    r'AudioContext.*?createOscillator|_imp_apg_)',
+    re.I,
+)
+_BOT_DETECTION_COOKIES_RE = re.compile(
+    r'(?:__cf_bm|__cfduid|_dd_s|datadome|px_|__bot|_abck|ak_bmsc|bm_sz|'
+    r'reese84|cf_clearance|_pxhd|__pxvid)',
+    re.I,
+)
+
+# Error oracle patterns
+_AUTH_ERROR_ORACLE_RE = re.compile(
+    r'(?:not found|does not exist|invalid.*(?:user|email|account)|'
+    r'no such|unknown.*(?:user|email)|incorrect.*password|'
+    r'invalid.*credentials|expired|locked|disabled|'
+    r'user.*not.*registered|email.*not.*found|account.*suspended)',
+    re.I,
+)
+
+# WAF block page detection
+_WAF_BLOCK_RE = re.compile(
+    r'(?:access denied|forbidden.*request|request blocked|security policy|'
+    r'automated.*(?:request|access)|bot.*detect|challenge.*required|'
+    r'captcha.*required|please verify|ray id|cloudflare|'
+    r'incapsula incident|error reference|akamai.*ghost)',
+    re.I,
+)
+
 
 def analyze_reverse_engineering_artifacts(results: list[TestResult]) -> list[Finding]:
-    """Extracts hidden information useful for reverse engineering: API docs,
-    source maps, debug headers, internal routes, obfuscated code."""
+    """Comprehensive reverse engineering artifact extraction with:
+    - API documentation/schema discovery
+    - Source map references
+    - Debug/trace header exposure
+    - Internal route references
+    - Obfuscation detection
+    - WAF/CDN fingerprinting (22 vendors)
+    - Technology stack identification (15 frameworks)
+    - JWT token structure analysis
+    - Bot detection/fingerprinting code detection
+    - Error oracle identification
+    - Timing side-channel indicators
+    - WAF block page analysis"""
     findings: list[Finding] = []
     seen: set[str] = set()
     debug_headers_found: dict[str, list[str]] = defaultdict(list)
+    waf_detections: dict[str, list[str]] = defaultdict(list)
+    tech_detections: dict[str, list[str]] = defaultdict(list)
+    endpoint_errors: dict[str, dict[int, list[str]]] = defaultdict(lambda: defaultdict(list))
+    endpoint_timings: dict[str, dict[int, list[float]]] = defaultdict(lambda: defaultdict(list))
 
     for result in results:
         if result.response is None:
             continue
         path = _request_path(result) or "unknown"
         text = _body_as_text(result.response.body) if result.response.body else ""
+        resp_headers = result.response.headers or {}
+        lower_headers = {k.lower(): v for k, v in resp_headers.items()}
+        status_code = result.response.status_code or 0
+        combined = str(resp_headers).lower() + "\n" + text[:5000].lower()
 
+        # --- API documentation ---
         if _API_DOC_RE.search(text):
             dedup = f"re-apidoc-{result.test_case_id}"
             if dedup not in seen:
@@ -3059,6 +3159,7 @@ def analyze_reverse_engineering_artifacts(results: list[TestResult]) -> list[Fin
                     )
                 )
 
+        # --- Source map ---
         if _SOURCE_MAP_RE.search(text):
             dedup = f"re-sourcemap-{result.test_case_id}"
             if dedup not in seen:
@@ -3078,11 +3179,12 @@ def analyze_reverse_engineering_artifacts(results: list[TestResult]) -> list[Fin
                     )
                 )
 
-        resp_headers = result.response.headers or {}
+        # --- Debug headers ---
         for header_name, header_val in resp_headers.items():
             if _DEBUG_HEADER_RE.match(header_name):
                 debug_headers_found[header_name.lower()].append(result.test_case_id)
 
+        # --- Internal routes ---
         internal_refs = _INTERNAL_ROUTE_RE.findall(text)
         if internal_refs:
             dedup = f"re-internal-{result.test_case_id}"
@@ -3103,6 +3205,7 @@ def analyze_reverse_engineering_artifacts(results: list[TestResult]) -> list[Fin
                     )
                 )
 
+        # --- Obfuscation ---
         if _OBFUSCATION_RE.search(text):
             dedup = f"re-obfuscated-{result.test_case_id}"
             if dedup not in seen:
@@ -3122,6 +3225,144 @@ def analyze_reverse_engineering_artifacts(results: list[TestResult]) -> list[Fin
                     )
                 )
 
+        # --- WAF/CDN fingerprinting ---
+        for waf_name, waf_re, _source, _weight in _WAF_FINGERPRINT_SIGS:
+            if waf_re.search(combined):
+                waf_detections[waf_name].append(result.test_case_id)
+
+        # --- Tech stack fingerprinting ---
+        for tech_name, tech_re, _source in _TECH_STACK_SIGS:
+            if tech_re.search(combined):
+                tech_detections[tech_name].append(result.test_case_id)
+
+        # --- JWT token analysis ---
+        jwt_matches = _JWT_TOKEN_RE.findall(text + "\n" + str(resp_headers))
+        for jwt_token in jwt_matches[:3]:
+            dedup = f"re-jwt-{jwt_token[:30]}"
+            if dedup in seen:
+                continue
+            seen.add(dedup)
+            parts = jwt_token.split(".")
+            if len(parts) >= 2:
+                import base64
+                try:
+                    padded = parts[0] + "=" * (4 - len(parts[0]) % 4)
+                    hdr = json.loads(base64.urlsafe_b64decode(padded))
+                    padded_p = parts[1] + "=" * (4 - len(parts[1]) % 4)
+                    payload = json.loads(base64.urlsafe_b64decode(padded_p))
+
+                    alg = hdr.get("alg", "unknown")
+                    vulns = []
+                    if alg.lower() == "none":
+                        vulns.append("alg_none")
+                    if alg.lower() == "hs256":
+                        vulns.append("hs256_weak_key_risk")
+                    if not payload.get("exp"):
+                        vulns.append("no_expiry")
+                    if len(parts) >= 3 and not parts[2]:
+                        vulns.append("empty_signature")
+
+                    sev = ResultStatus.FAIL if vulns else ResultStatus.WARNING
+                    findings.append(
+                        Finding(
+                            finding_id=f"DISCOVERY-RE-JWT-{result.test_case_id}-{len(findings)}",
+                            title=f"JWT token analyzed [{alg}]: {path}",
+                            description=(
+                                f"JWT decoded: algorithm={alg}, {len(payload)} claims. "
+                                + (f"VULNERABILITIES: {vulns}" if vulns else "No obvious weaknesses.")
+                            ),
+                            status=sev,
+                            observation=f"JWT token with {len(payload)} claims found at {path}.",
+                            standard_reference="CWE-327 Broken Crypto; RFC 7519 JWT",
+                            source_test_case_ids=[result.test_case_id],
+                            evidence={
+                                "path": path,
+                                "algorithm": alg,
+                                "claims": sorted(payload.keys())[:20],
+                                "vulnerability_flags": vulns,
+                                "issuer": payload.get("iss"),
+                            },
+                            vuln_category=VulnCategory.AUTH_BYPASS.value if vulns else VulnCategory.INFO_DISCLOSURE.value,
+                            confidence="high" if vulns else "medium",
+                            re_method="jwt_token_analysis",
+                            behavioral_signature=f"jwt_{alg}_{len(payload)}_claims",
+                        )
+                    )
+                except Exception:
+                    pass
+
+        # --- Bot detection / browser fingerprinting ---
+        if _BOT_DETECTION_RE.search(text):
+            dedup = f"re-botdetect-{result.test_case_id}"
+            if dedup not in seen:
+                seen.add(dedup)
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-RE-BOTDETECT-{result.test_case_id}",
+                        title=f"Browser fingerprinting / bot detection code: {path}",
+                        description="Client-side fingerprinting or bot detection JavaScript detected. Anti-RE countermeasure.",
+                        status=ResultStatus.INFO,
+                        observation=f"Browser fingerprinting code in response for {result.test_case_id}.",
+                        standard_reference="OWASP; Anti-Automation",
+                        source_test_case_ids=[result.test_case_id],
+                        evidence={"path": path},
+                        vuln_category=VulnCategory.INFO_DISCLOSURE.value,
+                        re_method="bot_detection_analysis",
+                    )
+                )
+
+        cookie_header = lower_headers.get("set-cookie", "")
+        if _BOT_DETECTION_COOKIES_RE.search(cookie_header):
+            dedup = f"re-botcookie-{result.test_case_id}"
+            if dedup not in seen:
+                seen.add(dedup)
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-RE-BOTCOOKIE-{result.test_case_id}",
+                        title=f"Bot detection tracking cookie: {path}",
+                        description="Bot detection / anti-automation tracking cookie set. Indicates active bot mitigation.",
+                        status=ResultStatus.INFO,
+                        observation=f"Bot detection cookie in Set-Cookie for {result.test_case_id}.",
+                        standard_reference="OWASP; Anti-Automation",
+                        source_test_case_ids=[result.test_case_id],
+                        evidence={"path": path, "cookie_snippet": cookie_header[:100]},
+                        vuln_category=VulnCategory.INFO_DISCLOSURE.value,
+                        re_method="bot_cookie_detection",
+                    )
+                )
+
+        # --- Error oracle collection ---
+        if 400 <= status_code < 500 and text:
+            normalized = re.sub(r'[0-9a-f-]{8,}', '<ID>', text[:500])
+            normalized = re.sub(r'\d{10,}', '<TS>', normalized)
+            endpoint_errors[path][status_code].append(normalized[:300])
+
+        # --- Timing collection ---
+        elapsed = result.response.elapsed_ms if hasattr(result.response, "elapsed_ms") else 0
+        if elapsed and elapsed > 0:
+            endpoint_timings[path][status_code].append(float(elapsed))
+
+        # --- WAF block page ---
+        if status_code == 403 and _WAF_BLOCK_RE.search(text):
+            dedup = f"re-wafblock-{result.test_case_id}"
+            if dedup not in seen:
+                seen.add(dedup)
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-RE-WAFBLOCK-{result.test_case_id}",
+                        title=f"WAF block page detected: {path}",
+                        description="A WAF/CDN block page was returned, confirming active web application firewall protection.",
+                        status=ResultStatus.INFO,
+                        observation=f"WAF block page (HTTP 403) for {result.test_case_id}.",
+                        standard_reference="OWASP; WAF Detection",
+                        source_test_case_ids=[result.test_case_id],
+                        evidence={"path": path, "status": 403},
+                        vuln_category=VulnCategory.INFO_DISCLOSURE.value,
+                        re_method="waf_block_page_detection",
+                    )
+                )
+
+    # --- Aggregate: debug headers ---
     for header_name, affected in debug_headers_found.items():
         if len(affected) >= 3:
             findings.append(
@@ -3136,6 +3377,131 @@ def analyze_reverse_engineering_artifacts(results: list[TestResult]) -> list[Fin
                     evidence={"header": header_name, "count": len(affected)},
                     vuln_category=VulnCategory.INFO_DISCLOSURE.value,
                     re_method="debug_header_discovery",
+                )
+            )
+
+    # --- Aggregate: WAF/CDN fingerprints ---
+    for waf_name, affected in waf_detections.items():
+        weight = 0.80
+        for _n, _r, _s, w in _WAF_FINGERPRINT_SIGS:
+            if _n == waf_name:
+                weight = w
+                break
+        findings.append(
+            Finding(
+                finding_id=f"DISCOVERY-RE-WAF-{waf_name}",
+                title=f"WAF/CDN identified: {waf_name}",
+                description=(
+                    f"WAF/CDN fingerprinted as '{waf_name}' across {len(affected)} responses. "
+                    "Knowledge of WAF vendor enables targeted bypass techniques."
+                ),
+                status=ResultStatus.INFO,
+                observation=f"WAF '{waf_name}' detected in {len(affected)} responses.",
+                standard_reference="OWASP; Awesome-WAF; WAF Bypass Techniques",
+                source_test_case_ids=sorted(set(affected))[:10],
+                evidence={"waf_vendor": waf_name, "detection_count": len(affected)},
+                vuln_category=VulnCategory.INFO_DISCLOSURE.value,
+                confidence="high" if weight >= 0.90 else "medium",
+                re_method="waf_cdn_fingerprinting",
+                behavioral_signature=f"waf_{waf_name}",
+            )
+        )
+
+    # --- Aggregate: Technology stack ---
+    if tech_detections:
+        all_tech_ids: list[str] = []
+        for ids in tech_detections.values():
+            all_tech_ids.extend(ids)
+        findings.append(
+            Finding(
+                finding_id="DISCOVERY-RE-TECHSTACK",
+                title=f"Technology stack identified: {', '.join(sorted(tech_detections.keys()))}",
+                description=(
+                    f"Server technology fingerprinted: {sorted(tech_detections.keys())}. "
+                    "Knowledge of backend framework/language enables targeted exploit selection."
+                ),
+                status=ResultStatus.INFO,
+                observation=f"Technologies detected: {sorted(tech_detections.keys())}.",
+                standard_reference="CWE-200; OWASP Fingerprinting",
+                source_test_case_ids=sorted(set(all_tech_ids))[:10],
+                evidence={"technologies": {k: len(v) for k, v in tech_detections.items()}},
+                vuln_category=VulnCategory.INFO_DISCLOSURE.value,
+                confidence="medium",
+                re_method="tech_stack_fingerprinting",
+            )
+        )
+
+    # --- Aggregate: Error oracles ---
+    for ep, status_errors in endpoint_errors.items():
+        for status_code, error_texts in status_errors.items():
+            unique_errors = set(error_texts)
+            if len(unique_errors) >= 3:
+                auth_oracle = any(_AUTH_ERROR_ORACLE_RE.search(e) for e in unique_errors)
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-RE-ERRORACLE-{ep.replace('/', '_')}-{status_code}",
+                        title=f"Error oracle: {len(unique_errors)} distinct errors at {ep} (HTTP {status_code})",
+                        description=(
+                            f"{len(unique_errors)} unique error messages for HTTP {status_code} at {ep}. "
+                            + ("AUTH ORACLE: different messages reveal valid vs invalid users. " if auth_oracle else "")
+                            + "Distinct errors leak internal validation logic and execution paths."
+                        ),
+                        status=ResultStatus.WARNING if auth_oracle else ResultStatus.INFO,
+                        observation=f"{len(unique_errors)} distinct error messages at {ep}.",
+                        standard_reference="CWE-209 Error Message Information Leak; Vaudenay Oracle Attacks",
+                        source_test_case_ids=[],
+                        evidence={
+                            "endpoint": ep,
+                            "status": status_code,
+                            "unique_error_count": len(unique_errors),
+                            "is_auth_oracle": auth_oracle,
+                        },
+                        vuln_category=VulnCategory.INFO_DISCLOSURE.value,
+                        confidence="high" if auth_oracle else "medium",
+                        re_method="error_oracle_analysis",
+                    )
+                )
+
+    # --- Aggregate: Timing side-channels ---
+    for ep, status_timings in endpoint_timings.items():
+        if len(status_timings) < 2:
+            continue
+        timing_means: dict[int, float] = {}
+        for sc, times in status_timings.items():
+            if len(times) >= 2:
+                timing_means[sc] = sum(times) / len(times)
+        if len(timing_means) < 2:
+            continue
+        mean_values = list(timing_means.values())
+        max_m = max(mean_values)
+        min_m = min(mean_values)
+        if min_m > 0 and (max_m / min_m) > 2.0:
+            slow_sc = max(timing_means, key=timing_means.get)  # type: ignore[arg-type]
+            fast_sc = min(timing_means, key=timing_means.get)  # type: ignore[arg-type]
+            findings.append(
+                Finding(
+                    finding_id=f"DISCOVERY-RE-TIMING-{ep.replace('/', '_')}",
+                    title=f"Timing side-channel: {ep} ({max_m / min_m:.1f}x variance)",
+                    description=(
+                        f"Status {slow_sc} takes {timing_means[slow_sc]:.0f}ms vs "
+                        f"{fast_sc} at {timing_means[fast_sc]:.0f}ms "
+                        f"({max_m / min_m:.1f}x). Different code paths executed."
+                    ),
+                    status=ResultStatus.WARNING,
+                    observation=f"Timing variance {max_m / min_m:.1f}x between status codes at {ep}.",
+                    standard_reference="CWE-208 Timing Side-Channel; Kocher 1996",
+                    source_test_case_ids=[],
+                    evidence={
+                        "endpoint": ep,
+                        "slow_status": slow_sc,
+                        "slow_ms": round(timing_means[slow_sc], 1),
+                        "fast_status": fast_sc,
+                        "fast_ms": round(timing_means[fast_sc], 1),
+                        "ratio": round(max_m / min_m, 2),
+                    },
+                    vuln_category=VulnCategory.INFO_DISCLOSURE.value,
+                    confidence="medium",
+                    re_method="timing_side_channel_analysis",
                 )
             )
 

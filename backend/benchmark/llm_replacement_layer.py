@@ -1280,14 +1280,40 @@ class EvidenceCorrelator:
 # ============================================================================
 
 class ReverseEngineeringEngine:
-    """Infers server-side rules, state machines, rate-limit configs, and
-    auth models purely from observed request/response patterns."""
+    """Advanced reverse engineering engine that infers server-side architecture,
+    business logic, security controls, and hidden attack surface purely from
+    observed request/response patterns.
+
+    Techniques drawn from:
+    - Timing side-channel analysis (Kocher et al., applied to web)
+    - Error oracle / padding oracle methodologies (Vaudenay, Duong-Rizzo)
+    - Behavioral differential analysis (compare responses across auth levels)
+    - WAF/CDN fingerprinting (signature-based + behavioral)
+    - Server technology fingerprinting (header analysis, error page signatures)
+    - Token structure analysis (JWT decode, opaque entropy measurement)
+    - API graph reconstruction (endpoint relationship mapping)
+    - Response body diff analysis for server-side branching detection
+    - Rate limit algorithm fingerprinting (fixed/sliding/token-bucket inference)
+    - Cache behavior probing (HIT/MISS pattern analysis)
+    - Multi-step flow state dependency mapping
+
+    All purely retrospective -- analyses I/O already captured, never sends
+    new requests.
+    """
 
     def __init__(self) -> None:
         self._observations: list[dict[str, Any]] = []
+        self._timing_cache: dict[str, list[float]] = defaultdict(list)
 
     def add_observation(self, observation: dict[str, Any]) -> None:
         self._observations.append(observation)
+        resp = observation.get("response_data") or {}
+        req = observation.get("request_data") or {}
+        elapsed = resp.get("elapsed_ms", 0)
+        url = str(req.get("url", ""))
+        path = urlparse(url).path if url else ""
+        if path and elapsed:
+            self._timing_cache[path].append(float(elapsed))
 
     def infer_validation_rules(self) -> list[dict[str, Any]]:
         rules: list[dict[str, Any]] = []
@@ -1457,6 +1483,21 @@ class ReverseEngineeringEngine:
                 measures.append({"type": "rate_limiting_headers", "detail": "Rate limit headers present"})
             if re.search(r'"(?:captcha|recaptcha|hcaptcha|turnstile)"', body_text, re.I):
                 measures.append({"type": "captcha_protection", "detail": "CAPTCHA challenge detected in response"})
+            if re.search(r"(?:x-frame-options|content-security-policy)", str(lower_headers), re.I):
+                measures.append({"type": "clickjacking_protection", "detail": "Frame/CSP anti-embedding present"})
+            if "set-cookie" in lower_headers and re.search(r"(?:__cf_bm|__cfduid|_dd_s|datadome|px_|__bot)", lower_headers.get("set-cookie", ""), re.I):
+                measures.append({"type": "bot_detection_cookie", "detail": "Bot detection tracking cookie set"})
+            if re.search(r"(?:x-robots-tag|x-crawler-|x-bot-)", str(lower_headers), re.I):
+                measures.append({"type": "crawler_control", "detail": "Crawler/bot control headers"})
+            fp_js_patterns = re.search(
+                r"(?:fp\.js|fingerprint\.js|fpjs|botd|device-detect|"
+                r"clientjs|canvas.*?toDataURL|navigator\.(?:plugins|languages|hardwareConcurrency)|"
+                r"screen\.(?:width|height|colorDepth)|WebGLRenderingContext|"
+                r"AudioContext.*?createOscillator)",
+                body_text, re.I,
+            )
+            if fp_js_patterns:
+                measures.append({"type": "browser_fingerprinting", "detail": "Client-side fingerprinting code detected"})
 
         seen = set()
         deduped: list[dict[str, Any]] = []
@@ -1470,7 +1511,7 @@ class ReverseEngineeringEngine:
     def map_hidden_endpoints(self) -> list[dict[str, Any]]:
         observed_paths: set[str] = set()
         referenced_paths: set[str] = set()
-        url_re = re.compile(r'"(?:url|href|link|endpoint|redirect_url|return_url|next)":\s*"(/[^"]+)"')
+        url_re = re.compile(r'"(?:url|href|link|endpoint|redirect_url|return_url|next|action|callback_url|webhook_url|success_url|cancel_url)":\s*"((?:https?://[^"]+|/[^"]+))"')
 
         for obs in self._observations:
             req = obs.get("request_data") or {}
@@ -1482,12 +1523,18 @@ class ReverseEngineeringEngine:
 
             body_text = _body_as_text(resp.get("body")) if resp.get("body") is not None else ""
             for match in url_re.finditer(body_text):
-                referenced_paths.add(match.group(1))
+                ref = match.group(1)
+                parsed = urlparse(ref)
+                referenced_paths.add(parsed.path or ref)
+
+            path_refs = re.findall(r'(?<=["\'])/(?:api|v[0-9]+|internal|admin|debug|_)[\w/.-]+', body_text)
+            for p in path_refs:
+                referenced_paths.add(p)
 
         hidden = referenced_paths - observed_paths
         return [
             {"path": p, "type": "referenced_but_untested"}
-            for p in sorted(hidden)[:20]
+            for p in sorted(hidden)[:30]
         ]
 
     def infer_data_model(self) -> list[dict[str, Any]]:
@@ -1513,6 +1560,894 @@ class ReverseEngineeringEngine:
                 })
         return models[:20]
 
+    # ------------------------------------------------------------------
+    # ADVANCED RE: Timing side-channel analysis (Kocher methodology)
+    # ------------------------------------------------------------------
+
+    def analyze_timing_side_channels(self) -> list[dict[str, Any]]:
+        """Detect timing-based information leaks. Variable response times
+        across auth paths reveal server-side branching (e.g. user-exists
+        vs user-not-found taking different time due to bcrypt).
+
+        Technique: compare timing distributions for same endpoint under
+        different conditions. A statistically significant difference in
+        mean response time indicates different code paths executed."""
+        findings: list[dict[str, Any]] = []
+
+        endpoint_timing_by_status: dict[str, dict[int, list[float]]] = defaultdict(lambda: defaultdict(list))
+
+        for obs in self._observations:
+            req = obs.get("request_data") or {}
+            resp = obs.get("response_data") or {}
+            status = resp.get("status_code", 0)
+            elapsed = resp.get("elapsed_ms", 0)
+            if not elapsed:
+                continue
+            url = str(req.get("url", ""))
+            path = urlparse(url).path if url else ""
+            if path:
+                endpoint_timing_by_status[path][status].append(float(elapsed))
+
+        for ep, status_timings in endpoint_timing_by_status.items():
+            if len(status_timings) < 2:
+                continue
+
+            timing_means: dict[int, float] = {}
+            for status, times in status_timings.items():
+                if len(times) >= 2:
+                    timing_means[status] = sum(times) / len(times)
+
+            if len(timing_means) < 2:
+                continue
+
+            mean_values = list(timing_means.values())
+            max_mean = max(mean_values)
+            min_mean = min(mean_values)
+            if min_mean > 0 and (max_mean / min_mean) > 2.0:
+                slow_status = max(timing_means, key=timing_means.get)  # type: ignore[arg-type]
+                fast_status = min(timing_means, key=timing_means.get)  # type: ignore[arg-type]
+                findings.append({
+                    "endpoint": ep,
+                    "type": "timing_side_channel",
+                    "slow_status": slow_status,
+                    "slow_mean_ms": round(timing_means[slow_status], 1),
+                    "fast_status": fast_status,
+                    "fast_mean_ms": round(timing_means[fast_status], 1),
+                    "ratio": round(max_mean / min_mean, 2),
+                    "inferred": (
+                        f"Status {slow_status} takes {timing_means[slow_status]:.0f}ms avg vs "
+                        f"{fast_status} at {timing_means[fast_status]:.0f}ms "
+                        f"({max_mean / min_mean:.1f}x slower) -- different code paths"
+                    ),
+                })
+
+            auth_statuses = {401, 403}
+            success_statuses = {200, 201, 204}
+            auth_times = []
+            success_times = []
+            for s, times in status_timings.items():
+                if s in auth_statuses:
+                    auth_times.extend(times)
+                elif s in success_statuses:
+                    success_times.extend(times)
+
+            if auth_times and success_times and len(auth_times) >= 2 and len(success_times) >= 2:
+                auth_mean = sum(auth_times) / len(auth_times)
+                success_mean = sum(success_times) / len(success_times)
+                if auth_mean > 0 and success_mean > 0:
+                    ratio = max(auth_mean, success_mean) / min(auth_mean, success_mean)
+                    if ratio > 1.5:
+                        slower = "auth_failure" if auth_mean > success_mean else "auth_success"
+                        findings.append({
+                            "endpoint": ep,
+                            "type": "auth_timing_oracle",
+                            "auth_mean_ms": round(auth_mean, 1),
+                            "success_mean_ms": round(success_mean, 1),
+                            "ratio": round(ratio, 2),
+                            "inferred": (
+                                f"Auth decisions leak timing: {slower} path is {ratio:.1f}x slower. "
+                                "May reveal valid vs invalid credentials or user enumeration."
+                            ),
+                        })
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # ADVANCED RE: Error oracle analysis (Vaudenay / Bleichenbacher style)
+    # ------------------------------------------------------------------
+
+    def analyze_error_oracles(self) -> list[dict[str, Any]]:
+        """Error oracle detection: different error messages for same endpoint
+        reveal internal branching logic, database schema, auth checks.
+
+        Classic error oracle attacks: different errors for "user not found"
+        vs "wrong password" enable account enumeration. Different 400/422
+        messages reveal validation ordering and field presence requirements."""
+        findings: list[dict[str, Any]] = []
+
+        endpoint_errors: dict[str, dict[int, list[str]]] = defaultdict(lambda: defaultdict(list))
+
+        for obs in self._observations:
+            req = obs.get("request_data") or {}
+            resp = obs.get("response_data") or {}
+            status = resp.get("status_code", 0)
+            if not (400 <= status < 500):
+                continue
+            url = str(req.get("url", ""))
+            path = urlparse(url).path if url else ""
+            body_text = _body_as_text(resp.get("body")) if resp.get("body") is not None else ""
+            if path and body_text:
+                endpoint_errors[path][status].append(body_text[:500])
+
+        for ep, status_errors in endpoint_errors.items():
+            for status, error_texts in status_errors.items():
+                if len(error_texts) < 2:
+                    continue
+
+                unique_errors = set()
+                for t in error_texts:
+                    normalized = re.sub(r'[0-9a-f-]{8,}', '<ID>', t)
+                    normalized = re.sub(r'\d{10,}', '<TS>', normalized)
+                    unique_errors.add(normalized[:300])
+
+                if len(unique_errors) >= 3:
+                    error_keywords: set[str] = set()
+                    for err in unique_errors:
+                        error_keywords.update(re.findall(
+                            r'"(?:message|error|detail|reason|code|field|type)":\s*"([^"]{3,80})"', err, re.I
+                        ))
+
+                    auth_oracle = any(re.search(
+                        r'(?:not found|does not exist|invalid.*(?:user|email|account)|'
+                        r'no such|unknown.*(?:user|email)|incorrect.*password|'
+                        r'invalid.*credentials|expired|locked|disabled)',
+                        err, re.I,
+                    ) for err in unique_errors)
+
+                    findings.append({
+                        "endpoint": ep,
+                        "status_code": status,
+                        "type": "error_oracle",
+                        "unique_error_count": len(unique_errors),
+                        "total_errors": len(error_texts),
+                        "is_auth_oracle": auth_oracle,
+                        "error_keywords": sorted(error_keywords)[:15],
+                        "inferred": (
+                            f"{len(unique_errors)} distinct error messages for HTTP {status} at {ep}. "
+                            + ("AUTH ORACLE: different messages reveal valid vs invalid users/credentials. " if auth_oracle else "")
+                            + f"Leaked keywords: {sorted(error_keywords)[:8]}"
+                        ),
+                    })
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # ADVANCED RE: WAF/CDN fingerprinting
+    # ------------------------------------------------------------------
+
+    _WAF_SIGNATURES: list[tuple[str, str, str]] = [
+        ("cloudflare", r"(?:cf-ray|cf-cache-status|__cfduid|cf-request-id|cloudflare)", "header+cookie"),
+        ("aws_waf", r"(?:x-amzn-requestid|x-amz-cf-id|x-amz-apigw-id|awselb/|AWSALB)", "header+cookie"),
+        ("aws_cloudfront", r"(?:x-amz-cf-id|x-amz-cf-pop|via.*cloudfront)", "header"),
+        ("akamai", r"(?:x-akamai-|akamai-origin|ak_bmsc|bm_sz|_abck)", "header+cookie"),
+        ("fastly", r"(?:x-served-by.*cache|x-cache.*fastly|fastly-)", "header"),
+        ("incapsula", r"(?:incap_ses_|visid_incap_|x-cdn.*incapsula|_incapsula)", "header+cookie"),
+        ("sucuri", r"(?:x-sucuri-|sucuri-|x-sucuri-cache)", "header"),
+        ("f5_big_ip", r"(?:BigIP|BIGipServer|x-cnection|f5-|TS[0-9a-f]{6,})", "header+cookie"),
+        ("modsecurity", r"(?:mod_security|NOYB|modsecurity)", "header+body"),
+        ("datadome", r"(?:datadome|_dd_s|x-datadome)", "header+cookie"),
+        ("perimeterx", r"(?:_px[0-9]|px-|perimeterx|x-px-)", "header+cookie"),
+        ("kasada", r"(?:x-kpsdk-|kpsdk-|kasada)", "header"),
+        ("shape_security", r"(?:_imp_apg_|x-distil-|distil_)", "header+cookie"),
+        ("reblaze", r"(?:rbzid|x-reblaze-|reblaze)", "header+cookie"),
+        ("vercel", r"(?:x-vercel-|x-now-|__vercel)", "header+cookie"),
+        ("netlify", r"(?:x-nf-|netlify)", "header"),
+        ("nginx", r"(?:^nginx$|nginx/)", "server_header"),
+        ("apache", r"(?:^Apache|Apache/)", "server_header"),
+        ("iis", r"(?:Microsoft-IIS|ASP\.NET)", "server_header"),
+        ("envoy", r"(?:x-envoy-|envoy|server:\s*envoy)", "header"),
+        ("kong", r"(?:x-kong-|kong|server:\s*kong)", "header"),
+        ("traefik", r"(?:x-traefik-|traefik)", "header"),
+    ]
+
+    def fingerprint_waf_cdn(self) -> list[dict[str, Any]]:
+        """WAF/CDN fingerprinting from response signatures.
+
+        Each WAF leaves fingerprints in headers, cookies, error pages.
+        Knowing the WAF type reveals its bypass techniques catalog
+        (PayloadsAllTheThings, WAF bypass cheat sheets)."""
+        detected: dict[str, dict[str, Any]] = {}
+
+        for obs in self._observations:
+            resp = obs.get("response_data") or {}
+            headers = resp.get("headers") or {}
+            body_text = _body_as_text(resp.get("body")) if resp.get("body") is not None else ""
+            combined = str(headers).lower() + "\n" + body_text[:2000].lower()
+
+            for waf_name, pattern, _source in self._WAF_SIGNATURES:
+                if waf_name in detected:
+                    continue
+                if re.search(pattern, combined, re.I):
+                    server = headers.get("server", headers.get("Server", ""))
+                    detected[waf_name] = {
+                        "waf_cdn": waf_name,
+                        "type": "waf_fingerprint",
+                        "server_header": server,
+                        "confidence": "high" if waf_name in ("cloudflare", "aws_waf", "akamai") else "medium",
+                        "inferred": f"WAF/CDN identified: {waf_name}",
+                    }
+
+        for obs in self._observations:
+            resp = obs.get("response_data") or {}
+            status = resp.get("status_code", 0)
+            body_text = _body_as_text(resp.get("body")) if resp.get("body") is not None else ""
+            if status == 403 and "waf_block_page" not in detected:
+                block_sigs = [
+                    (r"access denied|forbidden.*request", "generic_waf"),
+                    (r"ray id|cloudflare", "cloudflare_block"),
+                    (r"request blocked|security policy", "waf_policy_block"),
+                    (r"automated.*(?:request|access)|bot.*detect", "bot_detection_block"),
+                ]
+                for sig_re, sig_name in block_sigs:
+                    if re.search(sig_re, body_text, re.I):
+                        detected["waf_block_page"] = {
+                            "waf_cdn": sig_name,
+                            "type": "waf_block_page",
+                            "status": status,
+                            "inferred": f"WAF block page detected ({sig_name})",
+                        }
+                        break
+
+        return list(detected.values())
+
+    # ------------------------------------------------------------------
+    # ADVANCED RE: Server technology stack fingerprinting
+    # ------------------------------------------------------------------
+
+    _TECH_PATTERNS: list[tuple[str, str, str]] = [
+        ("express", r"(?:x-powered-by:\s*express|Express)", "header"),
+        ("django", r"(?:csrftoken|csrfmiddlewaretoken|django|wsgiserver)", "header+body"),
+        ("rails", r"(?:x-runtime|x-request-id.*[a-f0-9-]{36}|_rails_|action_dispatch)", "header+body"),
+        ("flask", r"(?:werkzeug|flask|jinja2)", "header+body"),
+        ("fastapi", r"(?:fastapi|uvicorn|starlette)", "header+body"),
+        ("spring", r"(?:x-application-context|spring|whitelabel.*error)", "header+body"),
+        ("laravel", r"(?:laravel_session|XSRF-TOKEN|laravel)", "header+cookie"),
+        ("nextjs", r"(?:x-nextjs-|__next|next-router|_next/)", "header+body"),
+        ("nuxt", r"(?:__nuxt|nuxt|_nuxt/)", "body"),
+        ("aspnet", r"(?:asp\.net|__viewstate|__eventvalidation|x-aspnet-version)", "header+body"),
+        ("php", r"(?:x-powered-by:\s*php|phpsessid|\.php)", "header+cookie+body"),
+        ("golang", r"(?:x-powered-by:\s*go|gorilla|fiber|gin-gonic)", "header"),
+        ("node", r"(?:x-powered-by:\s*node|connect\.sid)", "header+cookie"),
+        ("stripe_sdk", r"(?:stripe-version|stripe-account|idempotency-key|stripe\.js)", "header+body"),
+        ("graphql", r"(?:graphql|__typename|\"data\"\s*:\s*\{.*\"errors\"\s*:)", "body"),
+        ("websocket", r"(?:upgrade:\s*websocket|sec-websocket|ws://|wss://)", "header+body"),
+        ("grpc", r"(?:application/grpc|grpc-status|grpc-message)", "header"),
+        ("elasticsearch", r"(?:x-elastic-|elasticsearch|_search|_mapping)", "header+body"),
+        ("redis", r"(?:redis|x-redis-)", "header+body"),
+        ("postgresql", r"(?:pg_|postgres|relation.*does not exist|column.*does not exist)", "body"),
+        ("mysql", r"(?:mysql|You have an error in your SQL syntax|Unknown column)", "body"),
+        ("mongodb", r"(?:mongo|MongoError|BSON|ObjectId)", "body"),
+    ]
+
+    def fingerprint_tech_stack(self) -> list[dict[str, Any]]:
+        """Server technology stack fingerprinting from response artifacts.
+
+        Identifies backend language/framework, database, caching layer,
+        API gateway from response headers, error messages, cookies."""
+        detected: dict[str, dict[str, Any]] = {}
+
+        for obs in self._observations:
+            resp = obs.get("response_data") or {}
+            headers = resp.get("headers") or {}
+            body_text = _body_as_text(resp.get("body")) if resp.get("body") is not None else ""
+            combined = str(headers).lower() + "\n" + body_text[:3000].lower()
+
+            for tech_name, pattern, _source in self._TECH_PATTERNS:
+                if tech_name in detected:
+                    continue
+                if re.search(pattern, combined, re.I):
+                    detected[tech_name] = {
+                        "technology": tech_name,
+                        "type": "tech_fingerprint",
+                        "inferred": f"Technology detected: {tech_name}",
+                    }
+
+        return list(detected.values())
+
+    # ------------------------------------------------------------------
+    # ADVANCED RE: Token structure analysis (JWT, opaque, session)
+    # ------------------------------------------------------------------
+
+    def analyze_token_structures(self) -> list[dict[str, Any]]:
+        """Decode and analyze authentication token structures.
+
+        JWT: decode header+payload (no signature verification needed for RE),
+        extract algorithm, expiry, claims, issuer.
+        Opaque tokens: measure entropy, detect patterns.
+        Session tokens: identify server-side vs client-side session."""
+        findings: list[dict[str, Any]] = []
+        seen_tokens: set[str] = set()
+
+        jwt_re = re.compile(r'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*')
+
+        for obs in self._observations:
+            resp = obs.get("response_data") or {}
+            req = obs.get("request_data") or {}
+            body_text = _body_as_text(resp.get("body")) if resp.get("body") is not None else ""
+            all_headers = {**(req.get("headers") or {}), **(resp.get("headers") or {})}
+            combined = body_text + "\n" + str(all_headers)
+
+            for jwt_match in jwt_re.finditer(combined):
+                token = jwt_match.group(0)
+                token_prefix = token[:40]
+                if token_prefix in seen_tokens:
+                    continue
+                seen_tokens.add(token_prefix)
+
+                parts = token.split(".")
+                if len(parts) >= 2:
+                    import base64
+                    try:
+                        padded_header = parts[0] + "=" * (4 - len(parts[0]) % 4)
+                        header_bytes = base64.urlsafe_b64decode(padded_header)
+                        header_json = json.loads(header_bytes)
+
+                        padded_payload = parts[1] + "=" * (4 - len(parts[1]) % 4)
+                        payload_bytes = base64.urlsafe_b64decode(padded_payload)
+                        payload_json = json.loads(payload_bytes)
+
+                        alg = header_json.get("alg", "unknown")
+                        kid = header_json.get("kid")
+                        typ = header_json.get("typ", "JWT")
+
+                        exp = payload_json.get("exp")
+                        iss = payload_json.get("iss")
+                        sub = payload_json.get("sub")
+                        aud = payload_json.get("aud")
+                        scope = payload_json.get("scope", payload_json.get("scp"))
+                        claims = sorted(payload_json.keys())
+
+                        vuln_flags = []
+                        if alg.lower() in ("none", "hs256") and "RS" in str(header_json):
+                            vuln_flags.append("alg_confusion_risk")
+                        if alg.lower() == "none":
+                            vuln_flags.append("alg_none_accepted")
+                        if alg.lower() == "hs256":
+                            vuln_flags.append("hs256_weak_key_risk")
+                        if not exp:
+                            vuln_flags.append("no_expiry")
+                        if not parts[2]:
+                            vuln_flags.append("empty_signature")
+
+                        findings.append({
+                            "type": "jwt_analysis",
+                            "algorithm": alg,
+                            "key_id": kid,
+                            "token_type": typ,
+                            "issuer": iss,
+                            "subject": str(sub)[:20] + "..." if sub and len(str(sub)) > 20 else sub,
+                            "audience": aud,
+                            "scope": scope,
+                            "claims": claims[:20],
+                            "has_expiry": exp is not None,
+                            "vulnerability_flags": vuln_flags,
+                            "inferred": (
+                                f"JWT [{alg}]: {len(claims)} claims, "
+                                f"issuer={iss}, "
+                                + (f"VULNS: {vuln_flags}" if vuln_flags else "no obvious weaknesses")
+                            ),
+                        })
+                    except Exception:
+                        pass
+
+            auth_header = ""
+            for k, v in all_headers.items():
+                if k.lower() == "authorization":
+                    auth_header = str(v)
+                    break
+
+            if auth_header and not auth_header.startswith("Bearer eyJ"):
+                token_val = auth_header.split(" ", 1)[-1] if " " in auth_header else auth_header
+                if len(token_val) >= 20 and token_val[:3] != "eyJ":
+                    entropy = len(set(token_val)) / max(len(token_val), 1)
+                    findings.append({
+                        "type": "opaque_token_analysis",
+                        "token_length": len(token_val),
+                        "char_entropy": round(entropy, 3),
+                        "prefix": token_val[:8] + "...",
+                        "looks_like": (
+                            "hex" if re.match(r'^[0-9a-f]+$', token_val, re.I) else
+                            "base64" if re.match(r'^[A-Za-z0-9+/=]+$', token_val) else
+                            "uuid" if re.match(r'^[0-9a-f]{8}-', token_val, re.I) else
+                            "custom"
+                        ),
+                        "inferred": f"Opaque token: {len(token_val)} chars, entropy={entropy:.2f}",
+                    })
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # ADVANCED RE: Response differential / behavioral fingerprinting
+    # ------------------------------------------------------------------
+
+    def analyze_response_differentials(self) -> list[dict[str, Any]]:
+        """Behavioral fingerprinting via response differentials.
+
+        Compare response bodies for the same endpoint across different auth
+        contexts, methods, and parameters to detect:
+        - Fields hidden/exposed based on auth level (horizontal priv esc hints)
+        - Content variation revealing server-side feature flags
+        - Response size clustering indicating different code paths"""
+        findings: list[dict[str, Any]] = []
+
+        endpoint_responses: dict[str, list[dict[str, Any]]] = defaultdict(list)
+
+        for obs in self._observations:
+            req = obs.get("request_data") or {}
+            resp = obs.get("response_data") or {}
+            url = str(req.get("url", ""))
+            path = urlparse(url).path if url else ""
+            status = resp.get("status_code", 0)
+            if path and 200 <= status < 300:
+                body = resp.get("body")
+                body_text = _body_as_text(body) if body is not None else ""
+                has_auth = any(
+                    h.lower() in ("authorization", "x-api-key", "cookie")
+                    for h in (req.get("headers") or {})
+                )
+                fields = set()
+                if isinstance(body, dict):
+                    fields = set(body.keys())
+                endpoint_responses[path].append({
+                    "has_auth": has_auth,
+                    "status": status,
+                    "body_length": len(body_text),
+                    "fields": fields,
+                    "method": req.get("method", "GET"),
+                })
+
+        for ep, responses in endpoint_responses.items():
+            authed = [r for r in responses if r["has_auth"]]
+            unauthed = [r for r in responses if not r["has_auth"]]
+
+            if authed and unauthed:
+                authed_fields = set()
+                unauthed_fields = set()
+                for r in authed:
+                    authed_fields |= r["fields"]
+                for r in unauthed:
+                    unauthed_fields |= r["fields"]
+
+                extra_authed = authed_fields - unauthed_fields
+                if extra_authed:
+                    findings.append({
+                        "endpoint": ep,
+                        "type": "auth_field_differential",
+                        "extra_authenticated_fields": sorted(extra_authed)[:20],
+                        "total_authed_fields": len(authed_fields),
+                        "total_unauthed_fields": len(unauthed_fields),
+                        "inferred": (
+                            f"Auth-gated fields: {sorted(extra_authed)[:5]} "
+                            "only appear in authenticated responses"
+                        ),
+                    })
+
+            if len(responses) >= 3:
+                sizes = [r["body_length"] for r in responses]
+                if sizes:
+                    mean_size = sum(sizes) / len(sizes)
+                    if mean_size > 0:
+                        clusters: dict[str, int] = defaultdict(int)
+                        for s in sizes:
+                            bucket = "small" if s < mean_size * 0.5 else ("large" if s > mean_size * 1.5 else "medium")
+                            clusters[bucket] += 1
+                        if len([c for c in clusters.values() if c > 0]) >= 2:
+                            findings.append({
+                                "endpoint": ep,
+                                "type": "response_size_clustering",
+                                "clusters": dict(clusters),
+                                "mean_size": int(mean_size),
+                                "size_range": [min(sizes), max(sizes)],
+                                "inferred": (
+                                    f"Response size varies {min(sizes)}-{max(sizes)} bytes "
+                                    f"({len(clusters)} clusters) indicating conditional logic"
+                                ),
+                            })
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # ADVANCED RE: Rate limit algorithm fingerprinting
+    # ------------------------------------------------------------------
+
+    def fingerprint_rate_limit_algorithm(self) -> list[dict[str, Any]]:
+        """Infer the rate limiting algorithm from observed behavior.
+
+        Differentiates: fixed window, sliding window, token bucket, leaky
+        bucket, and adaptive rate limiting by analyzing the pattern of
+        429 responses relative to request timing and volume."""
+        findings: list[dict[str, Any]] = []
+
+        endpoint_events: dict[str, list[tuple[float, int, dict]]] = defaultdict(list)
+
+        for obs in self._observations:
+            req = obs.get("request_data") or {}
+            resp = obs.get("response_data") or {}
+            status = resp.get("status_code", 0)
+            elapsed = resp.get("elapsed_ms", 0)
+            timestamp = obs.get("timestamp", 0)
+            url = str(req.get("url", ""))
+            path = urlparse(url).path if url else ""
+            headers = resp.get("headers") or {}
+            if path:
+                endpoint_events[path].append((float(timestamp), status, {
+                    "elapsed": elapsed,
+                    "retry_after": headers.get("retry-after", headers.get("Retry-After")),
+                    "remaining": headers.get("x-ratelimit-remaining", headers.get("X-RateLimit-Remaining")),
+                    "limit": headers.get("x-ratelimit-limit", headers.get("X-RateLimit-Limit")),
+                    "reset": headers.get("x-ratelimit-reset", headers.get("X-RateLimit-Reset")),
+                }))
+
+        for ep, events in endpoint_events.items():
+            rate_limited = [(ts, s, h) for ts, s, h in events if s == 429]
+            if not rate_limited:
+                continue
+
+            limit_val = None
+            remaining_values = []
+            for _, _, h in events:
+                if h.get("limit"):
+                    try:
+                        limit_val = int(h["limit"])
+                    except (ValueError, TypeError):
+                        pass
+                if h.get("remaining") is not None:
+                    try:
+                        remaining_values.append(int(h["remaining"]))
+                    except (ValueError, TypeError):
+                        pass
+
+            algo_guess = "unknown"
+            confidence = "low"
+
+            if remaining_values:
+                is_monotonic_decrease = all(
+                    remaining_values[i] >= remaining_values[i + 1]
+                    for i in range(len(remaining_values) - 1)
+                ) if len(remaining_values) >= 3 else False
+
+                if is_monotonic_decrease:
+                    algo_guess = "token_bucket_or_fixed_window"
+                    confidence = "medium"
+                else:
+                    jumps = sum(
+                        1 for i in range(len(remaining_values) - 1)
+                        if remaining_values[i + 1] > remaining_values[i]
+                    )
+                    if jumps > 0 and limit_val:
+                        algo_guess = "sliding_window"
+                        confidence = "medium"
+
+            retry_after_values = []
+            for _, _, h in rate_limited:
+                ra = h.get("retry_after")
+                if ra:
+                    try:
+                        retry_after_values.append(float(ra))
+                    except (ValueError, TypeError):
+                        pass
+
+            if retry_after_values:
+                if len(set(retry_after_values)) == 1:
+                    algo_guess = "fixed_window" if algo_guess == "unknown" else algo_guess
+                    confidence = "high" if confidence != "low" else "medium"
+                elif len(set(retry_after_values)) > 1:
+                    algo_guess = "adaptive_or_leaky_bucket"
+                    confidence = "medium"
+
+            findings.append({
+                "endpoint": ep,
+                "type": "rate_limit_algorithm",
+                "algorithm_guess": algo_guess,
+                "confidence": confidence,
+                "rate_limited_count": len(rate_limited),
+                "total_requests": len(events),
+                "declared_limit": limit_val,
+                "retry_after_values": retry_after_values[:10],
+                "remaining_pattern": remaining_values[:10],
+                "inferred": (
+                    f"Rate limit algorithm: {algo_guess} (confidence: {confidence}). "
+                    f"Limit: {limit_val}, {len(rate_limited)}/{len(events)} throttled."
+                ),
+            })
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # ADVANCED RE: API graph / relationship mapping
+    # ------------------------------------------------------------------
+
+    def map_api_graph(self) -> list[dict[str, Any]]:
+        """Reconstruct the API resource graph from observed URL patterns
+        and cross-references in response bodies.
+
+        Maps parent/child relationships, shared ID references, and
+        multi-step flows to reveal the application's data model and
+        business logic flows."""
+        findings: list[dict[str, Any]] = []
+
+        path_re = re.compile(r'^(/(?:api/)?(?:v\d+/)?)(\w+)(?:/([^/]+))?(?:/(\w+))?')
+        resources: dict[str, set[str]] = defaultdict(set)
+        id_cross_refs: dict[str, set[str]] = defaultdict(set)
+
+        for obs in self._observations:
+            req = obs.get("request_data") or {}
+            resp = obs.get("response_data") or {}
+            url = str(req.get("url", ""))
+            path = urlparse(url).path if url else ""
+            match = path_re.match(path)
+            if match:
+                prefix, resource, resource_id, sub_resource = match.groups()
+                resources[resource].add(req.get("method", "GET"))
+                if sub_resource:
+                    id_cross_refs[resource].add(sub_resource)
+
+            body_text = _body_as_text(resp.get("body")) if resp.get("body") is not None else ""
+            id_refs = re.findall(
+                r'"(\w+_id)":\s*"([^"]+)"', body_text,
+            )
+            for id_field, id_val in id_refs:
+                ref_resource = id_field.replace("_id", "")
+                id_cross_refs[ref_resource].add(path)
+
+        resource_list = []
+        for resource, methods in resources.items():
+            resource_list.append({
+                "resource": resource,
+                "methods": sorted(methods),
+                "sub_resources": sorted(id_cross_refs.get(resource, set()))[:10],
+            })
+
+        if resource_list:
+            findings.append({
+                "type": "api_graph",
+                "resources": resource_list[:30],
+                "total_resources": len(resource_list),
+                "cross_references": {k: sorted(v)[:5] for k, v in id_cross_refs.items() if len(v) >= 2},
+                "inferred": f"API graph: {len(resource_list)} resources, {sum(len(v) for v in id_cross_refs.values())} cross-references",
+            })
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # ADVANCED RE: Cache behavior analysis
+    # ------------------------------------------------------------------
+
+    def analyze_cache_behavior(self) -> list[dict[str, Any]]:
+        """Analyze cache hit/miss patterns to infer caching strategy and
+        identify cache-busting opportunities."""
+        findings: list[dict[str, Any]] = []
+
+        cache_patterns: dict[str, dict[str, int]] = defaultdict(lambda: {"hit": 0, "miss": 0, "dynamic": 0, "bypass": 0, "expired": 0, "total": 0})
+
+        for obs in self._observations:
+            req = obs.get("request_data") or {}
+            resp = obs.get("response_data") or {}
+            url = str(req.get("url", ""))
+            path = urlparse(url).path if url else ""
+            headers = resp.get("headers") or {}
+            lower_headers = {k.lower(): v for k, v in headers.items()}
+
+            cache_status = (
+                lower_headers.get("cf-cache-status", "") or
+                lower_headers.get("x-cache", "") or
+                lower_headers.get("x-vercel-cache", "") or
+                lower_headers.get("x-nf-request-id", "")
+            ).upper()
+            age = lower_headers.get("age", "")
+            cache_control = lower_headers.get("cache-control", "")
+
+            if path:
+                cache_patterns[path]["total"] += 1
+                if "HIT" in cache_status:
+                    cache_patterns[path]["hit"] += 1
+                elif "MISS" in cache_status:
+                    cache_patterns[path]["miss"] += 1
+                elif "DYNAMIC" in cache_status or "BYPASS" in cache_status:
+                    cache_patterns[path]["dynamic"] += 1
+                elif "EXPIRED" in cache_status or "REVALIDATED" in cache_status:
+                    cache_patterns[path]["expired"] += 1
+
+        for ep, counts in cache_patterns.items():
+            if counts["total"] < 2:
+                continue
+            if counts["hit"] + counts["miss"] + counts["expired"] > 0:
+                hit_rate = counts["hit"] / max(counts["total"], 1)
+                findings.append({
+                    "endpoint": ep,
+                    "type": "cache_behavior",
+                    "hit_rate": round(hit_rate, 2),
+                    "hits": counts["hit"],
+                    "misses": counts["miss"],
+                    "dynamic": counts["dynamic"],
+                    "expired": counts["expired"],
+                    "total": counts["total"],
+                    "inferred": (
+                        f"Cache: {hit_rate:.0%} hit rate ({counts['hit']}/{counts['total']}). "
+                        + ("Fully cached - cache poisoning viable. " if hit_rate > 0.8 else "")
+                        + ("Never cached - dynamic content. " if counts["dynamic"] == counts["total"] else "")
+                    ),
+                })
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # ADVANCED RE: Multi-step flow state dependency mapping
+    # ------------------------------------------------------------------
+
+    def map_flow_dependencies(self) -> list[dict[str, Any]]:
+        """Map multi-step business flows by tracking IDs that appear in one
+        response and are referenced in a subsequent request.
+
+        This reveals checkout flows, subscription creation sequences,
+        and other multi-step processes an attacker needs to understand
+        before attempting access-without-payment exploits."""
+        findings: list[dict[str, Any]] = []
+
+        response_ids: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        request_ids: dict[str, list[tuple[str, str]]] = defaultdict(list)
+
+        id_re = re.compile(
+            r'"(\w+)":\s*"((?:pi_|sub_|cs_|ch_|in_|cus_|pm_|si_|evt_|txn_|plink_|price_|prod_)[A-Za-z0-9]+)"'
+        )
+
+        for obs in self._observations:
+            req = obs.get("request_data") or {}
+            resp = obs.get("response_data") or {}
+            url = str(req.get("url", ""))
+            path = urlparse(url).path if url else ""
+
+            resp_body = _body_as_text(resp.get("body")) if resp.get("body") is not None else ""
+            for field, val in id_re.findall(resp_body):
+                response_ids[val].append((path, field))
+
+            req_body = _body_as_text(req.get("body")) if req.get("body") is not None else ""
+            req_url_params = str(req.get("params", ""))
+            for field, val in id_re.findall(req_body + req_url_params + url):
+                request_ids[val].append((path, field))
+
+        flows: list[dict[str, Any]] = []
+        for id_val, resp_locations in response_ids.items():
+            if id_val in request_ids:
+                req_locations = request_ids[id_val]
+                source_eps = sorted({ep for ep, _ in resp_locations})
+                target_eps = sorted({ep for ep, _ in req_locations})
+                if source_eps != target_eps:
+                    flows.append({
+                        "id_prefix": id_val[:4] + "...",
+                        "produced_at": source_eps[:5],
+                        "consumed_at": target_eps[:5],
+                        "field_names": sorted({f for _, f in resp_locations + req_locations})[:5],
+                    })
+
+        if flows:
+            findings.append({
+                "type": "flow_dependency_map",
+                "flows": flows[:20],
+                "total_flows": len(flows),
+                "inferred": f"Identified {len(flows)} multi-step flows with cross-endpoint ID dependencies",
+            })
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # ADVANCED RE: Payment-specific deep protocol analysis
+    # ------------------------------------------------------------------
+
+    def analyze_payment_protocol(self) -> list[dict[str, Any]]:
+        """Deep analysis of Stripe/payment protocol patterns to understand
+        the exact sequence of calls needed for access-without-payment."""
+        findings: list[dict[str, Any]] = []
+
+        payment_endpoints: dict[str, list[dict]] = defaultdict(list)
+        stripe_obj_re = re.compile(
+            r'"object":\s*"(payment_intent|checkout\.session|charge|invoice|'
+            r'subscription|customer|setup_intent|payment_method|price|product|'
+            r'coupon|promotion_code|refund)"'
+        )
+
+        for obs in self._observations:
+            req = obs.get("request_data") or {}
+            resp = obs.get("response_data") or {}
+            url = str(req.get("url", ""))
+            path = urlparse(url).path if url else ""
+            body_text = _body_as_text(resp.get("body")) if resp.get("body") is not None else ""
+            status = resp.get("status_code", 0)
+
+            obj_match = stripe_obj_re.search(body_text)
+            if obj_match or re.search(r'(?:stripe|payment|checkout|subscribe|invoice)', path, re.I):
+                body = resp.get("body") if isinstance(resp.get("body"), dict) else {}
+                payment_endpoints[path].append({
+                    "method": req.get("method"),
+                    "status": status,
+                    "object_type": obj_match.group(1) if obj_match else None,
+                    "amount": body.get("amount"),
+                    "currency": body.get("currency"),
+                    "payment_status": body.get("status") or body.get("payment_status"),
+                    "has_client_secret": "client_secret" in body_text,
+                    "mode": body.get("mode"),
+                    "metadata": bool(body.get("metadata")),
+                })
+
+        if payment_endpoints:
+            obj_types_seen = set()
+            statuses_observed = set()
+            for ep, calls in payment_endpoints.items():
+                for c in calls:
+                    if c["object_type"]:
+                        obj_types_seen.add(c["object_type"])
+                    if c["payment_status"]:
+                        statuses_observed.add(c["payment_status"])
+
+            findings.append({
+                "type": "payment_protocol_analysis",
+                "endpoints": {ep: len(calls) for ep, calls in payment_endpoints.items()},
+                "stripe_objects_observed": sorted(obj_types_seen),
+                "payment_statuses_observed": sorted(statuses_observed),
+                "total_payment_calls": sum(len(v) for v in payment_endpoints.values()),
+                "has_client_secret_exposure": any(
+                    c["has_client_secret"] for calls in payment_endpoints.values() for c in calls
+                ),
+                "inferred": (
+                    f"Payment protocol: {len(payment_endpoints)} endpoints, "
+                    f"{sorted(obj_types_seen)} object types, "
+                    f"statuses: {sorted(statuses_observed)}"
+                ),
+            })
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # ADVANCED RE: Content-type negotiation probing analysis
+    # ------------------------------------------------------------------
+
+    def analyze_content_negotiation(self) -> list[dict[str, Any]]:
+        """Analyze how the server responds to different Accept headers and
+        Content-Types to reveal hidden serialization formats."""
+        findings: list[dict[str, Any]] = []
+
+        endpoint_content_types: dict[str, set[str]] = defaultdict(set)
+        for obs in self._observations:
+            req = obs.get("request_data") or {}
+            resp = obs.get("response_data") or {}
+            url = str(req.get("url", ""))
+            path = urlparse(url).path if url else ""
+            resp_ct = ""
+            for k, v in (resp.get("headers") or {}).items():
+                if k.lower() == "content-type":
+                    resp_ct = str(v).split(";")[0].strip().lower()
+                    break
+            if path and resp_ct:
+                endpoint_content_types[path].add(resp_ct)
+
+        for ep, content_types in endpoint_content_types.items():
+            if len(content_types) >= 2:
+                findings.append({
+                    "endpoint": ep,
+                    "type": "content_negotiation",
+                    "content_types": sorted(content_types),
+                    "inferred": (
+                        f"Multiple response Content-Types: {sorted(content_types)}. "
+                        "May accept different serialization formats."
+                    ),
+                })
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # get_all_findings -- now includes all advanced methods
+    # ------------------------------------------------------------------
+
     def get_all_findings(self) -> list[dict[str, Any]]:
         findings: list[dict[str, Any]] = []
         for rule in self.infer_validation_rules():
@@ -1529,6 +2464,30 @@ class ReverseEngineeringEngine:
             findings.append({"type": "hidden_endpoint", **hidden})
         for model in self.infer_data_model():
             findings.append({"type": "data_model", **model})
+        for tc in self.analyze_timing_side_channels():
+            findings.append(tc)
+        for eo in self.analyze_error_oracles():
+            findings.append(eo)
+        for waf in self.fingerprint_waf_cdn():
+            findings.append(waf)
+        for tech in self.fingerprint_tech_stack():
+            findings.append(tech)
+        for token in self.analyze_token_structures():
+            findings.append(token)
+        for diff in self.analyze_response_differentials():
+            findings.append(diff)
+        for rl_algo in self.fingerprint_rate_limit_algorithm():
+            findings.append(rl_algo)
+        for graph in self.map_api_graph():
+            findings.append(graph)
+        for cache in self.analyze_cache_behavior():
+            findings.append(cache)
+        for flow in self.map_flow_dependencies():
+            findings.append(flow)
+        for pay in self.analyze_payment_protocol():
+            findings.append(pay)
+        for cn in self.analyze_content_negotiation():
+            findings.append(cn)
         return findings
 
 
