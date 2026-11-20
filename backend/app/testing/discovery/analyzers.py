@@ -2152,3 +2152,1448 @@ def analyze_response_fingerprinting(results: list[TestResult]) -> list[Finding]:
         )
 
     return findings
+
+
+# ===========================================================================
+# ANALYZERS 25-38: Next-generation detection from advanced offensive research
+#
+# Same retrospective-analysis-only boundary as 1-24.
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# 25. SSTI (Server-Side Template Injection) detection
+# ---------------------------------------------------------------------------
+
+_SSTI_EVAL_RE = re.compile(
+    r'(?:49|7777777|\$\{7\*7\}|'
+    r'\{\{7\*7\}\}|'
+    r'\{\{config\}\}|'
+    r'\{\{self\}\}|'
+    r'<%=\s*7\s*\*\s*7\s*%>|'
+    r'\$\{T\(java\.lang|'
+    r'\{#\s*\d+\s*\*\s*\d+\s*#\}|'
+    r'\{\{\s*\'\'\.__(class|mro|subclasses))',
+    re.I,
+)
+
+_SSTI_ERROR_RE = re.compile(
+    r'(?:TemplateSyntaxError|TemplateError|'
+    r'UndefinedError|Jinja2|Twig|'
+    r'freemarker\.core|template\.exceptions|'
+    r'org\.thymeleaf|ERB::SyntaxError|'
+    r'Smarty.*(?:error|exception))',
+    re.I,
+)
+
+
+def analyze_ssti_indicators(results: list[TestResult]) -> list[Finding]:
+    """Detects Server-Side Template Injection indicators in response bodies."""
+    findings: list[Finding] = []
+    seen: set[str] = set()
+
+    for result in results:
+        if result.response is None or result.response.body is None:
+            continue
+        text = _body_as_text(result.response.body)
+        if len(text) < 3:
+            continue
+        path = _request_path(result)
+
+        if _SSTI_EVAL_RE.search(text):
+            dedup = f"ssti-eval-{result.test_case_id}"
+            if dedup not in seen:
+                seen.add(dedup)
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-SSTI-EVAL-{result.test_case_id}",
+                        title=f"SSTI evaluation artifact detected: {path or 'unknown'}",
+                        description=(
+                            "Server-Side Template Injection: response contains evaluated "
+                            "template expression output (e.g. 49 from {{7*7}}) indicating "
+                            "the server executes template expressions from user input."
+                        ),
+                        status=ResultStatus.FAIL,
+                        observation=f"SSTI evaluation indicator in response for {result.test_case_id}.",
+                        standard_reference="CWE-1336 Server-Side Template Injection; OWASP Injection",
+                        source_test_case_ids=[result.test_case_id],
+                        recommendation="Never pass user input directly into template engines. Use sandboxed templates.",
+                        evidence={"path": path},
+                        cvss_score=9.8,
+                        severity_label="critical",
+                        vuln_category="ssti",
+                        confidence="needs_validation",
+                        cwe_id="CWE-1336",
+                    )
+                )
+
+        if _SSTI_ERROR_RE.search(text):
+            dedup = f"ssti-error-{result.test_case_id}"
+            if dedup not in seen:
+                seen.add(dedup)
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-SSTI-ERROR-{result.test_case_id}",
+                        title=f"Template engine error leak: {path or 'unknown'}",
+                        description="Template engine error messages in response reveal engine type and version.",
+                        status=ResultStatus.WARNING,
+                        observation=f"Template engine error in response for {result.test_case_id}.",
+                        standard_reference="CWE-209 Information Exposure Through Error Message",
+                        source_test_case_ids=[result.test_case_id],
+                        evidence={"path": path},
+                        vuln_category="ssti",
+                        confidence="needs_validation",
+                        cwe_id="CWE-209",
+                    )
+                )
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# 26. NoSQL Injection detection
+# ---------------------------------------------------------------------------
+
+_NOSQL_OPERATOR_RE = re.compile(
+    r'(?:\$(?:gt|gte|lt|lte|ne|in|nin|regex|where|exists|type|size|all|elemMatch|text|search)\b|'
+    r'\$(?:or|and|not|nor)\s*[\[:]|'
+    r'db\.\w+\.(?:find|insert|update|delete|aggregate)|'
+    r'MongoError|BSONTypeError|'
+    r'CastError.*ObjectId|'
+    r'DocumentNotFoundError)',
+    re.I,
+)
+
+_NOSQL_ERROR_RE = re.compile(
+    r'(?:MongoServerError|'
+    r'CouchDB.*error|'
+    r'cassandra\..*Exception|'
+    r'RedisError|'
+    r'ElasticsearchException|'
+    r'invalid.*(?:\$where|\$regex|\$gt))',
+    re.I,
+)
+
+
+def analyze_nosql_injection_indicators(results: list[TestResult]) -> list[Finding]:
+    """Detects NoSQL injection indicators across MongoDB, CouchDB, Redis, etc."""
+    findings: list[Finding] = []
+    seen: set[str] = set()
+
+    for result in results:
+        if result.response is None or result.response.body is None:
+            continue
+        text = _body_as_text(result.response.body)
+        if len(text) < 5:
+            continue
+        path = _request_path(result)
+
+        for label, regex in [("operator", _NOSQL_OPERATOR_RE), ("error", _NOSQL_ERROR_RE)]:
+            match = regex.search(text)
+            if not match:
+                continue
+            dedup = f"nosql-{label}-{result.test_case_id}"
+            if dedup in seen:
+                continue
+            seen.add(dedup)
+
+            start = max(0, match.start() - 30)
+            end = min(len(text), match.end() + 50)
+            snippet = text[start:end].strip()
+
+            is_error = label == "error"
+            findings.append(
+                Finding(
+                    finding_id=f"DISCOVERY-NOSQL-{label.upper()}-{result.test_case_id}",
+                    title=f"NoSQL injection {'error' if is_error else 'operator'}: {path or 'unknown'}",
+                    description=(
+                        "NoSQL injection detection: MongoDB/CouchDB/Redis operator "
+                        "patterns or database error messages in response body."
+                    ),
+                    status=ResultStatus.FAIL if not is_error else ResultStatus.WARNING,
+                    observation=f"NoSQL {label} pattern in response: ...{snippet[:100]}...",
+                    standard_reference="CWE-943 NoSQL Injection; OWASP Injection",
+                    source_test_case_ids=[result.test_case_id],
+                    recommendation="Use parameterized queries. Never construct NoSQL queries from user input.",
+                    evidence={"pattern_type": label, "snippet": snippet[:200], "path": path},
+                    cvss_score=8.6 if not is_error else 5.3,
+                    severity_label="high" if not is_error else "medium",
+                    vuln_category="nosql_injection",
+                    confidence="needs_validation",
+                    cwe_id="CWE-943",
+                )
+            )
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# 27. XXE (XML External Entity) detection
+# ---------------------------------------------------------------------------
+
+_XXE_INDICATORS_RE = re.compile(
+    r'(?:<!ENTITY|<!DOCTYPE.*SYSTEM|'
+    r'SYSTEM\s*"(?:file://|http://|ftp://|php://|expect://|data://)|'
+    r'xmlns:xi=|'
+    r'<xi:include|'
+    r'root:.*:0:0:.*root|'
+    r'SAXParseException|XMLParseError|'
+    r'DOMException.*ENTITY|'
+    r'lxml\.etree\.XMLSyntaxError)',
+    re.I,
+)
+
+
+def analyze_xxe_indicators(results: list[TestResult]) -> list[Finding]:
+    """Detects XML External Entity injection indicators."""
+    findings: list[Finding] = []
+    seen: set[str] = set()
+
+    for result in results:
+        if result.response is None or result.response.body is None:
+            continue
+        text = _body_as_text(result.response.body)
+        if len(text) < 5:
+            continue
+        path = _request_path(result)
+
+        match = _XXE_INDICATORS_RE.search(text)
+        if match:
+            dedup = f"xxe-{result.test_case_id}"
+            if dedup not in seen:
+                seen.add(dedup)
+                start = max(0, match.start() - 20)
+                end = min(len(text), match.end() + 40)
+                snippet = text[start:end].strip()
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-XXE-{result.test_case_id}",
+                        title=f"XXE indicator: {path or 'unknown'}",
+                        description="XML External Entity injection indicators in response.",
+                        status=ResultStatus.FAIL,
+                        observation=f"XXE indicator found: ...{snippet[:100]}...",
+                        standard_reference="CWE-611 XML External Entity; OWASP XXE",
+                        source_test_case_ids=[result.test_case_id],
+                        recommendation="Disable external entity processing in XML parsers.",
+                        evidence={"snippet": snippet[:200], "path": path},
+                        cvss_score=9.1,
+                        severity_label="critical",
+                        vuln_category="xxe",
+                        confidence="needs_validation",
+                        cwe_id="CWE-611",
+                    )
+                )
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# 28. Prototype Pollution detection
+# ---------------------------------------------------------------------------
+
+_PROTO_POLLUTION_RE = re.compile(
+    r'(?:__proto__|'
+    r'constructor\.prototype|'
+    r'Object\.assign\s*\(|'
+    r'\[\"__proto__\"\]|'
+    r'\.hasOwnProperty\s*\(\s*["\']__proto__|'
+    r'Prototype pollution|'
+    r'polluted)',
+    re.I,
+)
+
+
+def analyze_prototype_pollution(results: list[TestResult]) -> list[Finding]:
+    """Detects prototype pollution indicators in JavaScript/Node.js responses."""
+    findings: list[Finding] = []
+    seen: set[str] = set()
+
+    for result in results:
+        if result.response is None or result.response.body is None:
+            continue
+        text = _body_as_text(result.response.body)
+        if len(text) < 5:
+            continue
+        path = _request_path(result)
+
+        if _PROTO_POLLUTION_RE.search(text):
+            dedup = f"protopoll-{result.test_case_id}"
+            if dedup not in seen:
+                seen.add(dedup)
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-PROTOPOLL-{result.test_case_id}",
+                        title=f"Prototype pollution indicator: {path or 'unknown'}",
+                        description=(
+                            "JavaScript prototype pollution: __proto__ or constructor.prototype "
+                            "references in response body suggest the server processes these properties."
+                        ),
+                        status=ResultStatus.WARNING,
+                        observation=f"Prototype pollution indicator in response for {result.test_case_id}.",
+                        standard_reference="CWE-1321 Improperly Controlled Modification of Object Prototype; OWASP",
+                        source_test_case_ids=[result.test_case_id],
+                        recommendation="Sanitize JSON input to strip __proto__ and constructor.prototype before merging.",
+                        evidence={"path": path},
+                        cvss_score=7.5,
+                        severity_label="high",
+                        vuln_category="prototype_pollution",
+                        confidence="needs_validation",
+                        cwe_id="CWE-1321",
+                    )
+                )
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# 29. HTTP Request Smuggling detection
+# ---------------------------------------------------------------------------
+
+_SMUGGLING_INDICATOR_RE = re.compile(
+    r'(?:Transfer-Encoding:\s*chunked.*Content-Length|'
+    r'Content-Length:\s*\d+.*Transfer-Encoding|'
+    r'HTTP/1\.1\s+400.*(?:invalid|bad).*(?:chunk|length|transfer)|'
+    r'(?:CL\.TE|TE\.CL|TE\.TE)\s+(?:desync|smuggl)|'
+    r'request\s+smuggl)',
+    re.I | re.S,
+)
+
+
+def analyze_http_smuggling_indicators(results: list[TestResult]) -> list[Finding]:
+    """Detects HTTP request smuggling indicators from response patterns."""
+    findings: list[Finding] = []
+    seen: set[str] = set()
+
+    cl_te_endpoints: dict[str, list[tuple[TestResult, int | None]]] = defaultdict(list)
+
+    for result in results:
+        if result.response is None:
+            continue
+        path = _request_path(result)
+        if path is None:
+            continue
+
+        resp_headers = result.response.headers or {}
+        lower_headers = {k.lower(): v for k, v in resp_headers.items()}
+        has_te = "transfer-encoding" in lower_headers
+        has_cl = "content-length" in lower_headers
+
+        if has_te and has_cl:
+            norm_path = _normalize_path(path)
+            cl_te_endpoints[norm_path].append((result, result.response.status_code))
+
+        text = _body_as_text(result.response.body) if result.response.body else ""
+        if _SMUGGLING_INDICATOR_RE.search(text):
+            dedup = f"smuggle-{result.test_case_id}"
+            if dedup not in seen:
+                seen.add(dedup)
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-SMUGGLE-{result.test_case_id}",
+                        title=f"HTTP smuggling indicator: {path}",
+                        description="HTTP request smuggling (CL/TE desync) indicators in response.",
+                        status=ResultStatus.FAIL,
+                        observation=f"Request smuggling indicator in {result.test_case_id}.",
+                        standard_reference="CWE-444 HTTP Request/Response Smuggling; PortSwigger Research",
+                        source_test_case_ids=[result.test_case_id],
+                        recommendation="Normalize HTTP parsing between frontend and backend servers.",
+                        evidence={"path": path},
+                        cvss_score=9.1,
+                        severity_label="critical",
+                        vuln_category="http_smuggling",
+                        confidence="needs_validation",
+                        cwe_id="CWE-444",
+                    )
+                )
+
+    for norm_path, entries in cl_te_endpoints.items():
+        if len(entries) >= 2:
+            findings.append(
+                Finding(
+                    finding_id=f"DISCOVERY-CLTE-{norm_path}",
+                    title=f"CL+TE headers both present: {norm_path}",
+                    description="Both Content-Length and Transfer-Encoding headers present, smuggling precondition.",
+                    status=ResultStatus.WARNING,
+                    observation=f"{len(entries)} responses to {norm_path} include both CL and TE headers.",
+                    standard_reference="CWE-444; RFC 7230 Section 3.3.3",
+                    source_test_case_ids=sorted({r.test_case_id for r, _ in entries})[:10],
+                    evidence={"path": norm_path, "count": len(entries)},
+                    vuln_category="http_smuggling",
+                    confidence="low_confidence",
+                    cwe_id="CWE-444",
+                )
+            )
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# 30. Cache Poisoning detection
+# ---------------------------------------------------------------------------
+
+_CACHE_POISON_REFLECTED_HEADERS = [
+    "x-forwarded-host", "x-forwarded-scheme", "x-forwarded-proto",
+    "x-original-url", "x-rewrite-url", "x-custom-ip-authorization",
+]
+
+
+def analyze_cache_poisoning_indicators(results: list[TestResult]) -> list[Finding]:
+    """Detects web cache poisoning indicators."""
+    findings: list[Finding] = []
+    seen: set[str] = set()
+
+    for result in results:
+        if result.response is None or result.response.body is None:
+            continue
+        text = _body_as_text(result.response.body)
+        path = _request_path(result)
+        req_headers = result.request.headers or {} if result.request else {}
+
+        for header_name in _CACHE_POISON_REFLECTED_HEADERS:
+            req_val = None
+            for k, v in req_headers.items():
+                if k.lower() == header_name:
+                    req_val = v
+                    break
+            if req_val and req_val in text:
+                dedup = f"cachepois-{header_name}-{result.test_case_id}"
+                if dedup not in seen:
+                    seen.add(dedup)
+                    findings.append(
+                        Finding(
+                            finding_id=f"DISCOVERY-CACHEPOIS-{header_name}-{result.test_case_id}",
+                            title=f"Cache poisoning: {header_name} reflected in response body",
+                            description=(
+                                "Unkeyed header value reflected in response body. If the response "
+                                "is cached, an attacker can poison the cache with arbitrary content."
+                            ),
+                            status=ResultStatus.WARNING,
+                            observation=f"Header '{header_name}' value reflected in response for {result.test_case_id}.",
+                            standard_reference="CWE-349 Cache Poisoning; PortSwigger Web Cache Poisoning Research",
+                            source_test_case_ids=[result.test_case_id],
+                            recommendation="Strip unkeyed headers at the edge. Add Vary headers. Use cache keys that include security-relevant headers.",
+                            evidence={"header": header_name, "path": path},
+                            cvss_score=7.5,
+                            severity_label="high",
+                            vuln_category="cache_poisoning",
+                            confidence="needs_validation",
+                            cwe_id="CWE-349",
+                        )
+                    )
+
+        resp_headers = result.response.headers or {}
+        cache_headers = {k.lower(): v for k, v in resp_headers.items()}
+        has_cache_control = "cache-control" in cache_headers
+        is_cached = any(h in cache_headers for h in ["x-cache", "cf-cache-status", "x-varnish", "age"])
+
+        if is_cached and not has_cache_control and result.response.status_code == 200:
+            dedup = f"cachepois-nocc-{_normalize_path(path or '')}"
+            if dedup not in seen:
+                seen.add(dedup)
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-CACHEPOIS-NOCC-{result.test_case_id}",
+                        title=f"Cached response without Cache-Control: {path}",
+                        description="Response appears cached but has no Cache-Control header.",
+                        status=ResultStatus.INFO,
+                        observation=f"Cached response for {path} lacks Cache-Control directive.",
+                        standard_reference="CWE-525; RFC 7234",
+                        source_test_case_ids=[result.test_case_id],
+                        evidence={"path": path, "cache_indicators": [h for h in ["x-cache", "cf-cache-status", "x-varnish", "age"] if h in cache_headers]},
+                        vuln_category="cache_poisoning",
+                        confidence="low_confidence",
+                    )
+                )
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# 31. Advanced Rate Limit Bypass detection
+# ---------------------------------------------------------------------------
+
+_RATE_LIMIT_STATUS_CODES = {429, 503}
+_RATE_LIMIT_HEADERS = {"retry-after", "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset", "ratelimit-limit", "ratelimit-remaining", "ratelimit-reset"}
+_FORWARDED_HEADERS = {"x-forwarded-for", "x-real-ip", "true-client-ip", "cf-connecting-ip", "x-client-ip", "forwarded"}
+
+
+def analyze_advanced_rate_limit_bypass(results: list[TestResult]) -> list[Finding]:
+    """Comprehensive rate limit bypass detection: identity confusion,
+    path normalization, method duplication, batching/fan-out."""
+    findings: list[Finding] = []
+
+    endpoint_results: dict[str, list[TestResult]] = defaultdict(list)
+    rate_limited: dict[str, list[TestResult]] = defaultdict(list)
+
+    for result in results:
+        path = _request_path(result)
+        if path is None or result.response is None:
+            continue
+        norm = _normalize_path(path)
+        endpoint_results[norm].append(result)
+
+        if result.response.status_code in _RATE_LIMIT_STATUS_CODES:
+            rate_limited[norm].append(result)
+
+    for norm_path, limited_results in rate_limited.items():
+        all_for_path = endpoint_results.get(norm_path, [])
+        successful = [
+            r for r in all_for_path
+            if r.response and r.response.status_code and 200 <= r.response.status_code < 300
+        ]
+
+        if limited_results and successful:
+            limited_with_forwarded = []
+            for r in limited_results:
+                req_h = {k.lower() for k in (r.request.headers or {})} if r.request else set()
+                if req_h & _FORWARDED_HEADERS:
+                    limited_with_forwarded.append(r)
+
+            if limited_with_forwarded:
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-RATELIMIT-IDENTITY-{norm_path}",
+                        title=f"Rate limit identity confusion potential: {norm_path}",
+                        description=(
+                            "Rate-limited requests include client-supplied forwarding headers "
+                            "(X-Forwarded-For, X-Real-IP, etc.). If the limiter trusts these, "
+                            "rotating values resets the per-IP counter."
+                        ),
+                        status=ResultStatus.WARNING,
+                        observation=(
+                            f"{len(limited_with_forwarded)} rate-limited requests to {norm_path} "
+                            "included client-supplied forwarding headers."
+                        ),
+                        standard_reference="CWE-307 Improper Restriction of Excessive Authentication Attempts",
+                        source_test_case_ids=sorted({r.test_case_id for r in limited_with_forwarded})[:10],
+                        recommendation="Configure the outermost proxy to strip incoming X-Forwarded-* headers and overwrite with true socket IP.",
+                        evidence={
+                            "path": norm_path,
+                            "forwarded_header_count": len(limited_with_forwarded),
+                        },
+                        cvss_score=5.3,
+                        severity_label="medium",
+                        vuln_category="rate_limit_bypass_advanced",
+                        confidence="needs_validation",
+                        bypass_technique="identity_key_confusion",
+                        bypass_class="header_spoofing",
+                        cwe_id="CWE-307",
+                    )
+                )
+
+    path_variants: dict[str, list[tuple[str, int | None, str]]] = defaultdict(list)
+    for result in results:
+        path = _request_path(result)
+        if path is None or result.response is None:
+            continue
+        norm = _normalize_path(path)
+        status = result.response.status_code
+        path_variants[norm].append((path, status, result.test_case_id))
+
+    for norm_path, variants in path_variants.items():
+        raw_paths = {v[0] for v in variants}
+        if len(raw_paths) < 2:
+            continue
+        statuses_by_path: dict[str, set[int]] = defaultdict(set)
+        for raw, status, _tc in variants:
+            if status is not None:
+                statuses_by_path[raw].add(status)
+        rate_limited_paths = {p for p, ss in statuses_by_path.items() if ss & _RATE_LIMIT_STATUS_CODES}
+        not_limited_paths = {p for p, ss in statuses_by_path.items() if not (ss & _RATE_LIMIT_STATUS_CODES) and ss}
+
+        if rate_limited_paths and not_limited_paths:
+            findings.append(
+                Finding(
+                    finding_id=f"DISCOVERY-RATELIMIT-PATHNORM-{norm_path}",
+                    title=f"Rate limit path normalization bypass: {norm_path}",
+                    description=(
+                        "Different path representations of the same endpoint receive "
+                        "different rate limit treatment."
+                    ),
+                    status=ResultStatus.FAIL,
+                    observation=(
+                        f"Path(s) {sorted(rate_limited_paths)[:3]} are rate-limited but "
+                        f"{sorted(not_limited_paths)[:3]} (same normalized endpoint) are not."
+                    ),
+                    standard_reference="CWE-307; Path Normalization Mismatch",
+                    source_test_case_ids=sorted({tc for _, _, tc in variants})[:10],
+                    recommendation="Enforce strict URL normalization at the edge before rate-limit evaluation.",
+                    evidence={
+                        "normalized_path": norm_path,
+                        "rate_limited_variants": sorted(rate_limited_paths)[:5],
+                        "unrestricted_variants": sorted(not_limited_paths)[:5],
+                    },
+                    cvss_score=7.5,
+                    severity_label="high",
+                    vuln_category="rate_limit_bypass_advanced",
+                    confidence="confirmed",
+                    bypass_technique="path_normalization",
+                    bypass_class="normalization_mismatch",
+                    cwe_id="CWE-307",
+                )
+            )
+
+    method_results: dict[str, dict[str, list[int]]] = defaultdict(lambda: defaultdict(list))
+    for result in results:
+        path = _request_path(result)
+        if path is None or result.response is None or result.response.status_code is None:
+            continue
+        norm = _normalize_path(path)
+        method = result.request.method if result.request else "GET"
+        method_results[norm][method].append(result.response.status_code)
+
+    for norm_path, methods in method_results.items():
+        limited_methods = {m for m, statuses in methods.items() if any(s in _RATE_LIMIT_STATUS_CODES for s in statuses)}
+        unlimited_methods = {m for m, statuses in methods.items() if not any(s in _RATE_LIMIT_STATUS_CODES for s in statuses) and statuses}
+        if limited_methods and unlimited_methods:
+            findings.append(
+                Finding(
+                    finding_id=f"DISCOVERY-RATELIMIT-METHOD-{norm_path}",
+                    title=f"Rate limit method bypass: {norm_path}",
+                    description="Different HTTP methods to the same endpoint have different rate limiting.",
+                    status=ResultStatus.WARNING,
+                    observation=f"Methods {sorted(limited_methods)} are limited but {sorted(unlimited_methods)} are not on {norm_path}.",
+                    standard_reference="CWE-307; Method Mismatch",
+                    source_test_case_ids=[],
+                    evidence={"path": norm_path, "limited": sorted(limited_methods), "unlimited": sorted(unlimited_methods)},
+                    cvss_score=5.3,
+                    severity_label="medium",
+                    vuln_category="rate_limit_bypass_advanced",
+                    confidence="needs_validation",
+                    bypass_technique="method_endpoint_duplication",
+                    cwe_id="CWE-307",
+                )
+            )
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# 32. Deep Webhook Security analysis
+# ---------------------------------------------------------------------------
+
+_WEBHOOK_SIG_HEADERS = {"stripe-signature", "x-hub-signature", "x-hub-signature-256", "x-webhook-signature", "x-shopify-hmac-sha256"}
+_WEBHOOK_TIMESTAMP_RE = re.compile(r't=(\d{10,13})', re.I)
+_WEBHOOK_EVENT_ID_RE = re.compile(r'"(?:id|event_id|eventId)":\s*"(evt_[A-Za-z0-9]+|[0-9a-f-]{36})"', re.I)
+
+
+def analyze_webhook_security_deep(results: list[TestResult]) -> list[Finding]:
+    """Deep webhook security: signature validation, replay protection,
+    timestamp drift, idempotency."""
+    findings: list[Finding] = []
+    seen: set[str] = set()
+    webhook_results = [
+        r for r in results
+        if r.test_case_id.startswith(("WEBHOOK-", "AUTH-WEBHOOK"))
+        or (r.request and _request_path(r) and re.search(r"/(?:webhook|callback|hook|notify|ipn)", _request_path(r) or "", re.I))
+    ]
+
+    if not webhook_results:
+        return findings
+
+    event_ids_seen: set[str] = set()
+    duplicate_events: list[tuple[str, TestResult]] = []
+
+    for result in webhook_results:
+        if result.response is None:
+            continue
+        path = _request_path(result) or "unknown"
+        req_headers = {k.lower(): v for k, v in (result.request.headers or {}).items()} if result.request else {}
+
+        has_sig = bool(set(req_headers.keys()) & _WEBHOOK_SIG_HEADERS)
+        accepted = result.response.status_code and 200 <= result.response.status_code < 300
+
+        if not has_sig and accepted:
+            dedup = f"webhook-nosig-{_normalize_path(path)}"
+            if dedup not in seen:
+                seen.add(dedup)
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-WEBHOOK-NOSIG-{result.test_case_id}",
+                        title=f"Webhook accepted without signature: {path}",
+                        description="Webhook endpoint accepted a request without a recognized signature header.",
+                        status=ResultStatus.FAIL,
+                        observation=f"Webhook to {path} accepted (HTTP {result.response.status_code}) without signature validation.",
+                        standard_reference="CWE-347 Improper Verification of Cryptographic Signature; Stripe Webhook Security",
+                        source_test_case_ids=[result.test_case_id],
+                        recommendation="Validate webhook signatures using the provider's SDK before processing events.",
+                        evidence={"path": path, "status_code": result.response.status_code, "has_signature": False},
+                        cvss_score=8.6,
+                        severity_label="high",
+                        vuln_category="webhook_abuse",
+                        confidence="needs_validation",
+                        cwe_id="CWE-347",
+                    )
+                )
+
+        body_text = _body_as_text(result.response.body) if result.response.body else ""
+        for event_match in _WEBHOOK_EVENT_ID_RE.finditer(body_text):
+            event_id = event_match.group(1)
+            if event_id in event_ids_seen:
+                duplicate_events.append((event_id, result))
+            event_ids_seen.add(event_id)
+
+        req_body_text = _body_as_text(result.request.body) if result.request and hasattr(result.request, "body") and result.request.body else ""
+        ts_match = _WEBHOOK_TIMESTAMP_RE.search(req_body_text) or _WEBHOOK_TIMESTAMP_RE.search(req_headers.get("stripe-signature", ""))
+        if ts_match and accepted:
+            ts = int(ts_match.group(1))
+            import time as _time
+            if ts < 1_000_000_000_000:
+                age_seconds = abs(int(_time.time()) - ts)
+            else:
+                age_seconds = abs(int(_time.time() * 1000) - ts) // 1000
+            if age_seconds > 600:
+                dedup = f"webhook-stale-{result.test_case_id}"
+                if dedup not in seen:
+                    seen.add(dedup)
+                    findings.append(
+                        Finding(
+                            finding_id=f"DISCOVERY-WEBHOOK-STALE-{result.test_case_id}",
+                            title=f"Webhook accepted with stale timestamp: {path}",
+                            description=f"Webhook accepted with timestamp {age_seconds}s old (tolerance should be ~300-600s).",
+                            status=ResultStatus.WARNING,
+                            observation=f"Webhook timestamp ~{age_seconds}s old accepted at {path}.",
+                            standard_reference="Stripe Webhook Timestamp Verification; CWE-294 Replay",
+                            source_test_case_ids=[result.test_case_id],
+                            recommendation="Reject webhooks with timestamps older than 5-10 minutes.",
+                            evidence={"path": path, "timestamp_age_seconds": age_seconds},
+                            vuln_category="webhook_abuse",
+                            confidence="needs_validation",
+                            cwe_id="CWE-294",
+                        )
+                    )
+
+    if duplicate_events:
+        findings.append(
+            Finding(
+                finding_id="DISCOVERY-WEBHOOK-REPLAY",
+                title=f"Webhook replay: {len(duplicate_events)} duplicate event ID(s) processed",
+                description="Same webhook event ID was processed multiple times, indicating missing idempotency.",
+                status=ResultStatus.FAIL,
+                observation=f"{len(duplicate_events)} duplicate event(s) accepted. First: {duplicate_events[0][0]}.",
+                standard_reference="CWE-294 Authentication Bypass by Capture-replay; Stripe Idempotency",
+                source_test_case_ids=sorted({r.test_case_id for _, r in duplicate_events})[:10],
+                recommendation="Track processed event IDs and reject duplicates.",
+                evidence={"duplicate_count": len(duplicate_events), "sample_ids": [eid for eid, _ in duplicate_events[:5]]},
+                cvss_score=7.5,
+                severity_label="high",
+                vuln_category="webhook_abuse",
+                confidence="confirmed",
+                cwe_id="CWE-294",
+            )
+        )
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# 33. Subscription Lifecycle Abuse detection
+# ---------------------------------------------------------------------------
+
+_SUBSCRIPTION_STATE_RE = re.compile(
+    r'"(?:status|subscription_status|state)":\s*"(active|trialing|past_due|canceled|cancelled|unpaid|paused|incomplete|incomplete_expired|free)"',
+    re.I,
+)
+_SUBSCRIPTION_PLAN_RE = re.compile(
+    r'"(?:plan|plan_id|product|tier|plan_name)":\s*"([^"]+)"',
+    re.I,
+)
+_TRIAL_END_RE = re.compile(r'"trial_end":\s*(\d+|null)', re.I)
+_GRACE_PERIOD_RE = re.compile(r'"(?:grace_period|payment_grace_period|days_until_due)":\s*(\d+)', re.I)
+
+
+def analyze_subscription_lifecycle_abuse(results: list[TestResult]) -> list[Finding]:
+    """Deep subscription lifecycle analysis targeting access-without-payment."""
+    findings: list[Finding] = []
+    seen: set[str] = set()
+
+    subscription_states: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
+
+    for result in results:
+        if result.response is None or result.response.body is None:
+            continue
+        text = _body_as_text(result.response.body)
+        path = _request_path(result) or "unknown"
+
+        state_matches = _SUBSCRIPTION_STATE_RE.findall(text)
+        plan_matches = _SUBSCRIPTION_PLAN_RE.findall(text)
+
+        for state in state_matches:
+            for plan in plan_matches:
+                subscription_states[plan.lower()].append((state.lower(), path, result.test_case_id))
+
+        trial_match = _TRIAL_END_RE.search(text)
+        if trial_match and trial_match.group(1) == "null":
+            for state in state_matches:
+                if state.lower() == "trialing":
+                    dedup = f"trial-null-{result.test_case_id}"
+                    if dedup not in seen:
+                        seen.add(dedup)
+                        findings.append(
+                            Finding(
+                                finding_id=f"DISCOVERY-TRIAL-NULL-{result.test_case_id}",
+                                title="Perpetual trial: trial_end is null while trialing",
+                                description="Subscription has trial status but no trial end date, suggesting infinite trial.",
+                                status=ResultStatus.FAIL,
+                                observation=f"Subscription at {path} is 'trialing' with trial_end=null.",
+                                standard_reference="CWE-862 Missing Authorization; Access-Without-Payment",
+                                source_test_case_ids=[result.test_case_id],
+                                recommendation="Always set trial_end. Enforce trial expiration server-side.",
+                                evidence={"path": path, "state": "trialing", "trial_end": "null"},
+                                cvss_score=8.1,
+                                severity_label="high",
+                                vuln_category=VulnCategory.ENTITLEMENT_BYPASS.value,
+                                confidence="confirmed",
+                                chain_id="CHAIN-027",
+                                cwe_id="CWE-862",
+                            )
+                        )
+
+        grace_match = _GRACE_PERIOD_RE.search(text)
+        if grace_match:
+            grace_days = int(grace_match.group(1))
+            if grace_days > 30:
+                dedup = f"grace-{result.test_case_id}"
+                if dedup not in seen:
+                    seen.add(dedup)
+                    findings.append(
+                        Finding(
+                            finding_id=f"DISCOVERY-GRACE-{result.test_case_id}",
+                            title=f"Excessive grace period: {grace_days} days",
+                            description=f"Grace period of {grace_days} days allows extended free access.",
+                            status=ResultStatus.WARNING,
+                            observation=f"Grace period of {grace_days} days at {path}.",
+                            standard_reference="Access-Without-Payment; Business Logic",
+                            source_test_case_ids=[result.test_case_id],
+                            evidence={"path": path, "grace_days": grace_days},
+                            vuln_category=VulnCategory.ENTITLEMENT_BYPASS.value,
+                            confidence="needs_validation",
+                        )
+                    )
+
+    for plan, state_entries in subscription_states.items():
+        states = {s for s, _, _ in state_entries}
+        premium_plans = {"premium", "enterprise", "pro", "business", "unlimited", "professional", "team", "growth"}
+        is_premium = plan in premium_plans
+
+        if is_premium and states & {"canceled", "cancelled", "unpaid", "past_due", "paused", "incomplete"}:
+            active_entries = [(s, p, tc) for s, p, tc in state_entries if s == "active"]
+            bad_entries = [(s, p, tc) for s, p, tc in state_entries if s in {"canceled", "cancelled", "unpaid", "past_due", "paused"}]
+
+            if active_entries and bad_entries:
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-SUBSTATE-{plan}",
+                        title=f"Subscription state inconsistency: '{plan}' has both active and {bad_entries[0][0]} states",
+                        description="Same subscription plan shows conflicting states across different responses.",
+                        status=ResultStatus.FAIL,
+                        observation=f"Plan '{plan}' seen as active at {active_entries[0][1]} and {bad_entries[0][0]} at {bad_entries[0][1]}.",
+                        standard_reference="Access-Without-Payment; CWE-840 Business Logic",
+                        source_test_case_ids=sorted({tc for _, _, tc in state_entries})[:10],
+                        recommendation="Ensure subscription state is consistent across all API responses.",
+                        evidence={"plan": plan, "active_paths": [p for _, p, _ in active_entries], "bad_paths": [p for _, p, _ in bad_entries]},
+                        cvss_score=8.6,
+                        severity_label="high",
+                        vuln_category=VulnCategory.ENTITLEMENT_BYPASS.value,
+                        confidence="confirmed",
+                        chain_id="CHAIN-027",
+                        cwe_id="CWE-840",
+                    )
+                )
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# 34. Reverse Engineering Artifact Extraction
+# ---------------------------------------------------------------------------
+
+_API_DOC_RE = re.compile(
+    r'(?:swagger|openapi|api-docs|\.well-known|graphql.*(?:schema|introspection)|'
+    r'wsdl|wadl|raml|api-blueprint|postman_collection)',
+    re.I,
+)
+_SOURCE_MAP_RE = re.compile(r'//[#@]\s*sourceMappingURL\s*=\s*(\S+)', re.I)
+_DEBUG_HEADER_RE = re.compile(
+    r'(?:x-debug-|x-trace-|x-request-id|x-correlation-id|x-amzn-requestid|'
+    r'x-runtime|x-powered-by|server-timing)',
+    re.I,
+)
+_INTERNAL_ROUTE_RE = re.compile(
+    r'(?:/internal/|/_internal/|/debug/|/_debug/|/__admin/|/actuator/|'
+    r'/\.env|/wp-admin|/phpinfo|/server-info|/server-status)',
+    re.I,
+)
+_OBFUSCATION_RE = re.compile(
+    r'(?:eval\s*\(\s*(?:atob|String\.fromCharCode|unescape|decodeURI)|'
+    r'\\x[0-9a-f]{2}(?:\\x[0-9a-f]{2}){5,}|'
+    r'\\u[0-9a-f]{4}(?:\\u[0-9a-f]{4}){5,})',
+    re.I,
+)
+
+
+def analyze_reverse_engineering_artifacts(results: list[TestResult]) -> list[Finding]:
+    """Extracts hidden information useful for reverse engineering: API docs,
+    source maps, debug headers, internal routes, obfuscated code."""
+    findings: list[Finding] = []
+    seen: set[str] = set()
+    debug_headers_found: dict[str, list[str]] = defaultdict(list)
+
+    for result in results:
+        if result.response is None:
+            continue
+        path = _request_path(result) or "unknown"
+        text = _body_as_text(result.response.body) if result.response.body else ""
+
+        if _API_DOC_RE.search(text):
+            dedup = f"re-apidoc-{result.test_case_id}"
+            if dedup not in seen:
+                seen.add(dedup)
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-RE-APIDOC-{result.test_case_id}",
+                        title=f"API documentation/schema exposed: {path}",
+                        description="API documentation (Swagger/OpenAPI/GraphQL schema) accessible in response.",
+                        status=ResultStatus.WARNING,
+                        observation=f"API documentation reference found in response for {result.test_case_id}.",
+                        standard_reference="CWE-200 Information Exposure; OWASP API9:2023",
+                        source_test_case_ids=[result.test_case_id],
+                        evidence={"path": path},
+                        vuln_category=VulnCategory.INFO_DISCLOSURE.value,
+                        confidence="needs_validation",
+                        re_method="api_documentation_discovery",
+                    )
+                )
+
+        if _SOURCE_MAP_RE.search(text):
+            dedup = f"re-sourcemap-{result.test_case_id}"
+            if dedup not in seen:
+                seen.add(dedup)
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-RE-SOURCEMAP-{result.test_case_id}",
+                        title=f"Source map reference found: {path}",
+                        description="Source map URL in response enables source code reconstruction.",
+                        status=ResultStatus.WARNING,
+                        observation=f"Source map reference in response for {result.test_case_id}.",
+                        standard_reference="CWE-540 Source Code in URL; OWASP",
+                        source_test_case_ids=[result.test_case_id],
+                        evidence={"path": path},
+                        vuln_category=VulnCategory.INFO_DISCLOSURE.value,
+                        re_method="source_map_discovery",
+                    )
+                )
+
+        resp_headers = result.response.headers or {}
+        for header_name, header_val in resp_headers.items():
+            if _DEBUG_HEADER_RE.match(header_name):
+                debug_headers_found[header_name.lower()].append(result.test_case_id)
+
+        internal_refs = _INTERNAL_ROUTE_RE.findall(text)
+        if internal_refs:
+            dedup = f"re-internal-{result.test_case_id}"
+            if dedup not in seen:
+                seen.add(dedup)
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-RE-INTERNAL-{result.test_case_id}",
+                        title=f"Internal route reference in response: {path}",
+                        description="Response body contains references to internal/debug endpoints.",
+                        status=ResultStatus.WARNING,
+                        observation=f"Internal route references found: {internal_refs[:5]}.",
+                        standard_reference="CWE-200; OWASP API9:2023 Improper Inventory Management",
+                        source_test_case_ids=[result.test_case_id],
+                        evidence={"path": path, "internal_refs": internal_refs[:10]},
+                        vuln_category=VulnCategory.INFO_DISCLOSURE.value,
+                        re_method="internal_route_discovery",
+                    )
+                )
+
+        if _OBFUSCATION_RE.search(text):
+            dedup = f"re-obfuscated-{result.test_case_id}"
+            if dedup not in seen:
+                seen.add(dedup)
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-RE-OBFUSCATED-{result.test_case_id}",
+                        title=f"Obfuscated code/data in response: {path}",
+                        description="Response contains obfuscated JavaScript or encoded data that may hide functionality.",
+                        status=ResultStatus.INFO,
+                        observation=f"Obfuscation pattern detected in response for {result.test_case_id}.",
+                        standard_reference="CWE-116; Reverse Engineering",
+                        source_test_case_ids=[result.test_case_id],
+                        evidence={"path": path},
+                        vuln_category=VulnCategory.INFO_DISCLOSURE.value,
+                        re_method="obfuscation_detection",
+                    )
+                )
+
+    for header_name, affected in debug_headers_found.items():
+        if len(affected) >= 3:
+            findings.append(
+                Finding(
+                    finding_id=f"DISCOVERY-RE-DBGHEADER-{header_name}",
+                    title=f"Debug/trace header exposed: {header_name}",
+                    description=f"Header '{header_name}' found in {len(affected)} responses.",
+                    status=ResultStatus.INFO,
+                    observation=f"Debug header '{header_name}' in {len(affected)} responses.",
+                    standard_reference="CWE-200; Information Disclosure via Headers",
+                    source_test_case_ids=sorted(set(affected))[:10],
+                    evidence={"header": header_name, "count": len(affected)},
+                    vuln_category=VulnCategory.INFO_DISCLOSURE.value,
+                    re_method="debug_header_discovery",
+                )
+            )
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# 35. Deep Payment Flow Analysis
+# ---------------------------------------------------------------------------
+
+_STRIPE_OBJECT_RE = re.compile(
+    r'"object":\s*"(payment_intent|checkout\.session|charge|invoice|subscription|refund|customer|'
+    r'setup_intent|payment_method|price|product|coupon|promotion_code|tax_rate|'
+    r'payment_link|quote|credit_note|balance_transaction)"',
+    re.I,
+)
+_ZERO_AMOUNT_RE = re.compile(r'"(?:amount|amount_total|unit_amount|total)":\s*0\b')
+_NEGATIVE_AMOUNT_RE = re.compile(r'"(?:amount|amount_total|unit_amount|total)":\s*-\d+')
+
+
+def analyze_payment_flow_deep(results: list[TestResult]) -> list[Finding]:
+    """Deep payment flow integrity analysis targeting Stripe-specific patterns."""
+    findings: list[Finding] = []
+    seen: set[str] = set()
+
+    payment_objects: dict[str, list[tuple[TestResult, dict]]] = defaultdict(list)
+
+    for result in results:
+        if result.response is None or not isinstance(result.response.body, dict):
+            continue
+        body = result.response.body
+        obj_type = body.get("object", "")
+        if obj_type in ("payment_intent", "checkout.session", "charge", "invoice", "subscription", "refund"):
+            payment_objects[obj_type].append((result, body))
+
+        text = _body_as_text(body)
+        path = _request_path(result) or "unknown"
+
+        if _ZERO_AMOUNT_RE.search(text) and obj_type in ("payment_intent", "charge", "invoice"):
+            dedup = f"pay-zero-{result.test_case_id}"
+            if dedup not in seen:
+                seen.add(dedup)
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-PAY-ZERO-{result.test_case_id}",
+                        title=f"Zero-amount {obj_type} detected",
+                        description=f"A {obj_type} with amount=0 was found -- may indicate price manipulation.",
+                        status=ResultStatus.FAIL,
+                        observation=f"Zero-amount {obj_type} in response for {result.test_case_id}.",
+                        standard_reference="CWE-799; Access-Without-Payment",
+                        source_test_case_ids=[result.test_case_id],
+                        recommendation="Validate minimum payment amounts server-side.",
+                        evidence={"path": path, "object_type": obj_type},
+                        cvss_score=9.1,
+                        severity_label="critical",
+                        vuln_category=VulnCategory.PAYMENT_MANIPULATION.value,
+                        confidence="confirmed",
+                        chain_id="CHAIN-011",
+                        cwe_id="CWE-799",
+                    )
+                )
+
+        if _NEGATIVE_AMOUNT_RE.search(text) and obj_type in ("payment_intent", "charge", "invoice"):
+            dedup = f"pay-neg-{result.test_case_id}"
+            if dedup not in seen:
+                seen.add(dedup)
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-PAY-NEG-{result.test_case_id}",
+                        title=f"Negative-amount {obj_type} detected",
+                        description=f"A {obj_type} with negative amount -- money flows to the customer.",
+                        status=ResultStatus.FAIL,
+                        observation=f"Negative amount in {obj_type} for {result.test_case_id}.",
+                        standard_reference="CWE-799; Payment Manipulation",
+                        source_test_case_ids=[result.test_case_id],
+                        evidence={"path": path, "object_type": obj_type},
+                        cvss_score=9.1,
+                        severity_label="critical",
+                        vuln_category=VulnCategory.PAYMENT_MANIPULATION.value,
+                        confidence="confirmed",
+                        cwe_id="CWE-799",
+                    )
+                )
+
+    for obj_type, entries in payment_objects.items():
+        if len(entries) < 2:
+            continue
+
+        currencies = {body.get("currency", "").lower() for _, body in entries if body.get("currency")}
+        if len(currencies) > 1:
+            findings.append(
+                Finding(
+                    finding_id=f"DISCOVERY-PAY-MULTICURRENCY-{obj_type}",
+                    title=f"Multiple currencies across {obj_type} objects: {sorted(currencies)}",
+                    description="Different currencies in related payment objects may indicate currency arbitrage.",
+                    status=ResultStatus.WARNING,
+                    observation=f"{obj_type} objects use currencies: {sorted(currencies)}.",
+                    standard_reference="CWE-840; Currency Arbitrage Risk",
+                    source_test_case_ids=sorted({r.test_case_id for r, _ in entries})[:10],
+                    evidence={"object_type": obj_type, "currencies": sorted(currencies)},
+                    vuln_category=VulnCategory.PAYMENT_MANIPULATION.value,
+                    confidence="needs_validation",
+                    hunting_skill_id="HUNT-024",
+                )
+            )
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# 36. Advanced Auth Deep Analysis
+# ---------------------------------------------------------------------------
+
+_OAUTH_INDICATORS_RE = re.compile(
+    r'(?:redirect_uri|response_type=code|grant_type=|'
+    r'client_id=|client_secret=|'
+    r'access_token=|refresh_token=|'
+    r'id_token=|authorization_code=|'
+    r'scope=.*(?:openid|email|profile)|'
+    r'state=|nonce=|code_verifier=)',
+    re.I,
+)
+
+_MFA_BYPASS_RE = re.compile(
+    r'(?:mfa_required.*false|'
+    r'two_factor.*(?:disabled|not_required|skipped)|'
+    r'"mfa":\s*null|'
+    r'"otp_required":\s*false)',
+    re.I,
+)
+
+_SAML_INDICATORS_RE = re.compile(
+    r'(?:SAMLResponse|SAMLRequest|'
+    r'urn:oasis:names:tc:SAML|'
+    r'saml2?:(?:Assertion|Response|AuthnRequest)|'
+    r'<saml|</saml)',
+    re.I,
+)
+
+
+def analyze_advanced_auth_deep(results: list[TestResult]) -> list[Finding]:
+    """Deep authentication analysis: OAuth misconfiguration, SAML assertion
+    manipulation, MFA bypass, session management weaknesses."""
+    findings: list[Finding] = []
+    seen: set[str] = set()
+
+    for result in results:
+        if result.response is None or result.response.body is None:
+            continue
+        text = _body_as_text(result.response.body)
+        path = _request_path(result) or "unknown"
+
+        if _OAUTH_INDICATORS_RE.search(text):
+            if re.search(r'redirect_uri=(?!https)', text):
+                dedup = f"oauth-redirect-{result.test_case_id}"
+                if dedup not in seen:
+                    seen.add(dedup)
+                    findings.append(
+                        Finding(
+                            finding_id=f"DISCOVERY-OAUTH-REDIRECT-{result.test_case_id}",
+                            title=f"OAuth redirect_uri with non-HTTPS scheme: {path}",
+                            description="OAuth redirect_uri using non-HTTPS scheme allows token interception.",
+                            status=ResultStatus.WARNING,
+                            observation=f"Non-HTTPS redirect_uri in OAuth flow at {path}.",
+                            standard_reference="CWE-601; RFC 6749 Section 3.1.2",
+                            source_test_case_ids=[result.test_case_id],
+                            evidence={"path": path},
+                            vuln_category=VulnCategory.AUTH_BYPASS.value,
+                            confidence="needs_validation",
+                            cwe_id="CWE-601",
+                        )
+                    )
+
+            if re.search(r'(?:client_secret|access_token|refresh_token)=\S{10,}', text):
+                dedup = f"oauth-leak-{result.test_case_id}"
+                if dedup not in seen:
+                    seen.add(dedup)
+                    findings.append(
+                        Finding(
+                            finding_id=f"DISCOVERY-OAUTH-LEAK-{result.test_case_id}",
+                            title=f"OAuth credential in response body: {path}",
+                            description="OAuth client_secret, access_token, or refresh_token exposed in response.",
+                            status=ResultStatus.FAIL,
+                            observation=f"OAuth credential leaked in response for {result.test_case_id}.",
+                            standard_reference="CWE-522; RFC 6749 Section 10.1",
+                            source_test_case_ids=[result.test_case_id],
+                            evidence={"path": path},
+                            cvss_score=8.6,
+                            severity_label="high",
+                            vuln_category=VulnCategory.AUTH_BYPASS.value,
+                            confidence="high",
+                            cwe_id="CWE-522",
+                        )
+                    )
+
+        if _MFA_BYPASS_RE.search(text):
+            dedup = f"mfa-bypass-{result.test_case_id}"
+            if dedup not in seen:
+                seen.add(dedup)
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-MFA-BYPASS-{result.test_case_id}",
+                        title=f"MFA bypass indicator: {path}",
+                        description="Response indicates MFA/2FA is disabled, skipped, or not required.",
+                        status=ResultStatus.WARNING,
+                        observation=f"MFA bypass indicator in response for {result.test_case_id}.",
+                        standard_reference="CWE-308 Single-Factor Authentication; OWASP",
+                        source_test_case_ids=[result.test_case_id],
+                        evidence={"path": path},
+                        vuln_category=VulnCategory.AUTH_BYPASS.value,
+                        confidence="needs_validation",
+                        cwe_id="CWE-308",
+                    )
+                )
+
+        if _SAML_INDICATORS_RE.search(text) and result.response.status_code == 200:
+            dedup = f"saml-{result.test_case_id}"
+            if dedup not in seen:
+                seen.add(dedup)
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-SAML-{result.test_case_id}",
+                        title=f"SAML assertion in response: {path}",
+                        description="SAML assertion data in response body may be susceptible to manipulation.",
+                        status=ResultStatus.INFO,
+                        observation=f"SAML indicators found in response for {result.test_case_id}.",
+                        standard_reference="CWE-287; OWASP SAML Security",
+                        source_test_case_ids=[result.test_case_id],
+                        evidence={"path": path},
+                        vuln_category=VulnCategory.AUTH_BYPASS.value,
+                        confidence="low_confidence",
+                    )
+                )
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# 37. Deep GraphQL Security Analysis
+# ---------------------------------------------------------------------------
+
+_GQL_INTROSPECTION_RE = re.compile(r'(?:__schema|__type\s*\(|queryType|mutationType|subscriptionType)', re.I)
+_GQL_BATCH_RE = re.compile(r'\[\s*\{\s*"query"', re.I)
+_GQL_ERROR_VERBOSE_RE = re.compile(r'(?:Cannot query field|Did you mean|GraphQL validation|Unknown type|Syntax Error)', re.I)
+_GQL_DEPTH_LIMIT_RE = re.compile(r'(?:max.*depth|query.*too.*(?:deep|complex|expensive)|complexity.*exceeded)', re.I)
+
+
+def analyze_graphql_deep(results: list[TestResult]) -> list[Finding]:
+    """Deep GraphQL security: introspection, batching abuse, aliasing, depth
+    limits, verbose errors, field suggestion disclosure."""
+    findings: list[Finding] = []
+    seen: set[str] = set()
+
+    for result in results:
+        if result.response is None or result.response.body is None:
+            continue
+        text = _body_as_text(result.response.body)
+        path = _request_path(result) or "unknown"
+
+        if not (re.search(r'graphql', path, re.I) or re.search(r'"data"\s*:', text)):
+            continue
+
+        if _GQL_INTROSPECTION_RE.search(text):
+            dedup = f"gql-introspection-{_normalize_path(path)}"
+            if dedup not in seen:
+                seen.add(dedup)
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-GQL-INTROSP-{result.test_case_id}",
+                        title=f"GraphQL introspection enabled: {path}",
+                        description="Full schema introspection is enabled, exposing all types, queries, and mutations.",
+                        status=ResultStatus.WARNING,
+                        observation=f"Introspection response from {path}.",
+                        standard_reference="CWE-200; OWASP GraphQL Security",
+                        source_test_case_ids=[result.test_case_id],
+                        recommendation="Disable introspection in production.",
+                        evidence={"path": path},
+                        vuln_category=VulnCategory.GRAPHQL_ABUSE.value,
+                        confidence="confirmed",
+                        cwe_id="CWE-200",
+                    )
+                )
+
+        if _GQL_BATCH_RE.search(text) and result.response.status_code == 200:
+            dedup = f"gql-batch-{_normalize_path(path)}"
+            if dedup not in seen:
+                seen.add(dedup)
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-GQL-BATCH-{result.test_case_id}",
+                        title=f"GraphQL batching accepted: {path}",
+                        description="GraphQL accepts batched queries, enabling rate limit bypass per-operation.",
+                        status=ResultStatus.WARNING,
+                        observation=f"Batch query accepted at {path}.",
+                        standard_reference="CWE-770; GraphQL Batching Abuse",
+                        source_test_case_ids=[result.test_case_id],
+                        recommendation="Rate-limit by operation count, not HTTP request count.",
+                        evidence={"path": path},
+                        vuln_category=VulnCategory.GRAPHQL_ABUSE.value,
+                        confidence="needs_validation",
+                        bypass_technique="batching_fanout",
+                        cwe_id="CWE-770",
+                    )
+                )
+
+        if _GQL_ERROR_VERBOSE_RE.search(text):
+            dedup = f"gql-verbose-{result.test_case_id}"
+            if dedup not in seen:
+                seen.add(dedup)
+                field_suggestions = re.findall(r'Did you mean ["\'](\w+)["\']', text, re.I)
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-GQL-VERBOSE-{result.test_case_id}",
+                        title=f"GraphQL verbose errors with field suggestions: {path}",
+                        description="GraphQL errors suggest valid field names, enabling schema enumeration.",
+                        status=ResultStatus.INFO,
+                        observation=f"GraphQL field suggestions: {field_suggestions[:5]}.",
+                        standard_reference="CWE-209; GraphQL Schema Enumeration",
+                        source_test_case_ids=[result.test_case_id],
+                        evidence={"path": path, "suggestions": field_suggestions[:10]},
+                        vuln_category=VulnCategory.GRAPHQL_ABUSE.value,
+                        confidence="confirmed",
+                    )
+                )
+
+        if _GQL_DEPTH_LIMIT_RE.search(text):
+            dedup = f"gql-depth-{result.test_case_id}"
+            if dedup not in seen:
+                seen.add(dedup)
+                findings.append(
+                    Finding(
+                        finding_id=f"DISCOVERY-GQL-DEPTH-{result.test_case_id}",
+                        title=f"GraphQL depth/complexity limit reached: {path}",
+                        description="GraphQL depth or complexity limit was triggered -- confirms DoS protection exists.",
+                        status=ResultStatus.INFO,
+                        observation=f"Depth/complexity limit error at {path}.",
+                        standard_reference="CWE-770; GraphQL Depth Limiting",
+                        source_test_case_ids=[result.test_case_id],
+                        evidence={"path": path},
+                        vuln_category=VulnCategory.GRAPHQL_ABUSE.value,
+                        confidence="confirmed",
+                    )
+                )
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# 38. Cross-Finding Impact Amplification (Meta-analyzer)
+# ---------------------------------------------------------------------------
+
+
+def analyze_impact_amplification(results: list[TestResult], prior_findings: list[Finding] | None = None) -> list[Finding]:
+    """Meta-analyzer that identifies when combinations of findings from
+    different categories create amplified impact -- specifically targeting
+    the access-without-payment chain."""
+    if not prior_findings or len(prior_findings) < 2:
+        return []
+
+    findings: list[Finding] = []
+
+    payment_findings = [f for f in prior_findings if f.vuln_category in (
+        VulnCategory.PAYMENT_MANIPULATION.value, VulnCategory.ENTITLEMENT_BYPASS.value,
+        "payment_manipulation", "entitlement_bypass",
+    )]
+    auth_findings = [f for f in prior_findings if f.vuln_category in (
+        VulnCategory.AUTH_BYPASS.value, VulnCategory.BROKEN_ACCESS_CONTROL.value,
+        "auth_bypass", "broken_access_control",
+    )]
+    rate_limit_findings = [f for f in prior_findings if f.vuln_category in (
+        VulnCategory.API_RATE_LIMIT_BYPASS.value, "rate_limit_bypass_advanced",
+        "rate_limit_bypass", "api_rate_limit_bypass",
+    )]
+    webhook_findings = [f for f in prior_findings if f.vuln_category in ("webhook_abuse",)]
+
+    if payment_findings and auth_findings:
+        findings.append(
+            Finding(
+                finding_id="DISCOVERY-AMPLIFY-PAY-AUTH",
+                title="CRITICAL AMPLIFICATION: Payment manipulation + Authentication weakness",
+                description=(
+                    "Payment/entitlement findings combined with authentication weaknesses "
+                    "create a direct access-without-payment attack path."
+                ),
+                status=ResultStatus.FAIL,
+                observation=(
+                    f"{len(payment_findings)} payment finding(s) + {len(auth_findings)} auth finding(s) "
+                    "combine into a complete access-without-payment chain."
+                ),
+                standard_reference="Access-Without-Payment; Big-4 Integrated Control Assessment",
+                source_test_case_ids=(
+                    [f.finding_id for f in payment_findings[:5]] + [f.finding_id for f in auth_findings[:5]]
+                ),
+                recommendation="Prioritize this combination above all individual findings.",
+                evidence={
+                    "payment_findings": len(payment_findings),
+                    "auth_findings": len(auth_findings),
+                    "amplification_factor": 2.5,
+                },
+                cvss_score=9.8,
+                severity_label="critical",
+                confidence="confirmed",
+                chain_id="CHAIN-011",
+                chain_impact_multiplier=2.5,
+                business_impact="critical",
+                financial_impact_estimate="Direct revenue loss from unauthorized access",
+            )
+        )
+
+    if payment_findings and webhook_findings:
+        findings.append(
+            Finding(
+                finding_id="DISCOVERY-AMPLIFY-PAY-WEBHOOK",
+                title="CRITICAL AMPLIFICATION: Payment manipulation + Webhook vulnerability",
+                description=(
+                    "Payment manipulation combined with webhook security issues enables "
+                    "forging payment confirmation webhooks to grant entitlements without payment."
+                ),
+                status=ResultStatus.FAIL,
+                observation=(
+                    f"{len(payment_findings)} payment + {len(webhook_findings)} webhook findings "
+                    "enable the webhook-based access-without-payment attack chain."
+                ),
+                standard_reference="Access-Without-Payment; CHAIN-023",
+                source_test_case_ids=(
+                    [f.finding_id for f in payment_findings[:5]] + [f.finding_id for f in webhook_findings[:5]]
+                ),
+                recommendation="Validate webhook signatures AND enforce server-side payment verification.",
+                evidence={
+                    "payment_findings": len(payment_findings),
+                    "webhook_findings": len(webhook_findings),
+                },
+                cvss_score=9.3,
+                severity_label="critical",
+                confidence="confirmed",
+                chain_id="CHAIN-023",
+                chain_impact_multiplier=2.0,
+                business_impact="critical",
+            )
+        )
+
+    if rate_limit_findings and auth_findings:
+        findings.append(
+            Finding(
+                finding_id="DISCOVERY-AMPLIFY-RATELIMIT-AUTH",
+                title="Amplified risk: Rate limit bypass + Authentication weakness",
+                description="Rate limit bypass enables brute-force exploitation of authentication weaknesses.",
+                status=ResultStatus.FAIL,
+                observation=f"{len(rate_limit_findings)} rate limit + {len(auth_findings)} auth findings combine.",
+                standard_reference="CHAIN-021; CWE-307 + CWE-287",
+                source_test_case_ids=(
+                    [f.finding_id for f in rate_limit_findings[:3]] + [f.finding_id for f in auth_findings[:3]]
+                ),
+                evidence={"rate_limit_findings": len(rate_limit_findings), "auth_findings": len(auth_findings)},
+                cvss_score=8.8,
+                severity_label="high",
+                confidence="needs_validation",
+                chain_id="CHAIN-021",
+            )
+        )
+
+    return findings

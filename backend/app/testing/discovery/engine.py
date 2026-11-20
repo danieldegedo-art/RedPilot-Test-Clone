@@ -31,17 +31,22 @@ six-phase methodology for retrospective analysis):
   Phase 1 -- Reconnaissance & Surface Mapping
       coverage_gaps, attack_surface_completeness, response_shapes,
       header_security
-  Phase 2 -- Deep Pattern Hunting (12 independent detectors)
+  Phase 2 -- Deep Pattern Hunting (26 independent detectors)
       sensitive_data, timing_outliers, injection_artifacts,
       trust_boundary_violations, auth_bypass_patterns, idor_indicators,
       business_logic_flaws, privilege_escalation, ssrf_indicators,
       hunting_skill_application, entitlement_drift,
-      response_fingerprinting
-  Phase 3 -- Cross-Module Correlation (7 correlators)
+      response_fingerprinting, ssti_indicators, nosql_injection,
+      xxe_indicators, prototype_pollution, http_smuggling,
+      cache_poisoning, advanced_rate_limit_bypass,
+      webhook_security_deep, subscription_lifecycle_abuse,
+      reverse_engineering_artifacts, payment_flow_deep,
+      advanced_auth_deep, graphql_deep
+  Phase 3 -- Cross-Module Correlation (8 correlators)
       cross_endpoint_consistency, systemic_patterns,
       route_pattern_consistency, format_consistency,
       cross_module_correlation, vulnerability_chains,
-      cve_chain_correlation
+      cve_chain_correlation, impact_amplification
   Phase 4 -- Adversarial Validation
       Re-examines every finding from Phases 1-3; classifies confidence
       (confirmed / needs_validation / low_confidence)
@@ -67,7 +72,7 @@ from app.testing.discovery.analyzers import (
     analyze_response_shapes,
     analyze_attack_surface_completeness,
     analyze_header_security,
-    # Phase 2 -- Deep Pattern Hunting
+    # Phase 2 -- Deep Pattern Hunting (original 12)
     analyze_sensitive_data,
     analyze_timing_outliers,
     analyze_injection_artifacts,
@@ -80,6 +85,20 @@ from app.testing.discovery.analyzers import (
     analyze_hunting_skill_application,
     analyze_entitlement_drift,
     analyze_response_fingerprinting,
+    # Phase 2b -- Advanced Hunting (14 new detectors)
+    analyze_ssti_indicators,
+    analyze_nosql_injection_indicators,
+    analyze_xxe_indicators,
+    analyze_prototype_pollution,
+    analyze_http_smuggling_indicators,
+    analyze_cache_poisoning_indicators,
+    analyze_advanced_rate_limit_bypass,
+    analyze_webhook_security_deep,
+    analyze_subscription_lifecycle_abuse,
+    analyze_reverse_engineering_artifacts,
+    analyze_payment_flow_deep,
+    analyze_advanced_auth_deep,
+    analyze_graphql_deep,
     # Phase 3 -- Cross-Module Correlation
     analyze_cross_endpoint_consistency,
     analyze_systemic_patterns,
@@ -88,6 +107,8 @@ from app.testing.discovery.analyzers import (
     analyze_cross_module_correlation,
     analyze_vulnerability_chains,
     analyze_cve_chain_correlation,
+    # Phase 3b -- Meta-analysis
+    analyze_impact_amplification,
     # Phase 4 -- Adversarial Validation
     analyze_adversarial_validation,
 )
@@ -155,6 +176,7 @@ class DiscoveryEngine:
 
     def _phase_2_hunting(self) -> list[Finding]:
         return self._run_phase("Phase 2: Deep Hunting", [
+            # Original 12 detectors
             ("sensitive_data", lambda: analyze_sensitive_data(self.all_results)),
             ("timing_outliers", lambda: analyze_timing_outliers(self.all_results)),
             ("injection_artifacts", lambda: analyze_injection_artifacts(self.all_results)),
@@ -167,9 +189,23 @@ class DiscoveryEngine:
             ("hunting_skill_application", lambda: analyze_hunting_skill_application(self.all_results)),
             ("entitlement_drift", lambda: analyze_entitlement_drift(self.all_results)),
             ("response_fingerprinting", lambda: analyze_response_fingerprinting(self.all_results)),
+            # 14 new advanced detectors
+            ("ssti_indicators", lambda: analyze_ssti_indicators(self.all_results)),
+            ("nosql_injection", lambda: analyze_nosql_injection_indicators(self.all_results)),
+            ("xxe_indicators", lambda: analyze_xxe_indicators(self.all_results)),
+            ("prototype_pollution", lambda: analyze_prototype_pollution(self.all_results)),
+            ("http_smuggling", lambda: analyze_http_smuggling_indicators(self.all_results)),
+            ("cache_poisoning", lambda: analyze_cache_poisoning_indicators(self.all_results)),
+            ("advanced_rate_limit_bypass", lambda: analyze_advanced_rate_limit_bypass(self.all_results)),
+            ("webhook_security_deep", lambda: analyze_webhook_security_deep(self.all_results)),
+            ("subscription_lifecycle_abuse", lambda: analyze_subscription_lifecycle_abuse(self.all_results)),
+            ("reverse_engineering_artifacts", lambda: analyze_reverse_engineering_artifacts(self.all_results)),
+            ("payment_flow_deep", lambda: analyze_payment_flow_deep(self.all_results)),
+            ("advanced_auth_deep", lambda: analyze_advanced_auth_deep(self.all_results)),
+            ("graphql_deep", lambda: analyze_graphql_deep(self.all_results)),
         ])
 
-    def _phase_3_correlation(self) -> list[Finding]:
+    def _phase_3_correlation(self, prior_findings: list[Finding] | None = None) -> list[Finding]:
         return self._run_phase("Phase 3: Correlation", [
             ("cross_endpoint_consistency", lambda: analyze_cross_endpoint_consistency(self.all_results)),
             ("systemic_patterns", lambda: analyze_systemic_patterns(self.all_results)),
@@ -178,6 +214,7 @@ class DiscoveryEngine:
             ("cross_module_correlation", lambda: analyze_cross_module_correlation(self.all_results)),
             ("vulnerability_chains", lambda: analyze_vulnerability_chains(self.all_results)),
             ("cve_chain_correlation", lambda: analyze_cve_chain_correlation(self.all_results)),
+            ("impact_amplification", lambda: analyze_impact_amplification(self.all_results, prior_findings)),
         ])
 
     def _phase_4_validation(self, all_findings: list[Finding]) -> list[Finding]:
@@ -330,9 +367,10 @@ class DiscoveryEngine:
 
         phase_1_findings = self._phase_1_reconnaissance()
         phase_2_findings = self._phase_2_hunting()
-        phase_3_findings = self._phase_3_correlation()
+        prior = phase_1_findings + phase_2_findings
+        phase_3_findings = self._phase_3_correlation(prior)
 
-        all_raw = phase_1_findings + phase_2_findings + phase_3_findings
+        all_raw = prior + phase_3_findings
 
         validated = self._phase_4_validation(all_raw)
         scored = self._phase_5_scoring(validated)
@@ -351,7 +389,7 @@ class DiscoveryEngine:
                 )
             await emit(self._info_result(
                 f"Analyzed {len(self.all_results)} result(s) from this run across "
-                f"all 24 analyzers in 6 phases ({overall_elapsed * 1000:.0f}ms) "
+                f"all 38 analyzers in 6 phases ({overall_elapsed * 1000:.0f}ms) "
                 f"-- no additional finding surfaced beyond what the 10 modules "
                 f"already reported directly.{skipped_note}"
             ))
@@ -393,12 +431,12 @@ class DiscoveryEngine:
             category=self.category,
             name="One or more discovery analyzers failed",
             description=(
-                "Each of the 24 discovery analyzers runs independently and is individually "
+                "Each of the 38 discovery analyzers runs independently and is individually "
                 "fault-isolated: one raising an exception does not discard the findings the "
                 "other analyzers already produced this run."
             ),
             input_parameters={"failed_analyzers": failed_names, "failed_count": len(failed_names)},
-            expected="All 24 analyzers complete without raising.",
+            expected="All 38 analyzers complete without raising.",
             actual=f"{len(failed_names)} analyzer(s) raised and were skipped: {details}",
             status=ResultStatus.WARNING,
             recommendation=(
@@ -419,8 +457,8 @@ class DiscoveryEngine:
             description=(
                 "Six-phase retrospective analysis of every response body, status code, "
                 "timing, and request the 10 test modules collected this run. Phase 1: "
-                "surface mapping. Phase 2: deep pattern hunting (12 detectors). Phase 3: "
-                "cross-module correlation (7 correlators). Phase 4: adversarial validation. "
+                "surface mapping. Phase 2: deep pattern hunting (26 detectors). Phase 3: "
+                "cross-module correlation (8 correlators). Phase 4: adversarial validation. "
                 "Phase 5: CVSS scoring and exploit-chain synthesis. Phase 6: severity-ranked "
                 "reporting. Sends no new requests to the target."
             ),
@@ -469,6 +507,20 @@ class DiscoveryEngine:
             evidence["confidence_factors"] = finding.confidence_factors
         if finding.attack_complexity:
             evidence["attack_complexity"] = finding.attack_complexity
+        if finding.cwe_id:
+            evidence["cwe_id"] = finding.cwe_id
+        if finding.bypass_technique:
+            evidence["bypass_technique"] = finding.bypass_technique
+        if finding.bypass_class:
+            evidence["bypass_class"] = finding.bypass_class
+        if finding.re_method:
+            evidence["re_method"] = finding.re_method
+        if finding.business_impact:
+            evidence["business_impact"] = finding.business_impact
+        if finding.chain_impact_multiplier != 1.0:
+            evidence["chain_impact_multiplier"] = finding.chain_impact_multiplier
+        if finding.financial_impact_estimate:
+            evidence["financial_impact_estimate"] = finding.financial_impact_estimate
 
         desc = f"{finding.description} Standard reference: {finding.standard_reference}."
         if finding.severity_label and finding.cvss_score is not None:
