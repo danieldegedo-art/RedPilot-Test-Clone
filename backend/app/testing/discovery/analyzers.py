@@ -2151,3 +2151,4 @@ def analyze_response_fingerprinting(results: list[TestResult]) -> list[Finding]:
             )
         )
 
+    return findings
