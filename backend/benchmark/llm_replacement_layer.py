@@ -271,6 +271,13 @@ class LLMReplacementResult:
     anomaly_explanation: str = ""
     risk_monte_carlo: dict = field(default_factory=dict)
 
+    # --- v3 cross-engine feedback ---
+    engine_consensus: dict = field(default_factory=dict)
+    cross_engine_amplifications: list[str] = field(default_factory=list)
+    adaptive_weights: dict = field(default_factory=dict)
+    kill_chain_summary: str = ""
+    financial_impact_estimate: dict = field(default_factory=dict)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "suspicious_fields": self.suspicious_fields,
@@ -291,6 +298,11 @@ class LLMReplacementResult:
             "evidence_correlation": self.evidence_correlation,
             "anomaly_explanation": self.anomaly_explanation,
             "risk_monte_carlo": self.risk_monte_carlo,
+            "engine_consensus": self.engine_consensus,
+            "cross_engine_amplifications": self.cross_engine_amplifications,
+            "adaptive_weights": self.adaptive_weights,
+            "kill_chain_summary": self.kill_chain_summary,
+            "financial_impact_estimate": self.financial_impact_estimate,
         }
 
 
@@ -673,6 +685,111 @@ class ChainOfThoughtEngine:
             "base_prior": 0.2,
             "severity": "medium",
         },
+        # --- 13 new hypothesis templates ---
+        {
+            "id": "H_SUBSCRIPTION_ABUSE",
+            "category": "subscription_abuse",
+            "template": "Subscription abuse: {endpoint} shows trial/lifecycle exploit opportunity",
+            "trigger_conditions": ["subscription_object_found", "trial_indicator", "downgrade_indicator", "perpetual_free_indicator"],
+            "base_prior": 0.35,
+            "severity": "critical",
+        },
+        {
+            "id": "H_WEBHOOK_FORGE",
+            "category": "webhook_forge",
+            "template": "Webhook forgery: {endpoint} accepts webhook events without cryptographic signature",
+            "trigger_conditions": ["webhook_endpoint", "webhook_no_signature", "payment_endpoint"],
+            "base_prior": 0.4,
+            "severity": "critical",
+        },
+        {
+            "id": "H_COUPON_STACKING",
+            "category": "coupon_stacking",
+            "template": "Coupon stacking: {endpoint} accepted multiple discounts past intended limit",
+            "trigger_conditions": ["payment_endpoint", "coupon_in_response", "discount_indicator"],
+            "base_prior": 0.3,
+            "severity": "high",
+        },
+        {
+            "id": "H_CURRENCY_ARBITRAGE",
+            "category": "currency_arbitrage",
+            "template": "Currency arbitrage: {endpoint} accepted currency mismatch enabling cost avoidance",
+            "trigger_conditions": ["payment_endpoint", "currency_mismatch", "multi_currency_indicator"],
+            "base_prior": 0.3,
+            "severity": "critical",
+        },
+        {
+            "id": "H_REFUND_ABUSE",
+            "category": "refund_abuse",
+            "template": "Refund abuse: {endpoint} refund does not revoke entitlement (refund-then-reuse)",
+            "trigger_conditions": ["refund_object_found", "payment_endpoint", "entitlement_still_active"],
+            "base_prior": 0.35,
+            "severity": "critical",
+        },
+        {
+            "id": "H_API_VERSION_DOWNGRADE",
+            "category": "api_version_downgrade",
+            "template": "API version downgrade: {endpoint} shows older API version with weaker controls",
+            "trigger_conditions": ["api_version_mismatch", "multiple_api_versions"],
+            "base_prior": 0.2,
+            "severity": "high",
+        },
+        {
+            "id": "H_GRAPHQL_ABUSE",
+            "category": "graphql_abuse",
+            "template": "GraphQL abuse: {endpoint} exposes introspection/batching enabling deep enumeration",
+            "trigger_conditions": ["graphql_introspection_enabled", "graphql_batching_enabled", "graphql_verbose_errors"],
+            "base_prior": 0.3,
+            "severity": "high",
+        },
+        {
+            "id": "H_CACHE_POISONING",
+            "category": "cache_poisoning",
+            "template": "Cache poisoning: {endpoint} reflects unkeyed header in cached response",
+            "trigger_conditions": ["cache_hit_on_dynamic", "unkeyed_header_reflected"],
+            "base_prior": 0.25,
+            "severity": "high",
+        },
+        {
+            "id": "H_PROTOTYPE_POLLUTION",
+            "category": "prototype_pollution",
+            "template": "Prototype pollution: __proto__ or constructor.prototype references at {endpoint}",
+            "trigger_conditions": ["proto_reference_found", "constructor_reference_found"],
+            "base_prior": 0.25,
+            "severity": "high",
+        },
+        {
+            "id": "H_DESERIALIZATION",
+            "category": "deserialization",
+            "template": "Unsafe deserialization: serialization markers at {endpoint} suggest object injection",
+            "trigger_conditions": ["serialization_marker_found", "java_class_in_response", "pickle_marker_found"],
+            "base_prior": 0.3,
+            "severity": "critical",
+        },
+        {
+            "id": "H_TIMING_ORACLE",
+            "category": "timing_oracle",
+            "template": "Timing oracle: {endpoint} response time varies >2x between status codes revealing auth branching",
+            "trigger_conditions": ["timing_variance_detected", "auth_timing_differential"],
+            "base_prior": 0.25,
+            "severity": "medium",
+        },
+        {
+            "id": "H_ERROR_ORACLE",
+            "category": "error_oracle",
+            "template": "Error oracle: {endpoint} returns distinct error messages leaking internal validation logic",
+            "trigger_conditions": ["error_message_variance", "auth_error_differential"],
+            "base_prior": 0.3,
+            "severity": "medium",
+        },
+        {
+            "id": "H_WAF_BYPASS",
+            "category": "waf_bypass",
+            "template": "WAF bypass: detected WAF at {endpoint} with known evasion techniques available",
+            "trigger_conditions": ["waf_detected", "waf_block_page_seen"],
+            "base_prior": 0.2,
+            "severity": "medium",
+        },
     ]
 
     def reason(
@@ -872,6 +989,117 @@ class ChainOfThoughtEngine:
                 conditions_met.add("duplicate_creation_indicator")
                 break
 
+        # --- New trigger conditions for expanded hypothesis templates ---
+        resp_headers = components.get("response_headers") or {}
+        lower_resp_headers = {k.lower(): v for k, v in resp_headers.items()}
+        stripe_obj = components.get("stripe_object")
+
+        # Subscription abuse triggers
+        if stripe_obj == "subscription":
+            conditions_met.add("subscription_object_found")
+        if re.search(r'"(?:trial_end|trial_start|trial_period_days)"', body_text, re.I):
+            conditions_met.add("trial_indicator")
+        if re.search(r'"(?:cancel_at|canceled_at|cancel_at_period_end)"', body_text, re.I):
+            conditions_met.add("downgrade_indicator")
+        if re.search(r'"(?:status)":\s*"(?:trialing|past_due|incomplete)"', body_text, re.I):
+            conditions_met.add("perpetual_free_indicator")
+
+        # Webhook forgery triggers
+        if "webhook_endpoint" in conditions_met:
+            sig_headers = ["stripe-signature", "x-hub-signature", "x-hub-signature-256",
+                           "x-webhook-signature", "x-shopify-hmac-sha256"]
+            if not any(h in lower_resp_headers for h in sig_headers):
+                conditions_met.add("webhook_no_signature")
+
+        # Coupon / discount triggers
+        if re.search(r'"(?:coupon|discount|promotion_code|percent_off|amount_off)"', body_text, re.I):
+            conditions_met.add("coupon_in_response")
+            conditions_met.add("discount_indicator")
+
+        # Currency mismatch
+        currencies = set(re.findall(r'"currency":\s*"([a-z]{3})"', body_text, re.I))
+        if len(currencies) > 1:
+            conditions_met.add("currency_mismatch")
+            conditions_met.add("multi_currency_indicator")
+
+        # Refund object
+        if stripe_obj == "refund" or re.search(r'"object":\s*"refund"', body_text, re.I):
+            conditions_met.add("refund_object_found")
+        if "refund_object_found" in conditions_met and re.search(
+            r'"(?:status|subscription_status)":\s*"active"', body_text, re.I,
+        ):
+            conditions_met.add("entitlement_still_active")
+
+        # API version mismatch
+        api_versions = set(re.findall(r'"(?:api_version|version|schema_version)":\s*"([^"]+)"', body_text))
+        if len(api_versions) > 1:
+            conditions_met.add("api_version_mismatch")
+            conditions_met.add("multiple_api_versions")
+
+        # GraphQL triggers
+        if re.search(r'"(?:__typename|__schema)"', body_text, re.I):
+            conditions_met.add("graphql_introspection_enabled")
+        if re.search(r'\[\s*\{\s*"query"', body_text, re.I):
+            conditions_met.add("graphql_batching_enabled")
+        if re.search(r'"errors"\s*:\s*\[.*?"message"\s*:', body_text, re.I | re.S):
+            conditions_met.add("graphql_verbose_errors")
+
+        # Cache poisoning triggers
+        cache_status = (
+            lower_resp_headers.get("cf-cache-status", "")
+            or lower_resp_headers.get("x-cache", "")
+            or lower_resp_headers.get("x-vercel-cache", "")
+        ).upper()
+        if "HIT" in cache_status and any(
+            kw in endpoint.lower()
+            for kw in ("user", "account", "profile", "me", "session", "dashboard")
+        ):
+            conditions_met.add("cache_hit_on_dynamic")
+        if re.search(r'"(?:x-forwarded-|x-original-|x-host|x-rewrite)"', body_text, re.I):
+            conditions_met.add("unkeyed_header_reflected")
+
+        # Prototype pollution triggers
+        if re.search(r'(?:__proto__|constructor\.prototype|Object\.assign)', body_text, re.I):
+            conditions_met.add("proto_reference_found")
+        if re.search(r'(?:constructor\s*:\s*\{|hasOwnProperty)', body_text, re.I):
+            conditions_met.add("constructor_reference_found")
+
+        # Deserialization triggers
+        if re.search(r'(?:java\.lang\.|rO0AB|aced0005|ObjectInputStream|readObject)', body_text, re.I):
+            conditions_met.add("serialization_marker_found")
+            conditions_met.add("java_class_in_response")
+        if re.search(r'(?:pickle\.|__reduce__|cPickle)', body_text, re.I):
+            conditions_met.add("pickle_marker_found")
+            conditions_met.add("serialization_marker_found")
+
+        # Timing oracle triggers
+        elapsed = components.get("elapsed_ms", 0)
+        if elapsed and status in (401, 403) and elapsed > 500:
+            conditions_met.add("timing_variance_detected")
+            conditions_met.add("auth_timing_differential")
+
+        # Error oracle triggers (from context-level observations)
+        error_keywords = set(re.findall(
+            r'"(?:message|error|detail)":\s*"([^"]{5,60})"', body_text, re.I,
+        ))
+        if len(error_keywords) >= 3:
+            conditions_met.add("error_message_variance")
+        if re.search(
+            r'"(?:message|error)":\s*"(?:.*?not found|.*?does not exist|.*?invalid.*?user|.*?unknown)',
+            body_text, re.I,
+        ):
+            conditions_met.add("auth_error_differential")
+
+        # WAF detection triggers
+        for waf_hdr_re_str in (r"cf-ray", r"x-akamai-", r"incap_ses_", r"x-datadome", r"_px\d"):
+            if re.search(waf_hdr_re_str, str(lower_resp_headers), re.I):
+                conditions_met.add("waf_detected")
+                break
+        if status == 403 and re.search(
+            r"(?:access denied|request blocked|security policy|captcha.*required)", body_text, re.I,
+        ):
+            conditions_met.add("waf_block_page_seen")
+
         for tmpl in self._HYPOTHESIS_TEMPLATES:
             triggers = set(tmpl["trigger_conditions"])
             overlap = conditions_met & triggers
@@ -957,10 +1185,78 @@ class ChainOfThoughtEngine:
                     evidence_for.append(f"stripe_object_{stripe_obj}")
                     likelihood *= 1.4
 
+            # --- Deeper evidence weighting for new hypothesis categories ---
+            if h.category == "subscription_abuse" and stripe_obj == "subscription":
+                evidence_for.append("stripe_subscription_object_matches")
+                likelihood *= 1.6
+            if h.category == "subscription_abuse" and stripe_obj == "invoice":
+                evidence_for.append("stripe_invoice_matches_subscription_abuse")
+                likelihood *= 1.3
+
+            if h.category == "timing_oracle" and elapsed > 500:
+                evidence_for.append(f"elevated_latency_{elapsed}ms")
+                likelihood *= 1.5
+            if h.category == "error_oracle" and status in (400, 401, 403, 422):
+                evidence_for.append(f"client_error_status_{status}")
+                likelihood *= 1.5
+
+            if h.category == "waf_bypass":
+                resp_headers = components.get("response_headers") or {}
+                if any(re.search(r"(?:cf-ray|x-akamai|incap_ses|x-datadome)", k, re.I)
+                       for k in resp_headers):
+                    evidence_for.append("waf_header_confirmed")
+                    likelihood *= 1.3
+
+            if h.category == "webhook_forge" and is_mutating:
+                evidence_for.append("mutating_webhook_endpoint")
+                likelihood *= 1.4
+
+            if h.category == "coupon_stacking" and stripe_obj in ("coupon", "promotion_code"):
+                evidence_for.append("stripe_coupon_object")
+                likelihood *= 1.5
+
+            if h.category == "refund_abuse" and stripe_obj == "refund":
+                evidence_for.append("stripe_refund_object")
+                likelihood *= 1.6
+
+            if h.category == "graphql_abuse" and re.search(r'"__typename"', body_text):
+                evidence_for.append("graphql_typename_present")
+                likelihood *= 1.4
+
+            if h.category == "cache_poisoning" and re.search(r"(?:HIT|MISS)", str(components.get("response_headers", {})), re.I):
+                evidence_for.append("cache_header_present")
+                likelihood *= 1.3
+
+            if h.category == "deserialization":
+                if re.search(r"(?:application/java-serialized|application/x-java-object)", body_text, re.I):
+                    evidence_for.append("java_serialization_content_type")
+                    likelihood *= 1.5
+
             posterior = min(1.0, h.prior * likelihood)
             h.evidence_for = evidence_for
             h.evidence_against = evidence_against
             h.posterior = posterior
+
+        # Cross-category amplification: if correlated categories both fire, boost both
+        active_categories = {h.category for h in hypotheses if h.posterior > 0.15}
+        amplification_pairs = [
+            ("payment_manipulation", "entitlement_bypass", 1.25),
+            ("auth_bypass", "privilege_escalation", 1.2),
+            ("webhook_forge", "entitlement_bypass", 1.3),
+            ("subscription_abuse", "entitlement_bypass", 1.25),
+            ("refund_abuse", "entitlement_bypass", 1.3),
+            ("coupon_stacking", "payment_manipulation", 1.2),
+            ("race_condition", "payment_manipulation", 1.25),
+            ("injection", "info_disclosure", 1.15),
+            ("graphql_abuse", "info_disclosure", 1.2),
+            ("cache_poisoning", "auth_bypass", 1.2),
+        ]
+        for cat_a, cat_b, amp_factor in amplification_pairs:
+            if cat_a in active_categories and cat_b in active_categories:
+                for h in hypotheses:
+                    if h.category in (cat_a, cat_b):
+                        h.posterior = min(1.0, h.posterior * amp_factor)
+                        h.evidence_for.append(f"cross_amplified_with_{cat_a if h.category == cat_b else cat_b}")
 
         return sorted(hypotheses, key=lambda h: h.posterior, reverse=True)
 
@@ -984,6 +1280,24 @@ class ChainOfThoughtEngine:
         if supporting > contradicting * 2:
             conf = min(1.0, conf * 1.2)
 
+        # Conviction level: how many independent hypotheses agree on a threat
+        high_conf_count = sum(1 for h in scored if h.posterior > 0.2)
+        conviction = "low"
+        if high_conf_count >= 4:
+            conviction = "high"
+            conf = min(1.0, conf * 1.3)
+        elif high_conf_count >= 2:
+            conviction = "medium"
+            conf = min(1.0, conf * 1.15)
+
+        # Cross-category convergence: if top hypothesis shares a threat class
+        # with runners-up, that's convergent evidence for a real issue
+        active_cats = {h.category for h in scored if h.posterior > 0.15}
+        payment_convergence = active_cats & {"payment_manipulation", "entitlement_bypass", "subscription_abuse", "refund_abuse", "coupon_stacking", "currency_arbitrage"}
+        if len(payment_convergence) >= 2:
+            conf = min(1.0, conf * 1.2)
+            conviction = "high" if conviction == "medium" else conviction
+
         runners_up = [h for h in scored[1:] if h.posterior > 0.15]
         runner_note = ""
         if runners_up:
@@ -993,11 +1307,16 @@ class ChainOfThoughtEngine:
                 + "."
             )
 
+        conviction_note = f" Conviction: {conviction} ({high_conf_count} hypotheses above threshold)."
+        convergence_note = ""
+        if len(payment_convergence) >= 2:
+            convergence_note = f" Payment-class convergence: {sorted(payment_convergence)}."
+
         return (
             f"Most likely: {top.description} "
             f"(posterior={top.posterior:.3f}, "
             f"{supporting} supporting / {contradicting} contradicting evidence points)."
-            f"{runner_note}",
+            f"{runner_note}{conviction_note}{convergence_note}",
             conf,
         )
 
@@ -1120,21 +1439,204 @@ class MultiPerspectiveAnalyzer:
 
         return PerspectiveResult("auditor", min(1.0, score), findings, recs)
 
+    # MITRE ATT&CK technique mapping for threat intel perspective
+    _MITRE_ATTACK_MAP: dict[str, tuple[str, str]] = {
+        "critical_secret": ("T1552", "Unsecured Credentials"),
+        "injection_artifact_sqli": ("T1190", "Exploit Public-Facing Application"),
+        "injection_artifact_xss": ("T1189", "Drive-by Compromise"),
+        "injection_artifact_ssrf": ("T1190", "Exploit Public-Facing Application"),
+        "sensitive_field_name": ("T1530", "Data from Cloud Storage Object"),
+        "possible_card_number": ("T1005", "Data from Local System"),
+    }
+
+    _KNOWN_CVE_PATTERNS: list[tuple[str, str, str]] = [
+        ("auth_bypass", "CVE-2023-22515", "Confluence auth bypass pattern"),
+        ("idor", "CVE-2023-34362", "MOVEit IDOR/SQLi pattern"),
+        ("injection_artifact_sqli", "CVE-2021-44228", "Log4Shell-class injection"),
+        ("entitlement_bypass", "CVE-2023-23397", "Privilege escalation without user interaction"),
+        ("race_condition", "CVE-2023-32784", "KeePass race/memory leak pattern"),
+    ]
+
+    def analyze_as_red_team(
+        self, components: dict[str, Any], zero_shot: list[ZeroShotFinding],
+    ) -> PerspectiveResult:
+        """Offensive security operator perspective: exploitability, weaponization,
+        kill chain construction, detection evasion."""
+        findings: list[str] = []
+        recs: list[str] = []
+        score = 0.0
+
+        # Exploitability assessment
+        if not components.get("has_auth_header") and 200 <= components.get("status_code", 0) < 300:
+            findings.append("No auth required -- trivially exploitable, no credential theft needed")
+            recs.append("Weaponize as first stage: enumerate all unauthenticated endpoints")
+            score += 0.4
+
+        # Kill chain composition
+        chain_potential = 0
+        for a in components.get("anomalies", []):
+            if "entitlement_drift" in a:
+                findings.append(f"Kill chain complete: {a} = direct access-without-payment")
+                recs.append("Full exploit: skip to post-exploitation (data access)")
+                score += 0.5
+                chain_potential += 2
+            elif "zero_payment" in a or "negative_value" in a:
+                findings.append(f"Financial exploit primitive: {a}")
+                recs.append("Chain with checkout flow for zero-cost purchase")
+                score += 0.4
+                chain_potential += 1
+
+        for f in zero_shot:
+            if f.category == "critical_secret":
+                findings.append(f"Credential harvested: {f.detail} -- lateral movement enabled")
+                recs.append("Use credential for API access, test scope of leaked key")
+                score += 0.5
+                chain_potential += 2
+            elif f.category.startswith("injection"):
+                findings.append(f"Injection primitive: {f.detail} -- needs weaponization")
+                recs.append("Build exploit payload, test for blind vs reflected")
+                score += 0.35
+                chain_potential += 1
+
+        # Detection evasion assessment
+        body_text = components.get("body_text", "")
+        headers = components.get("response_headers", {})
+        lower_h = {k.lower(): v for k, v in headers.items()}
+        has_logging = any(h in lower_h for h in ("x-request-id", "x-trace-id", "x-correlation-id"))
+        has_waf = any(h in lower_h for h in ("cf-ray", "x-sucuri-id", "x-datadome"))
+        has_rate_limit = any(h in lower_h for h in ("x-ratelimit-limit", "retry-after"))
+
+        if has_waf:
+            findings.append("WAF detected -- evasion encoding required")
+            recs.append("Use payload obfuscation: double encoding, case variation, comment injection")
+            score += 0.1
+        if has_rate_limit:
+            findings.append("Rate limiting active -- need slow-and-low approach")
+            recs.append("Rotate identifiers, use path normalization tricks")
+        if not has_logging:
+            findings.append("No request tracing headers -- attack may go undetected")
+            score += 0.15
+
+        # Weaponization difficulty
+        if components.get("is_mutating") and chain_potential >= 2:
+            findings.append(f"Low weaponization difficulty: mutating endpoint + {chain_potential} chain links")
+            score += 0.2
+
+        if components.get("stripe_object") in ("checkout.session", "payment_intent"):
+            findings.append(f"Stripe {components['stripe_object']} object exposed -- direct payment manipulation vector")
+            recs.append("Intercept client_secret, modify amount pre-confirmation")
+            score += 0.3
+
+        return PerspectiveResult("red_team", min(1.0, score), findings, recs)
+
+    def analyze_as_threat_intel(
+        self, components: dict[str, Any], zero_shot: list[ZeroShotFinding],
+    ) -> PerspectiveResult:
+        """Threat intelligence analyst perspective: CVE pattern matching,
+        MITRE ATT&CK mapping, known APT TTP alignment."""
+        findings: list[str] = []
+        recs: list[str] = []
+        score = 0.0
+        mitre_techniques: list[str] = []
+
+        # MITRE ATT&CK technique mapping
+        for f in zero_shot:
+            mapping = self._MITRE_ATTACK_MAP.get(f.category)
+            if mapping:
+                tid, tname = mapping
+                if tid not in mitre_techniques:
+                    mitre_techniques.append(tid)
+                    findings.append(f"MITRE ATT&CK: {tid} ({tname}) -- {f.detail}")
+                    score += 0.2
+
+        # Known CVE pattern matching
+        finding_cats = {f.category for f in zero_shot}
+        anomaly_cats = set()
+        for a in components.get("anomalies", []):
+            anomaly_cats.add(a.split(":")[0])
+
+        all_cats = finding_cats | anomaly_cats
+        for pattern_cat, cve_id, cve_desc in self._KNOWN_CVE_PATTERNS:
+            if any(pattern_cat in c for c in all_cats):
+                findings.append(f"CVE pattern match: {cve_id} ({cve_desc})")
+                recs.append(f"Cross-reference with {cve_id} exploit chain for escalation paths")
+                score += 0.25
+
+        # APT TTP alignment
+        body_text = components.get("body_text", "")
+        if re.search(r"(?:169\.254\.169\.254|meta-data|computeMetadata)", body_text, re.I):
+            findings.append("Cloud metadata access pattern -- aligns with APT cloud-focused TTPs")
+            mitre_techniques.append("T1552.005")
+            recs.append("Check for IMDS v1 (no token required) vs v2")
+            score += 0.4
+
+        if re.search(r"(?:arn:aws|ami-|iam)", body_text, re.I):
+            findings.append("AWS infrastructure leak -- aligns with cloud-native APT campaigns")
+            mitre_techniques.append("T1078.004")
+            score += 0.3
+
+        if components.get("trust_boundary") == "payment_to_entitlement" and components.get("anomalies"):
+            findings.append("Financial fraud pattern -- aligns with FIN7/FIN8 TTP for payment system abuse")
+            score += 0.35
+
+        if not components.get("has_auth_header") and components.get("trust_boundary") in (
+            "authenticated_to_admin", "payment_to_entitlement",
+        ):
+            findings.append("Broken access control pattern -- top exploitation vector in OWASP 2023/2024")
+            score += 0.3
+
+        if mitre_techniques:
+            recs.append(f"MITRE techniques observed: {', '.join(mitre_techniques[:8])}")
+
+        return PerspectiveResult("threat_intel", min(1.0, score), findings, recs)
+
     def synthesize(
         self,
         attacker: PerspectiveResult,
         defender: PerspectiveResult,
         auditor: PerspectiveResult,
+        red_team: PerspectiveResult | None = None,
+        threat_intel: PerspectiveResult | None = None,
     ) -> dict[str, Any]:
-        combined = max(attacker.risk_score, defender.risk_score, auditor.risk_score)
-        avg = (attacker.risk_score + defender.risk_score + auditor.risk_score) / 3
-        return {
+        all_perspectives = [attacker, defender, auditor]
+        weights = [0.25, 0.20, 0.15]
+        result: dict[str, Any] = {
             "attacker": attacker.to_dict(),
             "defender": defender.to_dict(),
             "auditor": auditor.to_dict(),
-            "combined_risk": round(combined, 3),
-            "average_risk": round(avg, 3),
         }
+
+        if red_team is not None:
+            all_perspectives.append(red_team)
+            weights.append(0.25)
+            result["red_team"] = red_team.to_dict()
+        else:
+            weights[0] += 0.125
+            weights[1] += 0.075
+            weights[2] += 0.05
+
+        if threat_intel is not None:
+            all_perspectives.append(threat_intel)
+            weights.append(0.15)
+            result["threat_intel"] = threat_intel.to_dict()
+        else:
+            dist = 0.15 / len(weights)
+            weights = [w + dist for w in weights]
+
+        combined = max(p.risk_score for p in all_perspectives)
+        weighted_risk = sum(
+            p.risk_score * w for p, w in zip(all_perspectives, weights)
+        ) / sum(weights) if sum(weights) > 0 else 0.0
+        consensus_count = sum(1 for p in all_perspectives if p.risk_score > 0.5)
+
+        result["combined_risk"] = round(combined, 3)
+        result["weighted_risk"] = round(weighted_risk, 3)
+        result["average_risk"] = round(
+            sum(p.risk_score for p in all_perspectives) / len(all_perspectives), 3,
+        )
+        result["consensus_risk"] = consensus_count
+        result["consensus_ratio"] = round(consensus_count / len(all_perspectives), 2)
+        return result
 
 
 # ============================================================================
@@ -1258,7 +1760,185 @@ class EvidenceCorrelator:
                     })
                     break
 
+        correlations.extend(self._find_field_correlations(endpoint_groups))
+        correlations.extend(self._find_auth_inconsistencies(endpoint_groups))
+        correlations.extend(self._find_temporal_sequences())
+        correlations.extend(self._find_response_body_cross_references())
+
         return correlations
+
+    def _find_field_correlations(
+        self, endpoint_groups: dict[str, list[int]],
+    ) -> list[dict[str, Any]]:
+        """Fields appearing across 3+ different endpoints = cross-endpoint data linkage."""
+        field_to_endpoints: dict[str, set[str]] = defaultdict(set)
+        for ep, indices in endpoint_groups.items():
+            for idx in indices:
+                resp = self._observations[idx].get("response_data") or {}
+                body = resp.get("body")
+                if isinstance(body, dict):
+                    for field_name in body:
+                        field_to_endpoints[field_name].add(ep)
+
+        results: list[dict[str, Any]] = []
+        for field, endpoints in field_to_endpoints.items():
+            if len(endpoints) >= 3 and re.search(r"(?:_id|_key|_token|_ref|id$)", field, re.I):
+                results.append({
+                    "type": "cross_endpoint_field",
+                    "field": field,
+                    "endpoints": sorted(endpoints)[:10],
+                    "endpoint_count": len(endpoints),
+                    "detail": (
+                        f"Field '{field}' appears in {len(endpoints)} endpoints -- "
+                        "cross-endpoint data linkage enables IDOR/enumeration chains"
+                    ),
+                })
+        return results[:15]
+
+    def _find_auth_inconsistencies(
+        self, endpoint_groups: dict[str, list[int]],
+    ) -> list[dict[str, Any]]:
+        """Endpoints returning both 2xx and 401/403 indicate inconsistent access control."""
+        results: list[dict[str, Any]] = []
+        for ep, indices in endpoint_groups.items():
+            if len(indices) < 2:
+                continue
+            has_success = False
+            has_auth_fail = False
+            success_has_auth = False
+            fail_has_auth = False
+            for idx in indices:
+                obs = self._observations[idx]
+                resp = obs.get("response_data") or {}
+                req = obs.get("request_data") or {}
+                status = resp.get("status_code", 0)
+                has_auth = any(
+                    h.lower() in ("authorization", "x-api-key", "cookie")
+                    for h in (req.get("headers") or {})
+                )
+                if 200 <= status < 300:
+                    has_success = True
+                    if has_auth:
+                        success_has_auth = True
+                elif status in (401, 403):
+                    has_auth_fail = True
+                    if has_auth:
+                        fail_has_auth = True
+
+            if has_success and has_auth_fail:
+                detail_parts = [f"Endpoint {ep} returns both success and auth failure"]
+                if has_success and not success_has_auth:
+                    detail_parts.append("SUCCESS returned WITHOUT auth headers")
+                if fail_has_auth:
+                    detail_parts.append("auth failure WITH credentials suggests scope/role issue")
+                results.append({
+                    "type": "auth_inconsistency",
+                    "endpoint": ep,
+                    "unauthenticated_success": has_success and not success_has_auth,
+                    "detail": " -- ".join(detail_parts),
+                })
+        return results[:10]
+
+    def _find_temporal_sequences(self) -> list[dict[str, Any]]:
+        """Detect ordered multi-step flows from endpoint call sequences."""
+        if len(self._observations) < 3:
+            return []
+        results: list[dict[str, Any]] = []
+        path_sequence: list[str] = []
+        for obs in self._observations:
+            req = obs.get("request_data") or {}
+            url = str(req.get("url", ""))
+            path = urlparse(url).path if url else ""
+            normalized = re.sub(r"/\d+", "/{id}", path)
+            normalized = re.sub(r"/[a-f0-9-]{20,}", "/{id}", normalized)
+            if normalized:
+                path_sequence.append(normalized)
+
+        # Detect repeated subsequences of length 2-4
+        ngram_counts: dict[tuple[str, ...], int] = defaultdict(int)
+        for n in (2, 3, 4):
+            for i in range(len(path_sequence) - n + 1):
+                ngram = tuple(path_sequence[i:i + n])
+                if len(set(ngram)) > 1:
+                    ngram_counts[ngram] += 1
+
+        for ngram, count in sorted(ngram_counts.items(), key=lambda x: x[1], reverse=True):
+            if count >= 2:
+                results.append({
+                    "type": "temporal_sequence",
+                    "sequence": list(ngram),
+                    "occurrences": count,
+                    "detail": (
+                        f"Flow detected: {' -> '.join(ngram)} "
+                        f"(observed {count} times) -- reveals multi-step business process"
+                    ),
+                })
+            if len(results) >= 10:
+                break
+
+        return results
+
+    def _find_response_body_cross_references(self) -> list[dict[str, Any]]:
+        """IDs/tokens produced in one response and consumed in a later request."""
+        results: list[dict[str, Any]] = []
+        id_re = re.compile(
+            r'"(\w+)":\s*"((?:pi_|sub_|cs_|ch_|in_|cus_|pm_|si_|evt_|txn_|'
+            r'plink_|price_|prod_|sk_|pk_|tok_|sess_|acct_)[A-Za-z0-9]+)"'
+        )
+        # Collect IDs from response bodies
+        response_ids: dict[str, tuple[int, str, str]] = {}  # id_val -> (obs_idx, endpoint, field_name)
+        for i, obs in enumerate(self._observations):
+            resp = obs.get("response_data") or {}
+            req = obs.get("request_data") or {}
+            url = str(req.get("url", ""))
+            path = urlparse(url).path if url else ""
+            body_text = _body_as_text(resp.get("body")) if resp.get("body") is not None else ""
+            for field, val in id_re.findall(body_text):
+                if val not in response_ids:
+                    response_ids[val] = (i, path, field)
+
+        # Find those IDs in later request URLs/bodies
+        flows: list[dict[str, Any]] = []
+        for i, obs in enumerate(self._observations):
+            req = obs.get("request_data") or {}
+            url = str(req.get("url", ""))
+            req_body_text = _body_as_text(req.get("body")) if req.get("body") is not None else ""
+            combined_req = url + "\n" + req_body_text
+
+            for id_val, (source_idx, source_ep, source_field) in response_ids.items():
+                if i <= source_idx:
+                    continue
+                if id_val in combined_req:
+                    target_path = urlparse(url).path if url else ""
+                    flows.append({
+                        "id_prefix": id_val[:6] + "...",
+                        "source_endpoint": source_ep,
+                        "source_field": source_field,
+                        "target_endpoint": target_path,
+                        "source_obs": source_idx,
+                        "target_obs": i,
+                    })
+
+        if flows:
+            seen_pairs: set[tuple[str, str]] = set()
+            deduped: list[dict[str, Any]] = []
+            for f in flows:
+                pair = (f["source_endpoint"], f["target_endpoint"])
+                if pair not in seen_pairs:
+                    seen_pairs.add(pair)
+                    deduped.append(f)
+
+            results.append({
+                "type": "cross_reference_flow",
+                "flows": deduped[:20],
+                "total_flows": len(deduped),
+                "detail": (
+                    f"{len(deduped)} ID cross-references: values produced in one response "
+                    "are consumed in later requests -- reveals multi-step dependencies"
+                ),
+            })
+
+        return results
 
     def get_correlation_clusters(self) -> list[dict[str, Any]]:
         clusters: dict[str, list[int]] = defaultdict(list)
@@ -2553,6 +3233,38 @@ class BrainstormEngine:
             "Test encoding variations (%2F, %00) in path",
             "Test CDN PoP-sharding by routing through different edge locations",
         ],
+        "waf_bypass": [
+            "Test double URL-encoding bypass (%%2527 for single quote)",
+            "Test unicode normalization bypass (fullwidth chars: %uFF07 for quote)",
+            "Test mixed encoding: combine URL-encode + HTML entities + unicode",
+            "Test HTTP Parameter Pollution (duplicate params handled differently per server)",
+            "Test HTTP Parameter Fragmentation (payload split across params server recombines)",
+            "Test chunked Transfer-Encoding to split payload across chunks",
+            "Test request body size overflow: pad past WAF inspection size limit",
+            "Test SSL/TLS cipher abuse: connect with cipher WAF cannot inspect",
+            "Test origin IP discovery via DNS history (IP History, DNS Trails)",
+            "Test X-Forwarded-For / X-Real-IP header spoofing to bypass IP-based WAF",
+            "Test HTTP/2 h2c smuggling to bypass WAF on HTTP/1.1 path",
+            "Test Content-Type confusion: send application/json where WAF expects form data",
+            "Test JSON-in-URL-param bypass for WAFs only inspecting body",
+            "Test case variation bypass (SeLeCt, UnIoN) to evade regex rules",
+            "Test comment injection bypass (/**/UNION/**/SELECT/**/)",
+            "Test null byte injection (%00) to terminate WAF string parsing",
+            "Test wildcard globbing in SQL (s%e%l%e%c%t) to fragment blocked keywords",
+            "Test alternate charset header (Content-Type: charset=ibm037) for body encoding",
+        ],
+        "subscription_abuse": [
+            "Test trial extension via re-registration with same email variant (user+1@)",
+            "Test subscription downgrade retaining premium feature flags in cache",
+            "Test cancel-then-reactivate within grace period exploiting proration bug",
+            "Test coupon stacking: apply multiple promotion codes in rapid succession",
+            "Test currency switching to lowest-denomination currency for minimum payment",
+            "Test free tier with manually elevated metadata (plan_id, tier override)",
+            "Test webhook event replay to trigger duplicate subscription credit",
+            "Test invoice manipulation: modify line items for net-zero payment",
+            "Test plan_id swapping between creation and confirmation steps",
+            "Test backdated trial_end via API parameter injection",
+        ],
     }
 
     def brainstorm_attack_vectors(
@@ -2788,6 +3500,155 @@ class MonteCarloRiskSimulator:
             "sample_count": n_simulations,
         }
 
+    def simulate_multi_chain_attack(
+        self,
+        chains: list[list[tuple[str, float]]],
+        n_simulations: int = 1000,
+    ) -> dict[str, Any]:
+        """Simulate multiple attack chains to find the most likely to succeed."""
+        if not chains:
+            return {"best_chain": None, "overall_success_rate": 0.0}
+
+        n_simulations = min(n_simulations, 5000)
+        chain_successes: list[int] = [0] * len(chains)
+        chain_steps: list[list[int]] = [[] for _ in chains]
+        any_success = 0
+
+        for _ in range(n_simulations):
+            sim_any = False
+            for ci, chain in enumerate(chains):
+                chain_succeeded = True
+                steps_taken = 0
+                for step_name, prob in chain:
+                    steps_taken += 1
+                    if self._rng.random() >= prob:
+                        chain_succeeded = False
+                        break
+                if chain_succeeded:
+                    chain_successes[ci] += 1
+                    chain_steps[ci].append(steps_taken)
+                    sim_any = True
+            if sim_any:
+                any_success += 1
+
+        rates = [s / n_simulations for s in chain_successes]
+        best_idx = max(range(len(rates)), key=lambda i: rates[i]) if rates else 0
+        fastest_idx = best_idx
+        if chain_steps:
+            avg_steps = [
+                statistics.mean(steps) if steps else float("inf")
+                for steps in chain_steps
+            ]
+            candidates = [i for i, r in enumerate(rates) if r > 0]
+            if candidates:
+                fastest_idx = min(candidates, key=lambda i: avg_steps[i])
+
+        return {
+            "best_chain": best_idx,
+            "best_chain_steps": [s for s, _ in chains[best_idx]] if chains else [],
+            "success_rates_by_chain": [round(r, 4) for r in rates],
+            "overall_success_rate": round(any_success / n_simulations, 4) if n_simulations > 0 else 0.0,
+            "expected_fastest_chain": fastest_idx,
+            "mean_steps_by_chain": [
+                round(statistics.mean(steps), 2) if steps else 0.0
+                for steps in chain_steps
+            ],
+            "simulations": n_simulations,
+        }
+
+    def estimate_financial_impact(
+        self,
+        severity: str,
+        is_payment: bool,
+        user_base_estimate: int = 10000,
+        avg_transaction_value: float = 50.0,
+        n_simulations: int = 1000,
+    ) -> dict[str, Any]:
+        """Simulate financial exposure from a vulnerability."""
+        base_exploit_rate = {
+            "critical": 0.15, "high": 0.08, "medium": 0.03, "low": 0.005, "none": 0.0,
+        }.get(severity, 0.0)
+        if is_payment:
+            base_exploit_rate *= 3.0
+
+        n_simulations = min(n_simulations, 5000)
+        losses: list[float] = []
+        for _ in range(n_simulations):
+            exploit_rate = base_exploit_rate * (0.3 + self._rng.random() * 1.4)
+            affected_users = int(user_base_estimate * exploit_rate)
+            txn_variance = 0.5 + self._rng.random()
+            direct_loss = affected_users * avg_transaction_value * txn_variance
+            reputation_mult = 1.0 + self._rng.random() * (3.0 if is_payment else 1.0)
+            regulatory_mult = 1.0
+            if is_payment and severity in ("critical", "high"):
+                regulatory_mult += self._rng.random() * 5.0
+            total = direct_loss * reputation_mult * regulatory_mult
+            losses.append(total)
+
+        losses.sort()
+        p50_idx = int(len(losses) * 0.5)
+        p90_idx = int(len(losses) * 0.9)
+        p99_idx = min(int(len(losses) * 0.99), len(losses) - 1)
+
+        return {
+            "expected_loss": round(statistics.mean(losses), 2),
+            "median_loss": round(losses[p50_idx], 2),
+            "worst_case_loss_p90": round(losses[p90_idx], 2),
+            "worst_case_loss_p99": round(losses[p99_idx], 2),
+            "confidence_interval_95": (
+                round(losses[int(len(losses) * 0.025)], 2),
+                round(losses[int(len(losses) * 0.975)], 2),
+            ),
+            "severity": severity,
+            "is_payment": is_payment,
+            "simulations": n_simulations,
+        }
+
+    def simulate_defense_effectiveness(
+        self,
+        finding_probabilities: list[float],
+        defense_reduction_factors: list[float],
+        n_simulations: int = 1000,
+    ) -> dict[str, Any]:
+        """Compare attack success with and without defenses applied."""
+        if not finding_probabilities:
+            return {"undefended_rate": 0.0, "defended_rate": 0.0, "effectiveness_percent": 0.0}
+
+        n_simulations = min(n_simulations, 5000)
+
+        def run_sim(probs: list[float]) -> float:
+            successes = 0
+            for _ in range(n_simulations):
+                for p in probs:
+                    if self._rng.random() < p:
+                        successes += 1
+                        break
+            return successes / n_simulations if n_simulations > 0 else 0.0
+
+        undefended = run_sim(finding_probabilities)
+
+        defended_probs = [
+            max(0.0, p * (1.0 - d))
+            for p, d in zip(finding_probabilities, defense_reduction_factors)
+        ]
+        while len(defended_probs) < len(finding_probabilities):
+            defended_probs.append(finding_probabilities[len(defended_probs)])
+
+        defended = run_sim(defended_probs)
+        effectiveness = (
+            (undefended - defended) / undefended * 100.0
+            if undefended > 0 else 100.0
+        )
+
+        return {
+            "undefended_rate": round(undefended, 4),
+            "defended_rate": round(defended, 4),
+            "effectiveness_percent": round(effectiveness, 1),
+            "findings_count": len(finding_probabilities),
+            "defenses_applied": len(defense_reduction_factors),
+            "simulations": n_simulations,
+        }
+
 
 # ============================================================================
 # 10. Attack Tree Generator
@@ -2836,6 +3697,106 @@ class AttackTreeGenerator:
                 },
             ],
         },
+        "account_takeover": {
+            "node_type": "OR",
+            "children": [
+                {
+                    "goal": "Credential theft via info disclosure",
+                    "node_type": "AND",
+                    "children": [
+                        {"goal": "Extract leaked credentials from response", "node_type": "LEAF", "category": "critical_secret"},
+                        {"goal": "Reuse stolen credentials for account access", "node_type": "LEAF", "category": "auth_bypass"},
+                    ],
+                },
+                {
+                    "goal": "Session hijack via XSS",
+                    "node_type": "AND",
+                    "children": [
+                        {"goal": "Exploit reflected/stored XSS to execute JavaScript", "node_type": "LEAF", "category": "injection_artifact_xss"},
+                        {"goal": "Exfiltrate session cookie to attacker domain", "node_type": "LEAF", "category": "info_disclosure"},
+                    ],
+                },
+                {"goal": "Auth bypass via broken authentication mechanisms", "node_type": "LEAF", "category": "auth_bypass"},
+                {"goal": "OAuth/SAML token manipulation (redirect_uri, assertion replay)", "node_type": "LEAF", "category": "auth_bypass"},
+            ],
+        },
+        "data_exfiltration": {
+            "node_type": "OR",
+            "children": [
+                {"goal": "Direct IDOR enumeration of user records", "node_type": "LEAF", "category": "idor"},
+                {
+                    "goal": "SQLi-based data extraction",
+                    "node_type": "AND",
+                    "children": [
+                        {"goal": "Exploit SQL injection for query manipulation", "node_type": "LEAF", "category": "injection_artifact_sqli"},
+                        {"goal": "Extract sensitive data from database via UNION/blind", "node_type": "LEAF", "category": "info_disclosure"},
+                    ],
+                },
+                {
+                    "goal": "GraphQL mass query exfiltration",
+                    "node_type": "AND",
+                    "children": [
+                        {"goal": "Discover full schema via introspection query", "node_type": "LEAF", "category": "info_disclosure"},
+                        {"goal": "Execute unbounded nested query to dump data", "node_type": "LEAF", "category": "broken_access_control"},
+                    ],
+                },
+                {"goal": "API versioning downgrade to bypass field-level auth", "node_type": "LEAF", "category": "broken_access_control"},
+            ],
+        },
+        "privilege_escalation": {
+            "node_type": "OR",
+            "children": [
+                {"goal": "Vertical escalation via role parameter injection in request", "node_type": "LEAF", "category": "privilege_escalation"},
+                {"goal": "Mass assignment of admin/superuser role field", "node_type": "LEAF", "category": "mass_assignment"},
+                {"goal": "Function-level authorization bypass via method override", "node_type": "LEAF", "category": "broken_access_control"},
+                {
+                    "goal": "JWT claim manipulation for privilege escalation",
+                    "node_type": "AND",
+                    "children": [
+                        {"goal": "Exploit JWT algorithm weakness (alg:none, HS256 confusion)", "node_type": "LEAF", "category": "auth_bypass"},
+                        {"goal": "Forge token with elevated role/admin claims", "node_type": "LEAF", "category": "privilege_escalation"},
+                    ],
+                },
+            ],
+        },
+        "payment_fraud": {
+            "node_type": "OR",
+            "children": [
+                {
+                    "goal": "Zero-amount checkout completion",
+                    "node_type": "AND",
+                    "children": [
+                        {"goal": "Manipulate payment amount to zero/negative", "node_type": "LEAF", "category": "payment_manipulation"},
+                        {"goal": "System grants entitlement for zero-amount payment", "node_type": "LEAF", "category": "entitlement_bypass"},
+                    ],
+                },
+                {
+                    "goal": "Refund abuse with entitlement retention",
+                    "node_type": "AND",
+                    "children": [
+                        {"goal": "Initiate refund after receiving entitlement", "node_type": "LEAF", "category": "business_logic"},
+                        {"goal": "Entitlement not revoked on successful refund", "node_type": "LEAF", "category": "entitlement_bypass"},
+                    ],
+                },
+                {
+                    "goal": "Currency arbitrage exploitation",
+                    "node_type": "AND",
+                    "children": [
+                        {"goal": "Submit payment in lower-value currency than displayed", "node_type": "LEAF", "category": "payment_manipulation"},
+                        {"goal": "Server accepts mismatched currency without validation", "node_type": "LEAF", "category": "business_logic"},
+                    ],
+                },
+                {"goal": "Coupon/promo code stacking beyond intended limit", "node_type": "LEAF", "category": "business_logic"},
+                {
+                    "goal": "Webhook forgery for payment credit",
+                    "node_type": "AND",
+                    "children": [
+                        {"goal": "Forge payment.succeeded webhook without signature", "node_type": "LEAF", "category": "auth_bypass"},
+                        {"goal": "System credits account from forged webhook event", "node_type": "LEAF", "category": "entitlement_bypass"},
+                    ],
+                },
+            ],
+        },
     }
 
     def generate_tree(
@@ -2862,8 +3823,12 @@ class AttackTreeGenerator:
 
         if node.node_type == "LEAF":
             category = template.get("category", "")
-            has_evidence = any(category in cat for cat in available_cats)
-            node.probability = 0.6 if has_evidence else 0.1
+            match_scores = [
+                0.7 if category in cat or cat in category else 0.0
+                for cat in available_cats
+            ]
+            best_match = max(match_scores) if match_scores else 0.0
+            node.probability = best_match if best_match > 0.0 else 0.05
             node.finding_ref = category
             return node
 
@@ -2879,6 +3844,27 @@ class AttackTreeGenerator:
             node.probability = 1.0 - math.prod(1.0 - c.probability for c in children) if children else 0.0
 
         return node
+
+    def rank_goals(
+        self,
+        available_findings: list[ZeroShotFinding],
+    ) -> list[dict[str, Any]]:
+        """Evaluate all goal templates against current findings, ranked by probability."""
+        finding_categories = {f.category for f in available_findings}
+        ranked: list[dict[str, Any]] = []
+        for goal_name, template in self._GOAL_TEMPLATES.items():
+            tree = self._build_node(
+                {"goal": goal_name, **template}, finding_categories,
+            )
+            critical_path = self.find_critical_path(tree)
+            ranked.append({
+                "goal": goal_name,
+                "probability": round(tree.probability, 4),
+                "critical_path": critical_path,
+                "node_type": tree.node_type,
+                "children_count": len(tree.children) if tree.children else 0,
+            })
+        return sorted(ranked, key=lambda x: x["probability"], reverse=True)
 
     def find_critical_path(self, tree: AttackTreeNode) -> list[str]:
         if tree.node_type == "LEAF":
@@ -2990,7 +3976,24 @@ def _contextual_notes_and_floor(
 # ============================================================================
 
 class LLMReplacementLayer:
-    """Ties all eleven reasoning engines together. One instance per run."""
+    """Orchestrates 13 reasoning engines with cross-engine feedback loops,
+    adaptive weighting, consensus detection, and kill chain synthesis.
+
+    Architecture:
+    1. Zero-shot pattern scanning
+    2. Structural anomaly baseline (optional sklearn)
+    3. Chain-of-thought multi-step reasoning (25 hypothesis templates)
+    4. Multi-perspective analysis (5 viewpoints: attacker/defender/auditor/red-team/threat-intel)
+    5. Bayesian hypothesis tracking with cross-observation decay
+    6. Cross-observation evidence correlation (7 correlation types)
+    7. Reverse engineering (19-method engine)
+    8. Divergent/convergent brainstorming (6 categories, WAF-specific bypass)
+    9. Monte Carlo risk simulation with financial impact modeling
+    10. Attack tree generation (5 goal templates)
+    11. Contextual severity calibration
+    12. Cross-engine consensus detection (NEW)
+    13. Kill chain narrative synthesis (NEW)
+    """
 
     def __init__(self) -> None:
         self._baseline = _StructuralBaseline()
@@ -3004,6 +4007,135 @@ class LLMReplacementLayer:
         self._brainstorm_engine = BrainstormEngine()
         self._monte_carlo = MonteCarloRiskSimulator(seed=42)
         self._attack_tree_gen = AttackTreeGenerator()
+        self._engine_hit_rates: dict[str, list[float]] = defaultdict(list)
+        self._cross_engine_history: list[dict[str, float]] = []
+
+    def _compute_adaptive_weights(self) -> dict[str, float]:
+        """Adapt engine weights based on historical hit rates."""
+        base = {
+            "zero_shot": 0.30, "structural": 0.15, "cot": 0.30,
+            "perspective": 0.25, "hypothesis": 0.20, "mc": 0.15, "attack_tree": 0.10,
+        }
+        if len(self._cross_engine_history) < 5:
+            return base
+        for engine, scores in self._engine_hit_rates.items():
+            if engine in base and len(scores) >= 3:
+                avg = sum(scores[-10:]) / len(scores[-10:])
+                if avg > 0.5:
+                    base[engine] = min(0.5, base[engine] * 1.3)
+                elif avg < 0.1:
+                    base[engine] = max(0.05, base[engine] * 0.7)
+        return base
+
+    def _compute_engine_consensus(
+        self, engine_scores: dict[str, float], threshold: float = 0.3,
+    ) -> dict[str, Any]:
+        """Cross-engine consensus: how many engines flag this observation."""
+        flagging = {n: s for n, s in engine_scores.items() if s > threshold}
+        total = len(engine_scores)
+        agreeing = len(flagging)
+        level = "none"
+        if agreeing >= 5:
+            level = "unanimous"
+        elif agreeing >= 4:
+            level = "strong"
+        elif agreeing >= 3:
+            level = "moderate"
+        elif agreeing >= 2:
+            level = "weak"
+        elif agreeing >= 1:
+            level = "single_engine"
+        return {
+            "consensus_level": level, "engines_flagging": agreeing,
+            "engines_total": total, "flagging_engines": flagging,
+            "consensus_score": round(agreeing / max(total, 1), 3),
+        }
+
+    def _cross_engine_amplification(
+        self, engine_scores: dict[str, float],
+        components: dict[str, Any], scored_hypotheses: list[Hypothesis],
+    ) -> tuple[list[str], float]:
+        """Cross-engine feedback: correlated signals get amplified."""
+        amps: list[str] = []
+        boost = 0.0
+
+        cot_s, hyp_s = engine_scores.get("cot", 0), engine_scores.get("hypothesis", 0)
+        if cot_s > 0.3 and hyp_s > 0.3:
+            amps.append(f"CoT+Hypothesis convergence (cot={cot_s:.2f}, hyp={hyp_s:.2f})")
+            boost += 0.1
+
+        zs_s, st_s = engine_scores.get("zero_shot", 0), engine_scores.get("structural", 0)
+        if zs_s > 0.3 and st_s > 0.3:
+            amps.append(f"Pattern+Structural convergence (zs={zs_s:.2f}, struct={st_s:.2f})")
+            boost += 0.1
+
+        payment_hyp = any(
+            h.category in ("payment_manipulation", "entitlement_bypass") and h.posterior > 0.3
+            for h in scored_hypotheses
+        )
+        if payment_hyp and components.get("trust_boundary") == "payment_to_entitlement":
+            amps.append("Payment hypothesis + payment trust boundary: high-confidence payment flaw")
+            boost += 0.15
+
+        auth_hyp = any(
+            h.category in ("auth_bypass", "privilege_escalation") and h.posterior > 0.25
+            for h in scored_hypotheses
+        )
+        if auth_hyp and not components.get("has_auth_header"):
+            amps.append("Auth bypass hypothesis + unauthenticated request: strong auth flaw signal")
+            boost += 0.15
+
+        p_s, t_s = engine_scores.get("perspective", 0), engine_scores.get("attack_tree", 0)
+        if p_s > 0.4 and t_s > 0.3:
+            amps.append("Multi-perspective + attack tree viability: realistic exploit path")
+            boost += 0.1
+
+        anomalies = components.get("anomalies", [])
+        if any("entitlement_drift" in a for a in anomalies) and any("zero_payment" in a for a in anomalies):
+            amps.append("CRITICAL: Entitlement drift + zero payment = access-without-payment confirmed")
+            boost += 0.25
+
+        return amps, min(0.5, boost)
+
+    def _synthesize_kill_chain(
+        self, components: dict[str, Any], scored_hypotheses: list[Hypothesis],
+        attack_tree: AttackTreeNode, brainstorm_chains: list[dict[str, Any]],
+        re_findings: list[dict[str, Any]],
+    ) -> str:
+        """Assemble a human-readable kill chain narrative from all engines."""
+        if not scored_hypotheses or scored_hypotheses[0].posterior < 0.15:
+            return ""
+
+        top = scored_hypotheses[0]
+        parts = [f"Kill chain: {top.category} at {components.get('endpoint', '?')}"]
+
+        wafs = [f.get("waf_cdn", "?") for f in re_findings if f.get("type") == "waf_fingerprint"]
+        if wafs:
+            parts.append(f"-> Recon: WAF/CDN ({', '.join(wafs[:3])})")
+
+        techs = [f.get("technology", "?") for f in re_findings if f.get("type") == "tech_fingerprint"]
+        if techs:
+            parts.append(f"-> Fingerprint: {', '.join(techs[:3])}")
+
+        parts.append(f"-> Exploit: {top.description}")
+
+        impact_map = {
+            "payment_manipulation": "Access without payment",
+            "entitlement_bypass": "Access without payment",
+            "auth_bypass": "Unauthorized access to protected resources",
+            "injection": "Data exfiltration / RCE potential",
+            "privilege_escalation": "Elevated privileges",
+            "idor": "Cross-user data access",
+        }
+        parts.append(f"-> Impact: {impact_map.get(top.category, top.category)} (p={top.posterior:.3f})")
+
+        if brainstorm_chains:
+            parts.append(f"-> Chain: {brainstorm_chains[0].get('chain', 'N/A')}")
+
+        if attack_tree.probability > 0.3:
+            parts.append(f"-> Tree probability: {attack_tree.probability:.1%}")
+
+        return " ".join(parts)
 
     def analyze_observation(self, observation: dict[str, Any]) -> LLMReplacementResult:
         self._observations_analyzed += 1
@@ -3021,11 +4153,15 @@ class LLMReplacementLayer:
         reasoning = self._cot_engine.reason(observation)
         components = self._cot_engine._decompose_observation(observation)
 
-        # --- Engine 4: Multi-perspective ---
+        # --- Engine 4: Multi-perspective (5 viewpoints) ---
         attacker_view = self._perspective_analyzer.analyze_as_attacker(components, zero_shot)
         defender_view = self._perspective_analyzer.analyze_as_defender(components, zero_shot)
         auditor_view = self._perspective_analyzer.analyze_as_auditor(components, zero_shot)
-        perspectives = self._perspective_analyzer.synthesize(attacker_view, defender_view, auditor_view)
+        red_team_view = self._perspective_analyzer.analyze_as_red_team(components, zero_shot)
+        threat_intel_view = self._perspective_analyzer.analyze_as_threat_intel(components, zero_shot)
+        perspectives = self._perspective_analyzer.synthesize(
+            attacker_view, defender_view, auditor_view, red_team_view, threat_intel_view,
+        )
 
         # --- Engine 5: Hypothesis ---
         surfaces = self._cot_engine._identify_attack_surface(components)
@@ -3046,39 +4182,85 @@ class LLMReplacementLayer:
         brainstorm_chains = self._brainstorm_engine.brainstorm_chain_compositions(zero_shot)
         divergent = self._brainstorm_engine.divergent_thinking(components)
 
+        defense_indicators = []
+        for f in re_findings:
+            if f.get("type") in ("anti_re", "waf_fingerprint", "waf_block_page"):
+                defense_indicators.append(f.get("waf_cdn", f.get("detail", "unknown")))
+        bypass_ideas = self._brainstorm_engine.brainstorm_bypass_techniques(defense_indicators)
+
         # --- Engine 9: Monte Carlo ---
         finding_probs = [h.posterior for h in scored_hypotheses if h.posterior > 0.1]
         mc_result = self._monte_carlo.simulate_attack_success(finding_probs)
         severity_scores = [_SEVERITY_FLOOR_SCORE.get(h.category, 0.3) for h in scored_hypotheses]
         mc_risk_dist = self._monte_carlo.compute_risk_distribution(severity_scores)
 
-        # --- Engine 10: Attack tree ---
+        # --- Engine 10: Attack tree (all 5 goal templates) ---
         attack_tree = self._attack_tree_gen.generate_tree("access_without_payment", zero_shot)
         critical_path = self._attack_tree_gen.find_critical_path(attack_tree)
+
+        all_attack_paths: list[dict] = [{
+            "goal": "access_without_payment",
+            "tree": attack_tree.to_dict(),
+            "critical_path": critical_path,
+            "success_probability": round(attack_tree.probability, 4),
+        }]
+        for goal in ("account_takeover", "data_exfiltration", "privilege_escalation", "payment_fraud"):
+            alt_tree = self._attack_tree_gen.generate_tree(goal, zero_shot)
+            if alt_tree.probability > 0.05:
+                all_attack_paths.append({
+                    "goal": goal,
+                    "tree": alt_tree.to_dict(),
+                    "critical_path": self._attack_tree_gen.find_critical_path(alt_tree),
+                    "success_probability": round(alt_tree.probability, 4),
+                })
 
         # --- Engine 11: Contextual ---
         contextual_notes, severity_floor = _contextual_notes_and_floor(
             request_data, zero_shot, components,
         )
 
-        # --- Synthesis: combine all signals ---
-        zero_shot_component = min(1.0, 0.3 * len(zero_shot))
-        structural_component = structural_score * (0.6 if structural_anomaly else 0.15)
-        cot_component = reasoning.confidence * 0.3
-        perspective_component = perspectives.get("combined_risk", 0.0) * 0.25
-        hypothesis_component = scored_hypotheses[0].posterior * 0.2 if scored_hypotheses else 0.0
-        mc_component = mc_result.get("success_rate", 0.0) * 0.15
-        tree_component = attack_tree.probability * 0.1
+        # --- Engine 12: Cross-engine consensus ---
+        adaptive_weights = self._compute_adaptive_weights()
 
-        overall_score = max(
-            zero_shot_component,
-            structural_component,
-            cot_component,
-            perspective_component,
-            hypothesis_component,
-            mc_component,
-            tree_component,
+        zero_shot_component = min(1.0, adaptive_weights["zero_shot"] * len(zero_shot))
+        structural_component = structural_score * (0.6 if structural_anomaly else 0.15)
+        cot_component = reasoning.confidence * adaptive_weights["cot"]
+        perspective_component = perspectives.get("combined_risk", 0.0) * adaptive_weights["perspective"]
+        hypothesis_component = scored_hypotheses[0].posterior * adaptive_weights["hypothesis"] if scored_hypotheses else 0.0
+        mc_component = mc_result.get("success_rate", 0.0) * adaptive_weights["mc"]
+        tree_component = attack_tree.probability * adaptive_weights["attack_tree"]
+
+        engine_scores = {
+            "zero_shot": zero_shot_component, "structural": structural_component,
+            "cot": cot_component, "perspective": perspective_component,
+            "hypothesis": hypothesis_component, "mc": mc_component,
+            "attack_tree": tree_component,
+        }
+        for name, score in engine_scores.items():
+            self._engine_hit_rates[name].append(score)
+
+        consensus = self._compute_engine_consensus(engine_scores)
+        amplifications, cross_boost = self._cross_engine_amplification(
+            engine_scores, components, scored_hypotheses,
         )
+
+        # --- Engine 13: Kill chain synthesis ---
+        kill_chain = self._synthesize_kill_chain(
+            components, scored_hypotheses, attack_tree, brainstorm_chains, re_findings,
+        )
+
+        # --- Final synthesis: combine with consensus + cross-engine boost ---
+        overall_score = max(engine_scores.values())
+        overall_score = min(1.0, overall_score + cross_boost)
+
+        consensus_boost = 0.0
+        if consensus["consensus_level"] in ("unanimous", "strong"):
+            consensus_boost = 0.1
+        elif consensus["consensus_level"] == "moderate":
+            consensus_boost = 0.05
+        overall_score = min(1.0, overall_score + consensus_boost)
+
+        self._cross_engine_history.append(engine_scores)
 
         severity = _bump_severity(_severity_from_score(overall_score), severity_floor)
         overall_score = max(overall_score, _SEVERITY_FLOOR_SCORE[severity])
@@ -3103,10 +4285,19 @@ class LLMReplacementLayer:
             "cot_component": round(cot_component, 4),
             "perspective_component": round(perspective_component, 4),
             "hypothesis_component": round(hypothesis_component, 4),
+            "mc_component": round(mc_component, 4),
+            "tree_component": round(tree_component, 4),
+            "consensus_boost": round(consensus_boost, 4),
+            "cross_engine_boost": round(cross_boost, 4),
             "severity_floor_applied": severity_floor,
             "final_severity": severity,
             "belief_state": self._hypothesis_engine.get_beliefs(),
         }
+
+        financial_impact: dict[str, Any] = {}
+        if hasattr(self._monte_carlo, "estimate_financial_impact"):
+            is_payment = components.get("trust_boundary") == "payment_to_entitlement"
+            financial_impact = self._monte_carlo.estimate_financial_impact(severity, is_payment)
 
         return LLMReplacementResult(
             suspicious_fields=[f.field for f in zero_shot],
@@ -3121,15 +4312,12 @@ class LLMReplacementLayer:
             contextual_notes=contextual_notes,
             reasoning_chain=reasoning.as_strings(),
             hypotheses=[h.to_dict() for h in scored_hypotheses[:10]],
-            attack_paths=[{
-                "tree": attack_tree.to_dict(),
-                "critical_path": critical_path,
-                "success_probability": round(attack_tree.probability, 4),
-            }],
+            attack_paths=all_attack_paths,
             brainstorm_results=(
                 brainstorm_vectors[:10]
                 + [{"type": "chain_composition", **c} for c in brainstorm_chains]
                 + [{"type": "divergent", **d} for d in divergent]
+                + [{"type": "bypass_technique", **b} for b in bypass_ideas[:10]]
             ),
             reverse_engineering_findings=re_findings[:20],
             confidence_calibration=confidence_calibration,
@@ -3137,6 +4325,11 @@ class LLMReplacementLayer:
             evidence_correlation=correlations[:10],
             anomaly_explanation=anomaly_explanation,
             risk_monte_carlo={**mc_result, "risk_distribution": mc_risk_dist},
+            engine_consensus=consensus,
+            cross_engine_amplifications=amplifications,
+            adaptive_weights=adaptive_weights,
+            kill_chain_summary=kill_chain,
+            financial_impact_estimate=financial_impact,
         )
 
     def get_statistics(self) -> dict[str, Any]:
@@ -3150,4 +4343,10 @@ class LLMReplacementLayer:
             "belief_state": self._hypothesis_engine.get_beliefs(),
             "correlation_clusters": self._evidence_correlator.get_correlation_clusters(),
             "feature_importances": self._baseline.get_feature_importances(),
+            "engine_hit_rates": {
+                k: round(sum(v[-10:]) / max(len(v[-10:]), 1), 4)
+                for k, v in self._engine_hit_rates.items()
+            },
+            "adaptive_weights": self._compute_adaptive_weights(),
+            "cross_engine_history_length": len(self._cross_engine_history),
         }
