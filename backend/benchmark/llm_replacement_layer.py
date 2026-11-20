@@ -1131,6 +1131,14 @@ class LLMReplacementResult:
     self_critique_results: list[dict] = field(default_factory=list)
     strategic_plan: list[str] = field(default_factory=list)
 
+    # --- v5 frontier techniques (ExploitGym / Astra / Mythos) ---
+    iterative_depth_reached: int = 1
+    exploit_chains: list[dict] = field(default_factory=list)
+    adversarial_verification: dict = field(default_factory=dict)
+    semantic_findings: list[dict] = field(default_factory=list)
+    kill_chain_analysis: dict = field(default_factory=dict)
+    hypothesis_refinement: dict = field(default_factory=dict)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "suspicious_fields": self.suspicious_fields,
@@ -1163,6 +1171,12 @@ class LLMReplacementResult:
             "belief_revision_trail": self.belief_revision_trail,
             "self_critique_results": self.self_critique_results,
             "strategic_plan": self.strategic_plan,
+            "iterative_depth_reached": self.iterative_depth_reached,
+            "exploit_chains": self.exploit_chains,
+            "adversarial_verification": self.adversarial_verification,
+            "semantic_findings": self.semantic_findings,
+            "kill_chain_analysis": self.kill_chain_analysis,
+            "hypothesis_refinement": self.hypothesis_refinement,
         }
 
 
@@ -4919,6 +4933,847 @@ def _contextual_notes_and_floor(
     return notes, floor
 
 
+# ############################################################################
+#
+#  FRONTIER TECHNIQUES: Inspired by ExploitGym (Berkeley 2026),
+#  GPT-6 Astra's recurrent-depth reasoning, and Mythos's semantic
+#  code reasoning + multi-vulnerability chaining.
+#
+#  G. IterativeDeepeningReasoner -- Recurrent-depth style: runs the same
+#     reasoning logic N times, each pass building on the last. Inspired by
+#     GPT-6 Astra's "looped transformer" architecture where successful
+#     exploits sometimes used zero chain-of-thought tokens because all
+#     reasoning was internalized across loop iterations.
+#
+#  H. ExploitChainSynthesizer -- Combines multiple lower-severity findings
+#     into critical composite attack paths. Directly from ExploitGym data
+#     showing Mythos chaining 2-4 vulns into working kernel exploits, and
+#     GPT-5.4 escalating through 8 steps from a 5-line PoV to full RCE.
+#
+#  I. AdversarialSelfVerifier -- Agent-as-a-Judge pattern from ExploitGym.
+#     A second reasoning pass audits the entire trajectory for shortcuts,
+#     false positives, reward hacking, and logical errors.
+#
+#  J. SemanticPatternReasoner -- Goes beyond regex matching to understand
+#     what response patterns MEAN. Inspired by Mythos catching an FFmpeg
+#     H.264 bug by "reasoning about code semantics" after fuzzers exercised
+#     the path 5M times without triggering it.
+#
+#  K. KillChainScorer -- Stage-aware scoring with shaped bonuses per attack
+#     phase (recon -> weaponize -> deliver -> exploit -> install -> C2 ->
+#     action). From the RL research showing kill-chain-aligned reward
+#     shaping outperforms sparse rewards for multi-stage attacks.
+#
+#  L. IterativeHypothesisRefiner -- Try-fail-revise loops. From Mythos
+#     writing code to trigger a suspected bug, compiling, running, and
+#     revising if the first attempt fails. And ExploitGym showing frontier
+#     models sustain multi-stage reasoning with no plateau even at 6 hours.
+#
+# ############################################################################
+
+
+# ============================================================================
+# G. Iterative Deepening Reasoner (Recurrent Depth)
+# ============================================================================
+
+class IterativeDeepeningReasoner:
+    """Variable-depth reasoning that re-runs analysis N times, each pass
+    building on discoveries from the previous pass.
+
+    Inspired by GPT-6 Astra's reported "recurrent depth" architecture where
+    the same transformer blocks loop multiple times. Some successful exploits
+    contained zero visible chain-of-thought tokens -- all reasoning was
+    internalized across loop iterations.
+
+    Our deterministic analog: run the full hypothesis-generation +
+    evaluation pipeline up to max_depth times. Each iteration feeds the
+    previous iteration's top hypotheses as "priors" to the next iteration,
+    allowing the system to progressively refine and deepen its analysis.
+
+    Key insight from the research: more budget helps, but only for the best
+    reasoning. Mythos Preview went from 127 to 204 exploits when extended
+    from 2h to 6h with no plateau. We simulate this with iterative passes."""
+
+    def __init__(self, max_depth: int = 3, convergence_threshold: float = 0.02) -> None:
+        self._max_depth = max_depth
+        self._convergence_threshold = convergence_threshold
+        self._depth_stats: list[dict[str, Any]] = []
+
+    def deepen(
+        self,
+        initial_hypotheses: list,  # list[Hypothesis]
+        components: dict[str, Any],
+        memory: EpisodicMemory,
+        knowledge_graph: KnowledgeGraph,
+    ) -> tuple[list, int]:  # (refined hypotheses, depth reached)
+        """Run iterative deepening passes until convergence or max depth."""
+        current = list(initial_hypotheses)
+        depth_reached = 1
+
+        for depth in range(1, self._max_depth):
+            prev_top = current[0].posterior if current else 0.0
+
+            # Pass 1: Cross-reference with knowledge graph neighbors
+            for h in current:
+                endpoint = components.get("endpoint", "")
+                if endpoint:
+                    neighbors = knowledge_graph.get_neighbors(endpoint, max_depth=2)
+                    neighbor_vulns = []
+                    for n in neighbors:
+                        node = knowledge_graph._nodes.get(n)
+                        if node and node.properties.get("has_auth") is False:
+                            neighbor_vulns.append(n)
+                    if neighbor_vulns and h.category in ("auth_bypass", "idor", "privilege_escalation"):
+                        h.posterior = min(0.99, h.posterior + 0.03 * len(neighbor_vulns))
+
+            # Pass 2: Memory-informed refinement
+            for h in current:
+                past = memory.retrieve(query_category=h.category, top_k=5, entry_type="finding")
+                high_confidence_past = [m for m in past if m.importance > 0.7]
+                if high_confidence_past:
+                    h.posterior = min(0.99, h.posterior + 0.02 * len(high_confidence_past))
+
+            # Pass 3: Cross-hypothesis interference detection
+            categories_active = [h.category for h in current if h.posterior > 0.3]
+            if len(set(categories_active)) >= 3:
+                for h in current:
+                    if h.posterior > 0.3:
+                        h.posterior = min(0.99, h.posterior + 0.02)
+
+            current.sort(key=lambda h: h.posterior, reverse=True)
+            depth_reached = depth + 1
+
+            new_top = current[0].posterior if current else 0.0
+            if abs(new_top - prev_top) < self._convergence_threshold:
+                break
+
+        self._depth_stats.append({
+            "depth_reached": depth_reached,
+            "max_depth": self._max_depth,
+            "top_posterior": round(current[0].posterior, 4) if current else 0.0,
+            "hypotheses_above_0.3": sum(1 for h in current if h.posterior > 0.3),
+        })
+        return current, depth_reached
+
+    def get_stats(self) -> list[dict[str, Any]]:
+        return self._depth_stats[-10:]
+
+
+# ============================================================================
+# H. Exploit Chain Synthesizer
+# ============================================================================
+
+@dataclass
+class ExploitChain:
+    """A synthesized multi-step exploit chain combining multiple findings."""
+    chain_id: str
+    steps: list[dict[str, Any]]
+    combined_severity: str
+    combined_probability: float
+    description: str
+    kill_chain_phase: str
+    individual_severities: list[str]
+
+
+class ExploitChainSynthesizer:
+    """Combines multiple lower-severity findings into critical composite
+    attack paths.
+
+    Directly inspired by:
+    - ExploitGym's GPT-5.4 trajectory: 8 steps from a 5-line PoV to full
+      RCE (OOB read -> pointer leak -> fake string -> arbitrary read ->
+      libc leak -> SROP -> system call)
+    - Mythos Preview chaining 2-4 vulnerabilities into working kernel
+      exploits (FreeBSD NFS: 20-gadget ROP chain across 6 packets)
+    - ExploitGym showing 69 "unintended" exploits by Mythos where the agent
+      pivoted to exploit a DIFFERENT vulnerability than intended
+
+    Key insight: individual low/medium-severity findings that wouldn't
+    warrant attention alone can compose into critical attack paths. This
+    is the technique that makes frontier models so dangerous -- they don't
+    just find bugs, they CHAIN them."""
+
+    _CHAIN_TEMPLATES: list[dict[str, Any]] = [
+        {
+            "name": "auth_to_payment",
+            "steps": ["auth_bypass", "idor", "payment_manipulation"],
+            "description": "Bypass auth -> enumerate user objects -> manipulate payment",
+            "severity_upgrade": "critical",
+            "kill_chain": "full_compromise",
+        },
+        {
+            "name": "recon_to_takeover",
+            "steps": ["info_disclosure", "auth_bypass", "privilege_escalation"],
+            "description": "Leak internal info -> bypass auth -> escalate to admin",
+            "severity_upgrade": "critical",
+            "kill_chain": "account_takeover",
+        },
+        {
+            "name": "injection_chain",
+            "steps": ["injection", "ssrf", "data_exfiltration"],
+            "description": "Inject payload -> SSRF to internal services -> exfil data",
+            "severity_upgrade": "critical",
+            "kill_chain": "data_breach",
+        },
+        {
+            "name": "entitlement_bypass",
+            "steps": ["entitlement_bypass", "payment_manipulation"],
+            "description": "Bypass tier check -> access premium without payment",
+            "severity_upgrade": "high",
+            "kill_chain": "access_without_payment",
+        },
+        {
+            "name": "race_to_fraud",
+            "steps": ["race_condition", "payment_manipulation", "refund_abuse"],
+            "description": "Race payment endpoint -> duplicate credit -> refund original",
+            "severity_upgrade": "critical",
+            "kill_chain": "financial_fraud",
+        },
+        {
+            "name": "token_to_takeover",
+            "steps": ["jwt_weakness", "auth_bypass", "privilege_escalation"],
+            "description": "Forge JWT -> bypass auth -> escalate privileges",
+            "severity_upgrade": "critical",
+            "kill_chain": "account_takeover",
+        },
+        {
+            "name": "waf_bypass_chain",
+            "steps": ["waf_bypass", "injection", "data_exfiltration"],
+            "description": "Bypass WAF -> inject payload -> extract data",
+            "severity_upgrade": "critical",
+            "kill_chain": "defense_evasion",
+        },
+        {
+            "name": "idor_to_mass_data",
+            "steps": ["idor", "rate_limit_bypass", "data_exfiltration"],
+            "description": "Enumerate via IDOR -> bypass rate limit -> mass extract",
+            "severity_upgrade": "critical",
+            "kill_chain": "data_breach",
+        },
+    ]
+
+    def __init__(self) -> None:
+        self._chains_found: list[ExploitChain] = []
+        self._chain_counter = 0
+
+    def synthesize_chains(
+        self,
+        hypotheses: list,  # list[Hypothesis]
+        findings_history: list[dict[str, Any]],
+        knowledge_graph: KnowledgeGraph,
+    ) -> list[ExploitChain]:
+        """Try to assemble multi-step exploit chains from current hypotheses
+        and historical findings."""
+        new_chains: list[ExploitChain] = []
+
+        active_cats = {h.category for h in hypotheses if h.posterior > 0.2}
+
+        all_cats = set(active_cats)
+        for f in findings_history[-50:]:
+            cat = f.get("category", "")
+            if cat:
+                all_cats.add(cat)
+
+        for template in self._CHAIN_TEMPLATES:
+            required = set(template["steps"])
+            matched = required & all_cats
+            match_ratio = len(matched) / len(required)
+
+            if match_ratio >= 0.6:
+                step_details: list[dict[str, Any]] = []
+                step_probs: list[float] = []
+                step_sevs: list[str] = []
+
+                for step_cat in template["steps"]:
+                    matching_hyp = [
+                        h for h in hypotheses if h.category == step_cat and h.posterior > 0.1
+                    ]
+                    matching_hist = [
+                        f for f in findings_history[-50:]
+                        if f.get("category") == step_cat
+                    ]
+
+                    if matching_hyp:
+                        best = max(matching_hyp, key=lambda h: h.posterior)
+                        step_details.append({
+                            "category": step_cat,
+                            "source": "current_hypothesis",
+                            "probability": round(best.posterior, 3),
+                            "description": best.description[:100],
+                        })
+                        step_probs.append(best.posterior)
+                        step_sevs.append("high" if best.posterior > 0.5 else "medium")
+                    elif matching_hist:
+                        best_hist = max(matching_hist, key=lambda f: f.get("posterior", 0.3))
+                        step_details.append({
+                            "category": step_cat,
+                            "source": "historical_finding",
+                            "probability": round(best_hist.get("posterior", 0.3), 3),
+                        })
+                        step_probs.append(best_hist.get("posterior", 0.3))
+                        step_sevs.append("medium")
+                    else:
+                        step_details.append({
+                            "category": step_cat,
+                            "source": "inferred_gap",
+                            "probability": 0.1,
+                        })
+                        step_probs.append(0.1)
+                        step_sevs.append("low")
+
+                combined_prob = 1.0
+                for p in step_probs:
+                    combined_prob *= p
+                combined_prob = combined_prob ** (1.0 / len(step_probs))
+
+                if match_ratio >= 0.6:
+                    combined_prob *= (1.0 + 0.2 * (match_ratio - 0.6))
+
+                unprotected = knowledge_graph.find_unprotected_paths()
+                if unprotected:
+                    combined_prob = min(0.99, combined_prob * 1.3)
+
+                self._chain_counter += 1
+                chain = ExploitChain(
+                    chain_id=f"CHAIN-{self._chain_counter:03d}-{template['name']}",
+                    steps=step_details,
+                    combined_severity=template["severity_upgrade"] if match_ratio >= 0.8 else "high",
+                    combined_probability=round(combined_prob, 4),
+                    description=template["description"],
+                    kill_chain_phase=template["kill_chain"],
+                    individual_severities=step_sevs,
+                )
+                new_chains.append(chain)
+
+        new_chains.sort(key=lambda c: c.combined_probability, reverse=True)
+        self._chains_found.extend(new_chains)
+        return new_chains
+
+    def get_all_chains(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": c.chain_id,
+                "description": c.description,
+                "steps": c.steps,
+                "combined_severity": c.combined_severity,
+                "combined_probability": c.combined_probability,
+                "kill_chain_phase": c.kill_chain_phase,
+                "step_count": len(c.steps),
+            }
+            for c in sorted(self._chains_found, key=lambda c: c.combined_probability, reverse=True)
+        ]
+
+
+# ============================================================================
+# I. Adversarial Self-Verifier (Agent-as-a-Judge)
+# ============================================================================
+
+class AdversarialSelfVerifier:
+    """Agent-as-a-Judge: a second reasoning pass that audits the entire
+    analysis trajectory for shortcuts, false positives, and logical errors.
+
+    Directly from ExploitGym's verification protocol: after the agent
+    produces an exploit, a separate judge model reviews the full trajectory
+    to verify the agent actually exploited the INTENDED vulnerability, not
+    just any bug it stumbled upon.
+
+    Our analog: after all engines produce their outputs, this verifier
+    checks for:
+    1. Consistency: Do the engines' conclusions agree with each other?
+    2. Evidence sufficiency: Is there enough concrete evidence, or just
+       pattern-matching on surface features?
+    3. False positive indicators: Common FP patterns that inflate scores
+    4. Reward hacking: Did the analysis game its own scoring?
+
+    ExploitGym found that 69 of Mythos's 226 flag captures exploited an
+    UNINTENDED vulnerability. This verifier catches that class of error."""
+
+    _FALSE_POSITIVE_INDICATORS: list[tuple[str, str, float]] = [
+        ("cors_preflight", "OPTIONS request with Access-Control headers is likely CORS, not a vuln", -0.3),
+        ("health_check", "Health/status endpoint returning 200 is expected behavior", -0.4),
+        ("swagger_ui", "Swagger/OpenAPI docs endpoint is intentionally public", -0.3),
+        ("favicon_404", "Missing favicon is not a security finding", -0.5),
+        ("csrf_token_present", "CSRF token present means defense IS working", -0.2),
+        ("rate_limited", "Being rate-limited confirms defense is active", -0.2),
+        ("redirect_to_login", "Redirect to login means auth IS enforced", -0.3),
+        ("empty_body_200", "200 with empty body may be a no-content response, not a data leak", -0.15),
+    ]
+
+    def __init__(self) -> None:
+        self._verification_results: list[dict[str, Any]] = []
+
+    def verify(
+        self,
+        engine_scores: dict[str, float],
+        hypotheses: list,
+        components: dict[str, Any],
+        zero_shot_findings: list,
+        overall_score: float,
+        consensus: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Run adversarial verification on the analysis output."""
+        issues: list[str] = []
+        adjustments: list[tuple[str, float]] = []
+
+        # Check 1: Consistency between engines
+        flagging = [n for n, s in engine_scores.items() if s > 0.3]
+        non_flagging = [n for n, s in engine_scores.items() if s <= 0.1]
+        if len(flagging) == 1 and len(non_flagging) >= 4:
+            issues.append(
+                f"Single-engine outlier: only '{flagging[0]}' flagging while "
+                f"{len(non_flagging)} engines see nothing. Likely false positive."
+            )
+            adjustments.append(("single_engine_outlier", -0.15))
+
+        # Check 2: Evidence sufficiency
+        if overall_score > 0.5 and len(zero_shot_findings) == 0:
+            if not any(s > 0.4 for s in engine_scores.values()):
+                issues.append(
+                    "High overall score but no zero-shot findings and no strong engine signal. "
+                    "Score may be inflated by consensus/amplification mechanics."
+                )
+                adjustments.append(("insufficient_evidence", -0.1))
+
+        # Check 3: False positive pattern detection
+        endpoint = components.get("endpoint", "").lower()
+        method = components.get("method", "GET")
+        status = components.get("status_code", 0)
+        body_text = components.get("body_text", "").lower()
+
+        if method == "OPTIONS" and "access-control" in str(components.get("headers", {})).lower():
+            issues.append("CORS preflight detected -- not a vulnerability")
+            adjustments.append(("cors_preflight", -0.3))
+
+        if any(p in endpoint for p in ("/health", "/status", "/ping", "/ready", "/alive")):
+            if status == 200:
+                issues.append("Health check endpoint -- expected to be public")
+                adjustments.append(("health_check", -0.4))
+
+        if any(p in endpoint for p in ("/swagger", "/api-docs", "/openapi", "/docs")):
+            issues.append("API documentation endpoint -- intentionally public")
+            adjustments.append(("swagger_docs", -0.3))
+
+        if status in (301, 302, 307, 308) and "login" in str(components.get("headers", {})).lower():
+            issues.append("Redirect to login -- auth IS being enforced")
+            adjustments.append(("redirect_to_login", -0.3))
+
+        if status == 429:
+            issues.append("Rate limited -- defense IS active")
+            adjustments.append(("rate_limited", -0.2))
+
+        # Check 4: Reward hacking detection
+        if hypotheses:
+            top_cats = [h.category for h in hypotheses[:3]]
+            if len(set(top_cats)) == 1:
+                single_cat = top_cats[0]
+                if all(
+                    h.category == single_cat for h in hypotheses[:5]
+                    if h.posterior > 0.1
+                ):
+                    issues.append(
+                        f"All top hypotheses are '{single_cat}' -- possible reward hacking. "
+                        f"The scoring may be over-indexing on one category."
+                    )
+                    adjustments.append(("category_monoculture", -0.05))
+
+        total_adjustment = sum(adj for _, adj in adjustments)
+        adjusted_score = max(0.0, min(1.0, overall_score + total_adjustment))
+
+        verdict = "CONFIRMED" if not issues else "PLAUSIBLE" if len(issues) <= 2 else "SUSPECT"
+
+        result = {
+            "verdict": verdict,
+            "issues": issues,
+            "adjustments": adjustments,
+            "original_score": round(overall_score, 4),
+            "adjusted_score": round(adjusted_score, 4),
+            "score_delta": round(total_adjustment, 4),
+        }
+        self._verification_results.append(result)
+        return result
+
+
+# ============================================================================
+# J. Semantic Pattern Reasoner
+# ============================================================================
+
+class SemanticPatternReasoner:
+    """Goes beyond regex matching to understand what response patterns MEAN
+    in context.
+
+    Inspired by Mythos catching an FFmpeg H.264 bug by "reasoning about code
+    semantics" after fuzzers exercised the vulnerable path 5 million times
+    without triggering it. The key: fuzzers test EXECUTION, semantic reasoning
+    tests MEANING.
+
+    This engine analyzes patterns that regex can't catch:
+    - Semantic contradictions ("plan": "free" but "entitlement": "premium")
+    - Temporal anomalies (created_at > updated_at, or expiry in the past)
+    - Business logic violations (amount=0 for a paid plan)
+    - State machine violations (order "shipped" but no tracking number)
+    - Implicit information leaks (error messages that reveal architecture)"""
+
+    _SEMANTIC_RULES: list[tuple[str, str, Any, str, str, float]] = [
+        ("plan_entitlement_mismatch", "plan_vs_entitlement",
+         None, "entitlement_bypass",
+         "Plan tier and entitlement level are contradictory", 0.85),
+        ("zero_amount_active", "amount_vs_status",
+         None, "payment_manipulation",
+         "Active subscription/order with zero amount", 0.8),
+        ("expired_but_active", "expiry_vs_status",
+         None, "entitlement_bypass",
+         "Resource shows active status but expiry date is in the past", 0.7),
+        ("no_auth_sensitive_data", "auth_vs_data_sensitivity",
+         None, "auth_bypass",
+         "Sensitive data returned without authentication", 0.75),
+        ("admin_field_exposed", "role_exposure",
+         None, "privilege_escalation",
+         "Admin/role fields exposed in non-admin response", 0.65),
+    ]
+
+    def __init__(self) -> None:
+        self._semantic_findings: list[dict[str, Any]] = []
+
+    def analyze_semantics(self, components: dict[str, Any]) -> list[dict[str, Any]]:
+        """Analyze response for semantic contradictions and business logic violations."""
+        findings: list[dict[str, Any]] = []
+        body_text = components.get("body_text", "")
+        status = components.get("status_code", 0)
+        has_auth = components.get("has_auth_header", False)
+        endpoint = components.get("endpoint", "")
+
+        # Rule 1: Plan/entitlement mismatch
+        plan_match = re.search(r'"(?:plan|tier|level)":\s*"(\w+)"', body_text, re.I)
+        entitlement_match = re.search(r'"(?:entitlement|access_level|subscription)":\s*"(\w+)"', body_text, re.I)
+        if plan_match and entitlement_match:
+            plan = plan_match.group(1).lower()
+            entitlement = entitlement_match.group(1).lower()
+            free_plans = {"free", "basic", "starter", "trial", "lite"}
+            premium_entitlements = {"premium", "pro", "enterprise", "unlimited", "gold", "platinum"}
+            if plan in free_plans and entitlement in premium_entitlements:
+                findings.append({
+                    "type": "semantic_contradiction",
+                    "rule": "plan_entitlement_mismatch",
+                    "detail": f"Plan='{plan}' but entitlement='{entitlement}' -- access without payment",
+                    "category": "entitlement_bypass",
+                    "confidence": 0.9,
+                    "severity": "critical",
+                })
+
+        # Rule 2: Zero amount on active resource
+        amount_match = re.search(r'"(?:amount|price|total|cost|charge)":\s*([0-9.]+)', body_text, re.I)
+        status_match = re.search(r'"(?:status|state)":\s*"(\w+)"', body_text, re.I)
+        if amount_match and status_match:
+            amount = float(amount_match.group(1))
+            resource_status = status_match.group(1).lower()
+            active_statuses = {"active", "paid", "completed", "fulfilled", "confirmed"}
+            if amount == 0 and resource_status in active_statuses:
+                findings.append({
+                    "type": "semantic_contradiction",
+                    "rule": "zero_amount_active",
+                    "detail": f"Amount={amount} but status='{resource_status}' -- zero-cost active resource",
+                    "category": "payment_manipulation",
+                    "confidence": 0.85,
+                    "severity": "high",
+                })
+
+        # Rule 3: Temporal anomalies
+        created_match = re.search(r'"(?:created_at|created)":\s*"([^"]+)"', body_text, re.I)
+        updated_match = re.search(r'"(?:updated_at|modified)":\s*"([^"]+)"', body_text, re.I)
+        expires_match = re.search(r'"(?:expires_at|expiry|exp)":\s*"?(\d+)"?', body_text, re.I)
+        if created_match and updated_match:
+            if created_match.group(1) > updated_match.group(1):
+                findings.append({
+                    "type": "temporal_anomaly",
+                    "rule": "created_after_updated",
+                    "detail": "created_at > updated_at -- possible clock manipulation or data tampering",
+                    "category": "data_integrity",
+                    "confidence": 0.6,
+                    "severity": "medium",
+                })
+
+        # Rule 4: Sensitive data without auth
+        sensitive_patterns = [
+            (r'"(?:ssn|social_security|tax_id)"', "PII"),
+            (r'"(?:card_number|cc_num|pan)"', "payment_card"),
+            (r'"(?:password_hash|hashed_password)"', "credential"),
+            (r'"(?:internal_ip|private_ip)":\s*"(?:10\.|172\.|192\.168\.)', "internal_network"),
+            (r'"(?:api_key|secret_key|access_token)":\s*"[a-zA-Z0-9_-]{20,}"', "api_secret"),
+        ]
+        if not has_auth and status in range(200, 300):
+            for pattern, data_type in sensitive_patterns:
+                if re.search(pattern, body_text, re.I):
+                    findings.append({
+                        "type": "unauthenticated_data_exposure",
+                        "rule": "no_auth_sensitive_data",
+                        "detail": f"{data_type} data returned without authentication",
+                        "category": "auth_bypass",
+                        "confidence": 0.8,
+                        "severity": "critical",
+                    })
+
+        # Rule 5: State machine violations
+        shipped_no_tracking = (
+            re.search(r'"(?:status|state)":\s*"shipped"', body_text, re.I)
+            and not re.search(r'"(?:tracking|tracking_number|tracking_id)"', body_text, re.I)
+        )
+        if shipped_no_tracking:
+            findings.append({
+                "type": "state_machine_violation",
+                "rule": "shipped_no_tracking",
+                "detail": "Order marked 'shipped' but no tracking number -- possible state manipulation",
+                "category": "business_logic",
+                "confidence": 0.55,
+                "severity": "medium",
+            })
+
+        # Rule 6: Implicit architecture leaks in error messages
+        arch_patterns = [
+            (r'(?:at |in )[\w.]+\.(?:java|py|rb|go|rs):\d+', "stack_trace_leak"),
+            (r'(?:MySQL|PostgreSQL|MongoDB|Redis|Elasticsearch)\s+(?:error|version)', "database_leak"),
+            (r'(?:nginx|apache|tomcat|gunicorn|uwsgi)/[\d.]+', "server_version_leak"),
+            (r'AWS_(?:ACCESS_KEY|SECRET|SESSION)', "cloud_credential_leak"),
+        ]
+        for pattern, leak_type in arch_patterns:
+            if re.search(pattern, body_text, re.I):
+                findings.append({
+                    "type": "architecture_leak",
+                    "rule": leak_type,
+                    "detail": f"Response reveals {leak_type.replace('_', ' ')}",
+                    "category": "info_disclosure",
+                    "confidence": 0.7,
+                    "severity": "medium",
+                })
+
+        # Rule 7: Response size anomaly relative to request
+        body_size = components.get("body_size", 0)
+        if body_size > 10000 and not has_auth:
+            findings.append({
+                "type": "excessive_data",
+                "rule": "large_unauthed_response",
+                "detail": f"Large response ({body_size} bytes) without authentication",
+                "category": "info_disclosure",
+                "confidence": 0.5,
+                "severity": "medium",
+            })
+
+        self._semantic_findings.extend(findings)
+        return findings
+
+    def get_all_findings(self) -> list[dict[str, Any]]:
+        return self._semantic_findings[-50:]
+
+
+# ============================================================================
+# K. Kill Chain Scorer (Stage-Aware Reward Shaping)
+# ============================================================================
+
+class KillChainScorer:
+    """Stage-aware scoring with shaped bonuses per attack phase.
+
+    From the RL research (arXiv 2605.17075): kill-chain-aligned reward
+    shaping with bonuses and penalties per stage outperforms sparse rewards
+    for multi-stage attack discovery.
+
+    Maps findings to Lockheed Martin Cyber Kill Chain phases:
+    1. Reconnaissance    - info disclosure, tech fingerprinting
+    2. Weaponization     - identifying exploitable vulns
+    3. Delivery          - finding injection/upload vectors
+    4. Exploitation      - auth bypass, injection, SSRF
+    5. Installation      - privilege escalation, persistence
+    6. C2 (Command)      - SSRF to internal, webhook manipulation
+    7. Actions on Obj.   - data exfil, payment manipulation, entitlement bypass
+
+    Each phase has a base score. Findings that advance through multiple
+    phases get multiplicative bonuses. This rewards CHAINS over isolated hits."""
+
+    _PHASE_MAP: dict[str, int] = {
+        "info_disclosure": 1, "tech_fingerprint": 1, "waf_fingerprint": 1,
+        "injection": 3, "xss": 3, "upload": 3,
+        "auth_bypass": 4, "jwt_weakness": 4, "ssrf": 4,
+        "privilege_escalation": 5, "persistence": 5,
+        "webhook_forge": 6, "ssrf_internal": 6,
+        "data_exfiltration": 7, "payment_manipulation": 7,
+        "entitlement_bypass": 7, "refund_abuse": 7, "idor": 4,
+        "race_condition": 4, "business_logic": 4,
+    }
+
+    _PHASE_NAMES = [
+        "", "Reconnaissance", "Weaponization", "Delivery",
+        "Exploitation", "Installation", "Command & Control",
+        "Actions on Objectives",
+    ]
+
+    _PHASE_BONUS: dict[int, float] = {
+        1: 0.05, 2: 0.10, 3: 0.15, 4: 0.25,
+        5: 0.30, 6: 0.35, 7: 0.40,
+    }
+
+    def __init__(self) -> None:
+        self._phase_history: list[set[int]] = []
+
+    def score_kill_chain(
+        self,
+        hypotheses: list,
+        semantic_findings: list[dict[str, Any]],
+        exploit_chains: list[ExploitChain],
+    ) -> dict[str, Any]:
+        """Score the current observation's position in the kill chain."""
+        active_phases: set[int] = set()
+
+        for h in hypotheses:
+            if h.posterior > 0.2:
+                phase = self._PHASE_MAP.get(h.category, 0)
+                if phase > 0:
+                    active_phases.add(phase)
+
+        for f in semantic_findings:
+            cat = f.get("category", "")
+            phase = self._PHASE_MAP.get(cat, 0)
+            if phase > 0:
+                active_phases.add(phase)
+
+        chain_bonus = 0.0
+        longest_chain = 0
+        if exploit_chains:
+            best_chain = max(exploit_chains, key=lambda c: c.combined_probability)
+            longest_chain = len(best_chain.steps)
+            chain_bonus = 0.05 * longest_chain
+
+        phase_score = sum(self._PHASE_BONUS.get(p, 0) for p in active_phases)
+
+        consecutive = 0
+        if active_phases:
+            sorted_phases = sorted(active_phases)
+            current_run = 1
+            for i in range(1, len(sorted_phases)):
+                if sorted_phases[i] == sorted_phases[i - 1] + 1:
+                    current_run += 1
+                else:
+                    consecutive = max(consecutive, current_run)
+                    current_run = 1
+            consecutive = max(consecutive, current_run)
+
+        continuity_bonus = 0.1 * max(0, consecutive - 1)
+
+        total_score = min(1.0, phase_score + chain_bonus + continuity_bonus)
+
+        self._phase_history.append(active_phases)
+
+        return {
+            "kill_chain_score": round(total_score, 4),
+            "active_phases": sorted(active_phases),
+            "phase_names": [self._PHASE_NAMES[p] for p in sorted(active_phases) if p < len(self._PHASE_NAMES)],
+            "phase_count": len(active_phases),
+            "longest_consecutive": consecutive,
+            "chain_bonus": round(chain_bonus, 4),
+            "continuity_bonus": round(continuity_bonus, 4),
+            "deepest_phase": max(active_phases) if active_phases else 0,
+            "deepest_phase_name": (
+                self._PHASE_NAMES[max(active_phases)]
+                if active_phases and max(active_phases) < len(self._PHASE_NAMES)
+                else "None"
+            ),
+        }
+
+
+# ============================================================================
+# L. Iterative Hypothesis Refiner (Try-Fail-Revise)
+# ============================================================================
+
+class IterativeHypothesisRefiner:
+    """Try-fail-revise loops inspired by Mythos's exploit development process.
+
+    From the research: Mythos writes code to trigger a suspected bug,
+    compiles in a test environment, runs it, and REVISES if the first
+    attempt fails. This is the core of frontier-level reasoning -- not
+    just generating hypotheses, but iterating on them.
+
+    ExploitGym showed that more budget helps frontier models with no plateau:
+    Mythos went from 127 exploits at 2h to 204 at 6h. The model keeps
+    finding new angles.
+
+    Our analog: for each hypothesis, generate counter-hypotheses and
+    alternative explanations, then re-evaluate. Track which hypotheses
+    have been "revised" and how many times. Hypotheses that survive
+    multiple revision cycles are much more reliable."""
+
+    def __init__(self, max_revisions: int = 3) -> None:
+        self._max_revisions = max_revisions
+        self._revision_history: dict[str, list[float]] = defaultdict(list)
+
+    def refine(
+        self,
+        hypotheses: list,
+        components: dict[str, Any],
+        memory: EpisodicMemory,
+    ) -> list:
+        """Run try-fail-revise on each hypothesis."""
+        for h in hypotheses:
+            if h.posterior < 0.1:
+                continue
+
+            revision_key = f"{h.category}:{components.get('endpoint', '')}"
+            prev_posteriors = self._revision_history.get(revision_key, [])
+
+            # Revision 1: Check for alternative explanations
+            alt_explanation_penalty = 0.0
+            if h.category == "auth_bypass" and components.get("status_code") == 200:
+                if components.get("body_size", 0) < 100:
+                    alt_explanation_penalty = -0.1
+            elif h.category == "injection" and components.get("status_code") in (400, 422):
+                alt_explanation_penalty = -0.15
+            elif h.category == "payment_manipulation":
+                body = components.get("body_text", "")
+                if '"test"' in body.lower() or '"sandbox"' in body.lower():
+                    alt_explanation_penalty = -0.2
+
+            # Revision 2: Consistency with past observations of same endpoint
+            past_same_ep = memory.retrieve_by_endpoint(
+                components.get("endpoint", ""), limit=10,
+            )
+            if past_same_ep:
+                past_cats = [
+                    m.category for m in past_same_ep
+                    if m.category == h.category and m.importance > 0.5
+                ]
+                if len(past_cats) >= 2:
+                    h.posterior = min(0.99, h.posterior + 0.05)
+                elif not past_cats and len(past_same_ep) >= 5:
+                    h.posterior = max(0.01, h.posterior - 0.03)
+
+            # Revision 3: Cross-endpoint pattern
+            same_cat_findings = memory.retrieve(
+                query_category=h.category, top_k=10, entry_type="finding",
+            )
+            unique_eps = {m.endpoint for m in same_cat_findings if m.endpoint}
+            if len(unique_eps) >= 3:
+                h.posterior = min(0.99, h.posterior + 0.03)
+
+            h.posterior = max(0.01, h.posterior + alt_explanation_penalty)
+            self._revision_history[revision_key].append(h.posterior)
+
+            if len(prev_posteriors) >= 2:
+                trend = prev_posteriors[-1] - prev_posteriors[0]
+                if trend > 0.1:
+                    h.posterior = min(0.99, h.posterior + 0.02)
+
+        hypotheses.sort(key=lambda h: h.posterior, reverse=True)
+        return hypotheses
+
+    def get_revision_summary(self) -> dict[str, Any]:
+        return {
+            "total_hypotheses_tracked": len(self._revision_history),
+            "multi_revision": sum(
+                1 for v in self._revision_history.values() if len(v) >= 2
+            ),
+            "trending_up": sum(
+                1 for v in self._revision_history.values()
+                if len(v) >= 2 and v[-1] > v[0]
+            ),
+        }
+
+
 # ============================================================================
 # Main LLMReplacementLayer (orchestrates all engines)
 # ============================================================================
@@ -4965,6 +5820,14 @@ class LLMReplacementLayer:
         self._knowledge_graph = KnowledgeGraph()
         self._belief_log = BeliefRevisionLog()
         self._self_critique = SelfCritiqueEngine()
+
+        # v5: Frontier techniques (ExploitGym / Astra / Mythos inspired)
+        self._deepening_reasoner = IterativeDeepeningReasoner(max_depth=3)
+        self._chain_synthesizer = ExploitChainSynthesizer()
+        self._self_verifier = AdversarialSelfVerifier()
+        self._semantic_reasoner = SemanticPatternReasoner()
+        self._kill_chain_scorer = KillChainScorer()
+        self._hypothesis_refiner = IterativeHypothesisRefiner(max_revisions=3)
 
     def _compute_adaptive_weights(self) -> dict[str, float]:
         """Adapt engine weights based on historical hit rates."""
@@ -5333,9 +6196,54 @@ class LLMReplacementLayer:
             components, scored_hypotheses, attack_tree, brainstorm_chains, re_findings,
         )
 
+        # --- Engine 14: Semantic Pattern Reasoning (Mythos-inspired) ---
+        semantic_findings = self._semantic_reasoner.analyze_semantics(components)
+
+        # --- Engine 15: Iterative Deepening (Astra recurrent-depth) ---
+        scored_hypotheses, depth_reached = self._deepening_reasoner.deepen(
+            scored_hypotheses, components, self._memory, self._knowledge_graph,
+        )
+
+        # --- Engine 16: Iterative Hypothesis Refinement (try-fail-revise) ---
+        scored_hypotheses = self._hypothesis_refiner.refine(
+            scored_hypotheses, components, self._memory,
+        )
+
+        # --- Engine 17: Exploit Chain Synthesis (ExploitGym multi-vuln chaining) ---
+        findings_history = [
+            m.content for m in self._memory.retrieve(
+                query_category="", top_k=50, entry_type="finding",
+            )
+        ]
+        exploit_chains = self._chain_synthesizer.synthesize_chains(
+            scored_hypotheses, findings_history, self._knowledge_graph,
+        )
+
+        # --- Engine 18: Kill Chain Scoring (stage-aware reward shaping) ---
+        kill_chain_analysis = self._kill_chain_scorer.score_kill_chain(
+            scored_hypotheses, semantic_findings, exploit_chains,
+        )
+
         # --- Final synthesis: combine with consensus + cross-engine boost ---
         overall_score = max(engine_scores.values())
         overall_score = min(1.0, overall_score + cross_boost)
+
+        # Semantic findings boost
+        if semantic_findings:
+            critical_semantics = [f for f in semantic_findings if f.get("severity") == "critical"]
+            semantic_boost = min(0.2, 0.05 * len(critical_semantics) + 0.02 * len(semantic_findings))
+            overall_score = min(1.0, overall_score + semantic_boost)
+
+        # Exploit chain boost
+        if exploit_chains:
+            best_chain = max(exploit_chains, key=lambda c: c.combined_probability)
+            chain_boost = min(0.15, best_chain.combined_probability * 0.3)
+            overall_score = min(1.0, overall_score + chain_boost)
+
+        # Kill chain depth bonus
+        kc_score = kill_chain_analysis.get("kill_chain_score", 0)
+        if kc_score > 0.3:
+            overall_score = min(1.0, overall_score + kc_score * 0.1)
 
         consensus_boost = 0.0
         if consensus["consensus_level"] in ("unanimous", "strong"):
@@ -5349,6 +6257,15 @@ class LLMReplacementLayer:
         severity = _bump_severity(_severity_from_score(overall_score), severity_floor)
         overall_score = max(overall_score, _SEVERITY_FLOOR_SCORE[severity])
         overall_score = max(0.0, min(1.0, overall_score))
+
+        # --- Engine 19: Adversarial Self-Verification (Agent-as-a-Judge) ---
+        verification = self._self_verifier.verify(
+            engine_scores, scored_hypotheses, components,
+            zero_shot, overall_score, consensus,
+        )
+        if verification["verdict"] == "SUSPECT":
+            overall_score = verification["adjusted_score"]
+            severity = _bump_severity(_severity_from_score(overall_score), severity_floor)
 
         self._findings_by_severity[severity] += 1
 
@@ -5432,6 +6349,23 @@ class LLMReplacementLayer:
                 for h in scored_hypotheses[:5]
             ],
             strategic_plan=strategic_plan,
+            # v5: frontier techniques outputs
+            iterative_depth_reached=depth_reached,
+            exploit_chains=[
+                {
+                    "id": c.chain_id,
+                    "description": c.description,
+                    "steps": c.steps,
+                    "combined_severity": c.combined_severity,
+                    "combined_probability": c.combined_probability,
+                    "kill_chain_phase": c.kill_chain_phase,
+                }
+                for c in exploit_chains[:5]
+            ],
+            adversarial_verification=verification,
+            semantic_findings=semantic_findings[:10],
+            kill_chain_analysis=kill_chain_analysis,
+            hypothesis_refinement=self._hypothesis_refiner.get_revision_summary(),
         )
 
     def get_statistics(self) -> dict[str, Any]:
@@ -5458,4 +6392,9 @@ class LLMReplacementLayer:
             "knowledge_graph": self._knowledge_graph.to_summary(),
             "metacognitive_assessment": self._metacognition.self_assess(),
             "largest_belief_shifts": self._belief_log.get_largest_shifts(5),
+            # v5: frontier technique statistics
+            "iterative_deepening_stats": self._deepening_reasoner.get_stats(),
+            "exploit_chains_found": self._chain_synthesizer.get_all_chains(),
+            "semantic_findings_total": len(self._semantic_reasoner.get_all_findings()),
+            "hypothesis_refinement": self._hypothesis_refiner.get_revision_summary(),
         }
