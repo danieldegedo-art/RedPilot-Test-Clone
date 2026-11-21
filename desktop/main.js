@@ -127,23 +127,29 @@ function loadSessionCookies() {
 
 // --- Playwright: login flow ---
 
+const CHROME_PROFILE_DIR = path.join(app.getPath("userData"), "redpilot-chrome-profile");
+
+const STEALTH_ARGS = [
+  "--no-sandbox",
+  "--disable-blink-features=AutomationControlled",
+  "--disable-features=IsolateOrigins,site-per-process",
+  "--disable-dev-shm-usage",
+];
+
 async function openLoginBrowser(url) {
   const { chromium } = require("playwright");
-  const browser = await chromium.launch({
+  const context = await chromium.launchPersistentContext(CHROME_PROFILE_DIR, {
     headless: false,
     channel: "chrome",
-    args: [
-      "--no-sandbox",
-      "--disable-blink-features=AutomationControlled",
-    ],
-  });
-  loginBrowser = browser;
-  const context = await browser.newContext({
+    args: STEALTH_ARGS,
+    ignoreDefaultArgs: ["--enable-automation"],
     userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   });
-  const page = await context.newPage();
+  loginBrowser = context.browser() || context;
+  const page = context.pages()[0] || await context.newPage();
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+    delete navigator.__proto__.webdriver;
   });
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
 
@@ -155,10 +161,19 @@ async function openLoginBrowser(url) {
       resolved = true;
       try {
         await page.waitForTimeout(1500);
-        const state = await context.storageState();
+        const cookies = await context.cookies();
+        const storage = await page.evaluate(() => {
+          const ls = {};
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            ls[k] = localStorage.getItem(k);
+          }
+          return { localStorage: ls };
+        });
+        const state = { cookies, origins: [{ origin: new URL(page.url()).origin, localStorage: Object.entries(storage.localStorage).map(([name, value]) => ({ name, value })) }] };
         ensureStateDir();
         fs.writeFileSync(SESSION_STATE_PATH, JSON.stringify(state, null, 2));
-        await browser.close();
+        await context.close();
         loginBrowser = null;
         resolve({ success: true });
       } catch (err) {
@@ -175,7 +190,7 @@ async function openLoginBrowser(url) {
       }
     });
 
-    browser.on("disconnected", () => {
+    context.on("close", () => {
       if (!resolved) {
         resolved = true;
         resolve({ success: false, error: "Browser disconnected" });
@@ -190,25 +205,25 @@ async function openProofBrowser(url) {
   if (!hasSession()) return { success: false, error: "No session state" };
   const state = JSON.parse(fs.readFileSync(SESSION_STATE_PATH, "utf-8"));
   const { chromium } = require("playwright");
-  const browser = await chromium.launch({
+  const context = await chromium.launchPersistentContext(CHROME_PROFILE_DIR, {
     headless: false,
     channel: "chrome",
-    args: [
-      "--no-sandbox",
-      "--disable-blink-features=AutomationControlled",
-    ],
-  });
-  const context = await browser.newContext({
-    storageState: state,
+    args: STEALTH_ARGS,
+    ignoreDefaultArgs: ["--enable-automation"],
     userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   });
-  const page = await context.newPage();
+  const page = context.pages()[0] || await context.newPage();
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+    delete navigator.__proto__.webdriver;
+  });
+  if (state.cookies && state.cookies.length) await context.addCookies(state.cookies);
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
 
   return new Promise((resolve) => {
-    browser.on("disconnected", () => resolve({ success: true }));
+    context.on("close", () => resolve({ success: true }));
     page.on("close", async () => {
-      try { await browser.close(); } catch {}
+      try { await context.close(); } catch {}
       resolve({ success: true });
     });
   });
