@@ -1142,6 +1142,14 @@ class LLMReplacementResult:
     payment_glue_findings: list[dict] = field(default_factory=list)
     payment_provider_summary: dict = field(default_factory=dict)
 
+    # v7: Enterprise platform detection + access-without-payment + AI agent attack surface
+    enterprise_platform_detections: list[dict] = field(default_factory=list)
+    access_without_payment_findings: list[dict] = field(default_factory=list)
+    ai_agent_attack_findings: list[dict] = field(default_factory=list)
+    enterprise_platform_summary: dict = field(default_factory=dict)
+    access_without_payment_summary: dict = field(default_factory=dict)
+    ai_agent_attack_summary: dict = field(default_factory=dict)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "suspicious_fields": self.suspicious_fields,
@@ -1182,6 +1190,12 @@ class LLMReplacementResult:
             "hypothesis_refinement": self.hypothesis_refinement,
             "payment_glue_findings": self.payment_glue_findings,
             "payment_provider_summary": self.payment_provider_summary,
+            "enterprise_platform_detections": self.enterprise_platform_detections,
+            "access_without_payment_findings": self.access_without_payment_findings,
+            "ai_agent_attack_findings": self.ai_agent_attack_findings,
+            "enterprise_platform_summary": self.enterprise_platform_summary,
+            "access_without_payment_summary": self.access_without_payment_summary,
+            "ai_agent_attack_summary": self.ai_agent_attack_summary,
         }
 
 
@@ -7678,6 +7692,1127 @@ class PaymentGlueCodeAnalyzer:
         }
 
 
+
+
+# ############################################################################
+#
+#  N. EnterprisePlatformDetector -- Fingerprints enterprise platforms and
+#     AI services from HTTP traffic. Returns platform-specific vulnerability
+#     profiles that inform other engines about the attack surface.
+#     Covers: Salesforce, SAP, ServiceNow, Okta, AWS Cognito, Azure AD,
+#     Atlassian, GraphQL, Shopify, OpenAI, Anthropic, Google AI, AWS Bedrock,
+#     Stripe Connect, Kubernetes.
+#
+# ############################################################################
+
+
+class EnterprisePlatformDetector:
+    """Fingerprints enterprise platforms and AI services from HTTP traffic.
+
+    Returns platform-specific vulnerability profiles that inform other engines
+    about the attack surface they're analyzing."""
+
+    # Platform signatures: {platform_name: [(field, regex_pattern), ...]}
+    # Checked against body_text, headers, URLs, endpoint paths
+    _PLATFORM_SIGNATURES: dict[str, list[tuple[str, re.Pattern]]] = {
+        "salesforce": [
+            ("url", re.compile(r"(lightning\.force\.com|\.salesforce\.com|/services/data/v\d|/aura\b)", re.I)),
+            ("body", re.compile(r"(auraConfig|SObjectDescribe|\"sobjectType\"|RecordTypeId|ApexAction)", re.I)),
+            ("header", re.compile(r"(x-sfdc-|Salesforce-Instance)", re.I)),
+        ],
+        "sap": [
+            ("url", re.compile(r"(/sap/opu/|/sap/bc/|/odata/v[24]|__metadata)", re.I)),
+            ("body", re.compile(r"(SAP-Client|X-CSRF-Token|sap-system|__deferred|__metadata)", re.I)),
+            ("header", re.compile(r"(sap-client|x-csrf-token|sap-contextid)", re.I)),
+        ],
+        "servicenow": [
+            ("url", re.compile(r"(service-now\.com|/api/now/|/api/sn_|sys_id=)", re.I)),
+            ("body", re.compile(r"(GlideRecord|sys_id|sys_created_on|sys_updated_by|cmdb_ci)", re.I)),
+            ("header", re.compile(r"(x-is-logged-in|x-transaction-id.*snow)", re.I)),
+        ],
+        "okta": [
+            ("url", re.compile(r"(\.okta\.com|\.auth0\.com|/oauth2/|/api/v1/authn)", re.I)),
+            ("body", re.compile(r"(okta_token|auth0_client|sessionToken|\"stateToken\")", re.I)),
+            ("header", re.compile(r"(x-okta-|x-auth0-)", re.I)),
+        ],
+        "aws_cognito": [
+            ("url", re.compile(r"(cognito-idp\.|cognito-identity\.)", re.I)),
+            ("body", re.compile(r"(AWSCognitoIdentityProviderService|CognitoIdentityCredentials|UserPoolId)", re.I)),
+            ("header", re.compile(r"(x-amz-target.*cognito)", re.I)),
+        ],
+        "azure_ad": [
+            ("url", re.compile(r"(login\.microsoftonline\.com|graph\.microsoft\.com|/v2\.0/token)", re.I)),
+            ("body", re.compile(r"(\"aud\":\s*\"https://graph|aad_token|tenant_id|\"tid\":)", re.I)),
+            ("header", re.compile(r"(x-ms-ests|client-request-id)", re.I)),
+        ],
+        "atlassian": [
+            ("url", re.compile(r"(atlassian\.net|/rest/api/\d|/wiki/rest/|bitbucket\.org/api)", re.I)),
+            ("body", re.compile(r"(atlassian-token|ACPT-|AO-\d|jira\.issue|confluence\.page)", re.I)),
+            ("header", re.compile(r"(x-atlassian-|atl-)", re.I)),
+        ],
+        "graphql": [
+            ("url", re.compile(r"(/graphql\b)", re.I)),
+            ("body", re.compile(r"(__schema|__typename|\"query\"\s*:\s*\"|introspectionQuery|\"mutations?\":\s*\{)", re.I)),
+        ],
+        "shopify": [
+            ("url", re.compile(r"(myshopify\.com|/admin/api/\d{4})", re.I)),
+            ("body", re.compile(r"(\"shop\":\s*\{|Shopify\.theme|ShopifyAPI|\"fulfillment_orders\")", re.I)),
+            ("header", re.compile(r"(x-shopify-access-token|x-shopify-shop-domain)", re.I)),
+        ],
+        "openai": [
+            ("url", re.compile(r"(api\.openai\.com|/v1/chat/completions|/v1/embeddings)", re.I)),
+            ("body", re.compile(r"(sk-proj-[A-Za-z0-9]|\"model\":\s*\"(gpt-4|o[13]-|chatgpt))", re.I)),
+            ("header", re.compile(r"(openai-organization|x-ratelimit-limit-tokens)", re.I)),
+        ],
+        "anthropic": [
+            ("url", re.compile(r"(api\.anthropic\.com|/v1/messages|/v1/complete)", re.I)),
+            ("body", re.compile(r"(sk-ant-[A-Za-z0-9]|\"model\":\s*\"claude|x-api-key.*anthropic|anthropic-version)", re.I)),
+            ("header", re.compile(r"(x-api-key|anthropic-version)", re.I)),
+        ],
+        "google_ai": [
+            ("url", re.compile(r"(generativelanguage\.googleapis\.com|aiplatform\.googleapis\.com)", re.I)),
+            ("body", re.compile(r"(AIzaSy[A-Za-z0-9_-]{33}|\"model\":\s*\"gemini)", re.I)),
+        ],
+        "aws_bedrock": [
+            ("url", re.compile(r"(bedrock-runtime\.|bedrock\..*amazonaws)", re.I)),
+            ("body", re.compile(r"(us\.anthropic\.|anthropic\.claude|amazon\.titan|ai21\.jamba)", re.I)),
+        ],
+        "stripe_connect": [
+            ("url", re.compile(r"(connect\.stripe\.com|/v1/accounts|stripe-account=)", re.I)),
+            ("body", re.compile(r"(\"stripe_account\":|Stripe-Account|connected_account_id)", re.I)),
+            ("header", re.compile(r"(stripe-account)", re.I)),
+        ],
+        "kubernetes": [
+            ("url", re.compile(r"(/api/v1/namespaces|/apis/apps/v1|\.svc\.cluster\.local)", re.I)),
+            ("body", re.compile(r"(\"apiVersion\":\s*\"v1\"|\"kind\":\s*\"(Pod|Service|Deployment)\")", re.I)),
+            ("header", re.compile(r"(x-kubernetes-)", re.I)),
+        ],
+    }
+
+    # Platform-specific vulnerability profiles
+    _VULN_PROFILES: dict[str, dict[str, Any]] = {
+        "salesforce": {
+            "attack_surface": ["aura_component_injection", "soql_injection", "sharing_rule_bypass", "guest_user_abuse"],
+            "entitlement_model": "license_based",
+            "common_misconfig": "overly_permissive_sharing_rules",
+        },
+        "sap": {
+            "attack_surface": ["odata_injection", "rfc_abuse", "transport_manipulation", "bapi_bypass"],
+            "entitlement_model": "role_based",
+            "common_misconfig": "default_sap_star_user",
+        },
+        "servicenow": {
+            "attack_surface": ["acl_bypass", "glide_record_injection", "script_include_abuse", "impersonation"],
+            "entitlement_model": "role_based",
+            "common_misconfig": "public_widget_data_exposure",
+        },
+        "okta": {
+            "attack_surface": ["session_fixation", "mfa_bypass", "api_token_abuse", "universal_directory_enum"],
+            "entitlement_model": "sso_delegated",
+            "common_misconfig": "weak_session_policy",
+        },
+        "aws_cognito": {
+            "attack_surface": ["self_signup_abuse", "attribute_injection", "token_manipulation", "identity_pool_unauth"],
+            "entitlement_model": "pool_based",
+            "common_misconfig": "unauth_identity_access",
+        },
+        "azure_ad": {
+            "attack_surface": ["consent_phishing", "app_role_abuse", "token_replay", "tenant_misconfiguration"],
+            "entitlement_model": "tenant_based",
+            "common_misconfig": "overpermissive_app_registration",
+        },
+        "graphql": {
+            "attack_surface": ["introspection_enabled", "batching_abuse", "nested_query_dos", "field_suggestion_enum"],
+            "entitlement_model": "varies",
+            "common_misconfig": "introspection_in_production",
+        },
+        "openai": {
+            "attack_surface": ["api_key_theft", "prompt_injection", "model_extraction", "rate_limit_bypass"],
+            "entitlement_model": "api_key_billing",
+            "common_misconfig": "key_in_client_code",
+        },
+        "anthropic": {
+            "attack_surface": ["api_key_theft", "session_hijack", "mcp_tool_poisoning", "distillation_proxy",
+                               "credential_precedence_abuse", "repo_config_rce", "gift_fraud"],
+            "entitlement_model": "api_key_billing_or_subscription",
+            "common_misconfig": "settings_local_json_in_repo",
+        },
+        "aws_bedrock": {
+            "attack_surface": ["iam_role_abuse", "cross_account_invoke", "model_access_policy_bypass"],
+            "entitlement_model": "iam_based",
+            "common_misconfig": "overly_broad_bedrock_invoke_policy",
+        },
+    }
+
+    def __init__(self) -> None:
+        self._detected_platforms: dict[str, int] = defaultdict(int)
+        self._findings: list[dict[str, Any]] = []
+
+    def detect_platforms(self, observation: dict, components: dict) -> list[dict[str, Any]]:
+        """Detect enterprise platforms from observation data.
+        Returns list of {platform, confidence, matches, vuln_profile}."""
+
+        body_text = components.get("body_text", "")
+        endpoint = components.get("endpoint", "")
+        url = observation.get("request_data", {}).get("url", "")
+
+        req_headers = observation.get("request_data", {}).get("headers", {})
+        resp_headers = observation.get("response_data", {}).get("headers", {})
+        all_headers_str = json.dumps({**req_headers, **resp_headers})
+
+        detections: list[dict[str, Any]] = []
+
+        for platform, sig_list in self._PLATFORM_SIGNATURES.items():
+            matches = []
+            for field_type, pattern in sig_list:
+                target = ""
+                if field_type == "url":
+                    target = url + " " + endpoint
+                elif field_type == "body":
+                    target = body_text
+                elif field_type == "header":
+                    target = all_headers_str
+
+                m = pattern.search(target)
+                if m:
+                    matches.append({"field": field_type, "matched": m.group()[:60]})
+
+            if matches:
+                confidence = min(1.0, 0.4 + 0.2 * len(matches))
+                self._detected_platforms[platform] += 1
+
+                vuln_profile = self._VULN_PROFILES.get(platform, {})
+
+                detection = {
+                    "platform": platform,
+                    "confidence": confidence,
+                    "matches": matches,
+                    "vuln_profile": vuln_profile,
+                    "detection_count": self._detected_platforms[platform],
+                }
+                detections.append(detection)
+
+                # Generate platform-specific findings
+                if vuln_profile:
+                    for attack in vuln_profile.get("attack_surface", [])[:3]:
+                        self._findings.append({
+                            "type": f"enterprise_platform_{attack}",
+                            "platform": platform,
+                            "detail": f"Detected {platform} platform; attack surface includes {attack}",
+                            "severity": "medium",
+                            "confidence": confidence * 0.7,
+                            "category": "enterprise_attack_surface",
+                        })
+
+        return detections
+
+    def get_platform_summary(self) -> dict[str, Any]:
+        return {
+            "platforms_detected": dict(self._detected_platforms),
+            "total_detections": sum(self._detected_platforms.values()),
+            "findings_generated": len(self._findings),
+        }
+
+    def get_all_findings(self) -> list[dict[str, Any]]:
+        return self._findings[-100:]
+
+
+
+# ############################################################################
+#
+#  O. AccessWithoutPaymentDetector -- THE core detector for the engine's
+#     primary mission. Encodes 12 general access-without-payment attack
+#     patterns from real-world payment bypasses PLUS 9 Anthropic-specific
+#     vectors from confirmed CVEs and threat reports (Sep 2026 Anthropic
+#     threat report, Oasis Security Claudy Day, Check Point CVE-2025-59536,
+#     Apiiro credential leak disclosure, Darktrace C2 research).
+#
+# ############################################################################
+
+
+class AccessWithoutPaymentDetector:
+    """Detects access-without-payment attack patterns across enterprise systems.
+
+    Encodes 12 general attack patterns from real-world payment bypasses plus
+    9 Anthropic-specific vectors from confirmed CVEs and threat reports.
+    Every pattern is deterministic -- no LLM calls, no API deps."""
+
+    # Patterns that indicate entitlement was granted
+    _ENTITLEMENT_GRANT_RE = re.compile(
+        r"(\"entitlement\"\s*:\s*true|\"access_level\"\s*:\s*\"(premium|pro|enterprise|max)\"|"
+        r"\"is_premium\"\s*:\s*true|\"has_access\"\s*:\s*true|\"plan\"\s*:\s*\"(pro|enterprise|business|max)\"|"
+        r"\"subscription_active\"\s*:\s*true|\"features_enabled\"|\"tier\"\s*:\s*\"(paid|premium)\")",
+        re.I,
+    )
+
+    # Patterns that indicate NO payment was made
+    _NO_PAYMENT_RE = re.compile(
+        r"(\"payment_status\"\s*:\s*\"unpaid\"|\"amount_total\"\s*:\s*0\b|\"amount\"\s*:\s*0\b|"
+        r"\"status\"\s*:\s*\"(incomplete|trialing|canceled|unpaid|past_due)\"|"
+        r"\"paid\"\s*:\s*false|\"balance\"\s*:\s*0\b|\"charge\"\s*:\s*null)",
+        re.I,
+    )
+
+    # Trial/free indicators
+    _TRIAL_RE = re.compile(
+        r"(\"trial_end\"|\"trial_start\"|\"trialing\"|free_trial|\"trial_period_days\"|"
+        r"\"status\"\s*:\s*\"trialing\")",
+        re.I,
+    )
+
+    # Credential patterns that shouldn't appear in responses
+    _LEAKED_CREDENTIAL_RE = re.compile(
+        r"(sk-ant-[A-Za-z0-9_-]{20,}|sk-proj-[A-Za-z0-9_-]{20,}|sk_test_[A-Za-z0-9]{20,}|"
+        r"sk_live_[A-Za-z0-9]{20,}|AIzaSy[A-Za-z0-9_-]{33}|ghp_[A-Za-z0-9]{36}|"
+        r"AKIA[A-Z0-9]{16}|ya29\.[A-Za-z0-9_-]+|xoxb-[0-9]+-[A-Za-z0-9]+)",
+        re.I,
+    )
+
+    # Gift fraud patterns
+    _GIFT_RE = re.compile(
+        r"(\"gift\"|gift_subscription|gift_code|gift_recipient|\"gifted\")",
+        re.I,
+    )
+
+    # MCP/Agent config patterns (Anthropic-specific)
+    _MCP_CONFIG_RE = re.compile(
+        r"(enableAllProjectMcpServers|enabledMcpjsonServers|autoApprove|"
+        r"\"hooks\"\s*:\s*\{|\"SessionStart\"|ANTHROPIC_BASE_URL|"
+        r"\.claude/settings\.json|\.claude/settings\.local\.json|\.mcp\.json)",
+        re.I,
+    )
+
+    # Distillation indicators
+    _DISTILLATION_RE = re.compile(
+        r"(\"model\":\s*\"claude|/v1/messages|/v1/complete|completion_tokens|"
+        r"prompt_tokens|\"usage\":\s*\{.*\"input_tokens\")",
+        re.I,
+    )
+
+    # Session/cookie patterns
+    _SESSION_RE = re.compile(
+        r"(sessionToken|session_id|__session|connect\.sid|\.AspNetCore\.Session|"
+        r"JSESSIONID|PHPSESSID|_session_id)",
+        re.I,
+    )
+
+    # Coupon/discount patterns
+    _COUPON_RE = re.compile(
+        r"(\"coupon\"|\"discount\"|\"percent_off\"\s*:\s*100|\"amount_off\"|"
+        r"\"promotion_code\"|\"promo_code\"|coupon_id)",
+        re.I,
+    )
+
+    # Auto-reload / billing spiral indicators
+    _BILLING_SPIRAL_RE = re.compile(
+        r"(auto_reload|auto_recharge|\"reload_amount\"|\"reload_threshold\"|"
+        r"\"prepaid_balance\"|\"credits_remaining\"\s*:\s*0|negative_balance)",
+        re.I,
+    )
+
+    # OAuth without subscription
+    _OAUTH_NO_SUB_RE = re.compile(
+        r"(\"access_token\"|\"bearer\"|\"authorization\":\s*\"Bearer)",
+        re.I,
+    )
+
+    def __init__(self) -> None:
+        self._findings: list[dict[str, Any]] = []
+        self._pattern_hits: dict[str, int] = defaultdict(int)
+        self._observation_count = 0
+
+    def analyze(
+        self, observation: dict, components: dict, memory: Any = None,
+    ) -> list[dict[str, Any]]:
+        """Run all 21 attack pattern detectors against an observation."""
+        self._observation_count += 1
+        findings: list[dict[str, Any]] = []
+
+        body_text = components.get("body_text", "")
+        endpoint = components.get("endpoint", "")
+        method = components.get("method", "")
+        status_code = components.get("status_code", 0)
+        url = observation.get("request_data", {}).get("url", "")
+        req_headers = observation.get("request_data", {}).get("headers", {})
+        resp_headers = observation.get("response_data", {}).get("headers", {})
+
+        # ===== 12 GENERAL ACCESS-WITHOUT-PAYMENT PATTERNS =====
+
+        # 1. checkout_completed_unpaid: The #1 Stripe bypass
+        has_entitlement = bool(self._ENTITLEMENT_GRANT_RE.search(body_text))
+        has_no_payment = bool(self._NO_PAYMENT_RE.search(body_text))
+        checkout_completed = bool(re.search(
+            r"checkout\.session\.completed|\"status\"\s*:\s*\"complete\"", body_text, re.I,
+        ))
+        if checkout_completed and has_no_payment and has_entitlement:
+            findings.append({
+                "type": "checkout_completed_unpaid",
+                "detail": (
+                    "CRITICAL: checkout.session.completed fired with payment_status=unpaid "
+                    "but entitlement was granted. This is the #1 Stripe access-without-payment "
+                    "pattern. Deferred payment methods (bank debits, SEPA) complete the session "
+                    "before payment clears. Must wait for checkout.session.async_payment_succeeded."
+                ),
+                "severity": "critical",
+                "confidence": 0.95,
+                "category": "access_without_payment",
+                "cwe": "CWE-863",
+                "attack_pattern": "AP-1",
+            })
+            self._pattern_hits["checkout_completed_unpaid"] += 1
+
+        # 2. Stale entitlement flag: access granted despite non-paid status
+        elif has_entitlement and has_no_payment:
+            findings.append({
+                "type": "stale_entitlement",
+                "detail": (
+                    "Entitlement/access granted alongside indicators of non-payment "
+                    "(unpaid, $0, trialing, canceled). The entitlement flag may not be "
+                    "synchronized with actual payment state."
+                ),
+                "severity": "critical",
+                "confidence": 0.85,
+                "category": "access_without_payment",
+                "cwe": "CWE-863",
+                "attack_pattern": "AP-6",
+            })
+            self._pattern_hits["stale_entitlement"] += 1
+
+        # 3. Trial without conversion gate
+        is_trial = bool(self._TRIAL_RE.search(body_text))
+        if is_trial and has_entitlement:
+            has_payment_method = bool(re.search(
+                r"payment_method|card_last4|billing_details", body_text, re.I,
+            ))
+            if not has_payment_method:
+                findings.append({
+                    "type": "trial_without_payment_method",
+                    "detail": (
+                        "Trial state with premium entitlements but no payment method on file. "
+                        "Users can cycle trials indefinitely without ever converting. "
+                        "Trial should require a valid payment method upfront."
+                    ),
+                    "severity": "high",
+                    "confidence": 0.75,
+                    "category": "access_without_payment",
+                    "cwe": "CWE-863",
+                    "attack_pattern": "AP-4",
+                })
+                self._pattern_hits["trial_without_conversion"] += 1
+
+        # 4. Canceled subscription still granting access
+        is_canceled = bool(re.search(r"\"status\"\s*:\s*\"canceled\"", body_text, re.I))
+        if is_canceled and has_entitlement:
+            findings.append({
+                "type": "canceled_with_access",
+                "detail": (
+                    "Subscription is canceled but access/entitlement is still active. "
+                    "Revocation may be delayed or missing entirely. "
+                    "Check if cancel_at_period_end vs immediate cancellation is handled."
+                ),
+                "severity": "high",
+                "confidence": 0.80,
+                "category": "access_without_payment",
+                "cwe": "CWE-863",
+                "attack_pattern": "AP-5",
+            })
+            self._pattern_hits["canceled_with_access"] += 1
+
+        # 5. Leaked credentials in response (stolen key = free compute)
+        cred_match = self._LEAKED_CREDENTIAL_RE.search(body_text)
+        if cred_match:
+            findings.append({
+                "type": "leaked_credential_in_response",
+                "detail": (
+                    f"API credential pattern detected in response body: "
+                    f"{cred_match.group()[:20]}... A leaked key enables free compute "
+                    f"on the key owner's account (LLMjacking). Sysdig estimates "
+                    f"$46,000+/day cost for a single compromised key."
+                ),
+                "severity": "critical",
+                "confidence": 0.90,
+                "category": "access_without_payment",
+                "cwe": "CWE-200",
+                "attack_pattern": "AP-3",
+            })
+            self._pattern_hits["leaked_credential"] += 1
+
+        # 6. Client-side paywall bypass
+        if status_code == 200 and has_entitlement:
+            has_auth = bool(req_headers.get("Authorization") or
+                          req_headers.get("Cookie") or
+                          req_headers.get("x-api-key"))
+            if method == "GET" and not has_auth and "premium" in body_text.lower():
+                findings.append({
+                    "type": "client_side_paywall",
+                    "detail": (
+                        "Premium content returned on unauthenticated GET request. "
+                        "Access control may exist only in the frontend. Server returns "
+                        "full premium data regardless of authentication state."
+                    ),
+                    "severity": "high",
+                    "confidence": 0.70,
+                    "category": "access_without_payment",
+                    "cwe": "CWE-862",
+                    "attack_pattern": "AP-7",
+                })
+                self._pattern_hits["client_side_paywall"] += 1
+
+        # 7. Coupon/discount abuse (100% off)
+        has_coupon = bool(self._COUPON_RE.search(body_text))
+        full_discount = bool(re.search(r"\"percent_off\"\s*:\s*100", body_text, re.I))
+        no_payment_intent = not bool(re.search(r"payment_intent|pi_", body_text, re.I))
+        if has_coupon and full_discount and no_payment_intent:
+            findings.append({
+                "type": "coupon_full_discount_no_pi",
+                "detail": (
+                    "100% discount coupon applied with no PaymentIntent created. "
+                    "Stripe skips PaymentIntent for $0 checkouts. If the coupon is "
+                    "time-limited, the renewal will fail silently and access persists. "
+                    "Race condition: apply coupon between price calculation and charge."
+                ),
+                "severity": "high",
+                "confidence": 0.80,
+                "category": "access_without_payment",
+                "cwe": "CWE-863",
+                "attack_pattern": "AP-8",
+            })
+            self._pattern_hits["coupon_abuse"] += 1
+
+        # 8. Credit balance race condition
+        credit_indicators = bool(re.search(
+            r"credit_balance|customer_balance|\"balance\":\s*-?\d", body_text, re.I,
+        ))
+        concurrent_indicator = bool(re.search(
+            r"\"balance\":\s*-\d|negative_balance|insufficient", body_text, re.I,
+        ))
+        if credit_indicators and concurrent_indicator:
+            findings.append({
+                "type": "credit_race_condition",
+                "detail": (
+                    "Credit balance shows negative or concurrent modification indicators. "
+                    "Race condition: two requests read the same balance, both apply credits, "
+                    "resulting in double-spend. Must use atomic operations or optimistic locking."
+                ),
+                "severity": "high",
+                "confidence": 0.65,
+                "category": "access_without_payment",
+                "cwe": "CWE-362",
+                "attack_pattern": "AP-9",
+            })
+            self._pattern_hits["credit_race"] += 1
+
+        # 9. OAuth token without subscription validation
+        has_oauth = bool(self._OAUTH_NO_SUB_RE.search(
+            json.dumps(req_headers) + " " + body_text,
+        ))
+        sub_inactive = bool(re.search(
+            r"\"subscription\"\s*:\s*null|\"plan\"\s*:\s*\"free\"|no_active_subscription",
+            body_text, re.I,
+        ))
+        if has_oauth and sub_inactive and has_entitlement:
+            findings.append({
+                "type": "oauth_without_subscription",
+                "detail": (
+                    "Valid OAuth/Bearer token accepted but subscription is null/free. "
+                    "Authentication succeeded but authorization (subscription check) "
+                    "was skipped. OAuth token validity != payment validity."
+                ),
+                "severity": "high",
+                "confidence": 0.75,
+                "category": "access_without_payment",
+                "cwe": "CWE-863",
+                "attack_pattern": "AP-10",
+            })
+            self._pattern_hits["oauth_no_sub"] += 1
+
+        # 10. Promotional credit exploitation
+        promo_credit = bool(re.search(
+            r"promotional_credit|signup_credit|\"credit\"\s*:\s*\d{3,}|bonus_credit",
+            body_text, re.I,
+        ))
+        if promo_credit and has_entitlement:
+            findings.append({
+                "type": "promo_credit_exploit",
+                "detail": (
+                    "Promotional/signup credits detected alongside active entitlement. "
+                    "If credit > service cost, the user profits from the platform. "
+                    "Automated account creation can farm promotional credits at scale."
+                ),
+                "severity": "medium",
+                "confidence": 0.60,
+                "category": "access_without_payment",
+                "cwe": "CWE-863",
+                "attack_pattern": "AP-11",
+            })
+            self._pattern_hits["promo_credit"] += 1
+
+        # 11. Gift subscription fraud
+        has_gift = bool(self._GIFT_RE.search(body_text))
+        if has_gift and method == "POST":
+            multi_gift = body_text.count("gift") >= 3
+            if multi_gift:
+                findings.append({
+                    "type": "gift_subscription_fraud",
+                    "detail": (
+                        "Multiple gift-related fields in a single POST request. "
+                        "Gift subscription fraud: attacker with stolen credentials buys "
+                        "gifts charged to victim, sends codes to their own email. "
+                        "Gift purchases require fewer verification steps than account changes."
+                    ),
+                    "severity": "high",
+                    "confidence": 0.70,
+                    "category": "access_without_payment",
+                    "cwe": "CWE-863",
+                    "attack_pattern": "AP-12",
+                })
+                self._pattern_hits["gift_fraud"] += 1
+
+        # 12. Webhook-only fulfillment without verification
+        is_webhook = bool(re.search(r"webhook|/hook|/callback|/notify", endpoint, re.I))
+        if is_webhook and method == "POST" and has_entitlement:
+            findings.append({
+                "type": "webhook_grants_entitlement",
+                "detail": (
+                    "Webhook endpoint directly grants entitlement on POST. "
+                    "If webhook signature verification is missing or bypassable, "
+                    "an attacker can forge webhook events to grant themselves access."
+                ),
+                "severity": "high",
+                "confidence": 0.75,
+                "category": "access_without_payment",
+                "cwe": "CWE-345",
+                "attack_pattern": "AP-2",
+            })
+            self._pattern_hits["webhook_entitlement"] += 1
+
+        # ===== 9 ANTHROPIC-SPECIFIC ATTACK VECTORS =====
+
+        # A1. Distillation proxy pattern
+        is_ai_api = bool(self._DISTILLATION_RE.search(body_text))
+        has_usage_tokens = bool(re.search(r"input_tokens|output_tokens|completion_tokens", body_text, re.I))
+        if is_ai_api and has_usage_tokens:
+            findings.append({
+                "type": "anthropic_distillation_surface",
+                "detail": (
+                    "AI API endpoint with token usage data exposed. This is the surface "
+                    "that distillation proxy networks exploit: 190M+ exchanges stolen via "
+                    "24,000+ fraudulent accounts in Anthropic's Sep 2026 threat report. "
+                    "Check for: unusual volume from new accounts, shared infrastructure "
+                    "across accounts, requests matching systematic topic coverage."
+                ),
+                "severity": "medium",
+                "confidence": 0.55,
+                "category": "anthropic_specific",
+                "cwe": "CWE-284",
+                "attack_pattern": "ANTH-1",
+            })
+            self._pattern_hits["distillation_surface"] += 1
+
+        # A2. Session hijack surface
+        has_session = bool(self._SESSION_RE.search(body_text + " " + json.dumps(resp_headers)))
+        if has_session and not bool(re.search(r"device_id|fingerprint|geo_check", body_text, re.I)):
+            findings.append({
+                "type": "anthropic_session_hijack_surface",
+                "detail": (
+                    "Session token exposed without device binding or geo-verification. "
+                    "Infostealers (Vidar, LummaC2, StealC, RedLine, AMOS) steal session "
+                    "cookies that bypass password AND MFA. Anthropic confirmed this attack "
+                    "in Aug 2026. Session should be bound to device fingerprint + IP range."
+                ),
+                "severity": "high",
+                "confidence": 0.65,
+                "category": "anthropic_specific",
+                "cwe": "CWE-384",
+                "attack_pattern": "ANTH-2",
+            })
+            self._pattern_hits["session_hijack_surface"] += 1
+
+        # A3. Gift subscription fraud surface
+        if has_gift:
+            findings.append({
+                "type": "anthropic_gift_fraud_surface",
+                "detail": (
+                    "Gift subscription functionality detected. Anthropic gift fraud (May 2026): "
+                    "attackers buy gift subscriptions with stolen credentials, send codes to "
+                    "their own email. Up to $800+ per victim. Gift purchases need fewer "
+                    "verification steps than account changes. Need: velocity limits, "
+                    "recipient email verification, 2FA for gift purchases."
+                ),
+                "severity": "high",
+                "confidence": 0.60,
+                "category": "anthropic_specific",
+                "cwe": "CWE-863",
+                "attack_pattern": "ANTH-3",
+            })
+            self._pattern_hits["gift_fraud_surface"] += 1
+
+        # A4. Credential precedence confusion (billing misroute)
+        has_api_key_env = bool(re.search(
+            r"ANTHROPIC_API_KEY|api_key.*env|\"x-api-key\"", body_text + " " + json.dumps(req_headers), re.I,
+        ))
+        has_subscription = bool(re.search(
+            r"subscription|oauth|/login|bearer.*anthropic", body_text, re.I,
+        ))
+        if has_api_key_env and has_subscription:
+            findings.append({
+                "type": "anthropic_billing_misroute",
+                "detail": (
+                    "Both API key and subscription/OAuth indicators present. "
+                    "Claude Code's credential precedence: ANTHROPIC_API_KEY env var "
+                    "SILENTLY overrides subscription OAuth. Users reported $1,122+ in "
+                    "unexpected API charges. In print mode (claude -p), no confirmation. "
+                    "An attacker who controls .env can redirect team billing."
+                ),
+                "severity": "high",
+                "confidence": 0.70,
+                "category": "anthropic_specific",
+                "cwe": "CWE-269",
+                "attack_pattern": "ANTH-4",
+            })
+            self._pattern_hits["billing_misroute"] += 1
+
+        # A5. Repository config RCE chain (CVE-2025-59536 + CVE-2026-21852)
+        has_mcp_config = bool(self._MCP_CONFIG_RE.search(body_text))
+        if has_mcp_config:
+            findings.append({
+                "type": "anthropic_repo_config_rce",
+                "detail": (
+                    "MCP/agent configuration patterns detected. CVE-2025-59536 (CVSS 8.7): "
+                    ".claude/settings.json hooks execute before trust prompt. "
+                    "CVE-2026-21852: ANTHROPIC_BASE_URL redirect steals API key. "
+                    "enableAllProjectMcpServers auto-approves all MCP tools. "
+                    "Combined: clone repo -> RCE + API key theft -> free compute on victim's account."
+                ),
+                "severity": "critical",
+                "confidence": 0.80,
+                "category": "anthropic_specific",
+                "cwe": "CWE-94",
+                "attack_pattern": "ANTH-5",
+            })
+            self._pattern_hits["repo_config_rce"] += 1
+
+        # A6. Leaked settings credentials
+        settings_leak = bool(re.search(
+            r"settings\.local\.json|\.claude/credentials|\.claude/settings",
+            body_text + " " + endpoint + " " + url, re.I,
+        ))
+        if settings_leak:
+            findings.append({
+                "type": "anthropic_leaked_settings",
+                "detail": (
+                    "Claude Code settings/credentials file reference detected. "
+                    "Apiiro found 104,185 public copies of .claude/settings.local.json on GitHub "
+                    "with 1,379+ real credentials. GitGuardian found 31,088 secrets across "
+                    "23,276 repos, 5,343 still valid. Standard scanners (TruffleHog, gitleaks) "
+                    "missed 215 of 1,122 files with secrets."
+                ),
+                "severity": "critical",
+                "confidence": 0.85,
+                "category": "anthropic_specific",
+                "cwe": "CWE-200",
+                "attack_pattern": "ANTH-8",
+            })
+            self._pattern_hits["leaked_settings"] += 1
+
+        # A7. Billing reload spiral
+        has_billing_spiral = bool(self._BILLING_SPIRAL_RE.search(body_text))
+        if has_billing_spiral:
+            findings.append({
+                "type": "anthropic_billing_spiral",
+                "detail": (
+                    "Auto-reload/recharge billing pattern detected. If the reload amount "
+                    "or trigger threshold is misconfigured, it can spiral without bound. "
+                    "A user reported $152.91 charged despite $20 limit with auto-reload OFF. "
+                    "Infostealer session hijack + auto-reload = attacker triggers repeated purchases."
+                ),
+                "severity": "high",
+                "confidence": 0.65,
+                "category": "anthropic_specific",
+                "cwe": "CWE-770",
+                "attack_pattern": "ANTH-9",
+            })
+            self._pattern_hits["billing_spiral"] += 1
+
+        # A8. Files API exfiltration surface (Claudy Day)
+        files_api = bool(re.search(
+            r"/v1/files|files\.upload|api\.anthropic\.com.*files|multipart/form-data.*anthropic",
+            body_text + " " + url, re.I,
+        ))
+        if files_api:
+            findings.append({
+                "type": "anthropic_files_api_exfil",
+                "detail": (
+                    "Anthropic Files API surface detected. The 'Claudy Day' chain (Oasis Security, "
+                    "March 2026) used this as an exfil path: Claude's sandbox allows connections "
+                    "to api.anthropic.com, so injected instructions upload stolen data via Files API. "
+                    "Invisible to network-layer DLP. The attacker embeds their own API key in the injection."
+                ),
+                "severity": "high",
+                "confidence": 0.60,
+                "category": "anthropic_specific",
+                "cwe": "CWE-200",
+                "attack_pattern": "ANTH-7",
+            })
+            self._pattern_hits["files_api_exfil"] += 1
+
+        # A9. MCP Git server RCE chain (CVE-2025-68143/68144/68145)
+        git_mcp = bool(re.search(
+            r"mcp-server-git|git_init|git_diff.*--|/\.git/|\.gitattributes.*filter",
+            body_text + " " + url, re.I,
+        ))
+        if git_mcp:
+            findings.append({
+                "type": "anthropic_mcp_git_rce",
+                "detail": (
+                    "MCP Git server patterns detected. Three CVEs in Anthropic's OWN reference "
+                    "mcp-server-git: CVE-2025-68145 (path validation bypass), CVE-2025-68143 "
+                    "(git_init arbitrary path write), CVE-2025-68144 (git_diff argument injection). "
+                    "Chain: write .gitattributes with smudge/clean shell filters -> RCE on checkout. "
+                    "Anthropic removed git_init entirely. Update to mcp-server-git 2025.12.18+."
+                ),
+                "severity": "critical",
+                "confidence": 0.75,
+                "category": "anthropic_specific",
+                "cwe": "CWE-78",
+                "attack_pattern": "ANTH-6",
+            })
+            self._pattern_hits["mcp_git_rce"] += 1
+
+        self._findings.extend(findings)
+        return findings
+
+    def get_pattern_summary(self) -> dict[str, Any]:
+        return {
+            "pattern_hits": dict(self._pattern_hits),
+            "total_findings": len(self._findings),
+            "observations_analyzed": self._observation_count,
+            "critical_findings": sum(1 for f in self._findings if f.get("severity") == "critical"),
+        }
+
+    def get_all_findings(self) -> list[dict[str, Any]]:
+        return self._findings[-200:]
+
+
+
+# ############################################################################
+#
+#  P. AIAgentAttackSurfaceAnalyzer -- Detects the NOVEL attack classes
+#     specific to AI coding agents and MCP ecosystems. These patterns
+#     don't exist in traditional web app security. Based on OWASP MCP
+#     Top 10 (MCP03:2025), Darktrace C2 PoC (Nov 2026), Adversa TrustFall,
+#     Trivial Trojans paper, Log-To-Leak paper.
+#
+# ############################################################################
+
+
+class AIAgentAttackSurfaceAnalyzer:
+    """Detects AI agent and MCP ecosystem attack patterns.
+
+    Covers the novel attack surface created by AI coding agents, MCP servers,
+    and the tool-use paradigm. These patterns don't exist in traditional
+    web app security -- they're specific to the AI agent ecosystem.
+
+    Based on: OWASP MCP Top 10 (MCP03:2025), Darktrace C2 research (Nov 2026),
+    Adversa TrustFall (2026), Trivial Trojans paper, Log-To-Leak paper."""
+
+    # MCP tool poisoning indicators
+    _TOOL_POISON_RE = re.compile(
+        r"(\"tools\"\s*:\s*\[|\"tool_choice\"|\"function_call\"|\"tool_use\"|"
+        r"\"tool_result\"|\"server_name\"|\"inputSchema\")",
+        re.I,
+    )
+
+    # Hidden instruction patterns (invisible unicode, HTML tags)
+    _HIDDEN_INSTRUCTION_RE = re.compile(
+        r"([\U000E0000-\U000E007F]|<\s*div\s+style\s*=\s*\"[^\"]*display\s*:\s*none|"
+        r"<\s*span\s+style\s*=\s*\"[^\"]*font-size\s*:\s*0|"
+        r"<\s*!\s*--.*?(?:instruction|system|ignore previous).*?-->|"
+        r"\\u200b|\\u200c|\\u200d|\\ufeff|"
+        r"\x00.*?(?:ignore|system|instruction))",
+        re.I | re.DOTALL,
+    )
+
+    # Markdown image exfiltration pattern
+    _MD_IMAGE_EXFIL_RE = re.compile(
+        r"!\[.*?\]\(https?://(?!(?:githubusercontent|github\.com|cdn\.))[^\s)]+\?[^\s)]*(?:data|token|key|secret|session|cookie|password|env)=",
+        re.I,
+    )
+
+    # Agent C2 / memory store patterns
+    _AGENT_C2_RE = re.compile(
+        r"(memory_store|shared_memory|heartbeat|\"job_id\"|\"task_queue\"|"
+        r"dangerously.skip.permissions|--dangerously|systemd.*claude|"
+        r"\"implant\"|\"beacon\"|\"checkin\")",
+        re.I,
+    )
+
+    # Cross-server data flow indicators
+    _CROSS_SERVER_RE = re.compile(
+        r"(\"servers\"\s*:\s*\[|\"server_url\"|mcp_server|\"transport\"|"
+        r"\"stdio\"|\"sse\"|server_name.*different|cross.server|"
+        r"\"resources\"\s*:\s*\[.*\"uri\")",
+        re.I,
+    )
+
+    # Tool shadowing / name collision
+    _TOOL_SHADOW_RE = re.compile(
+        r"(\"name\"\s*:\s*\"(read_file|write_file|execute|run_command|bash|"
+        r"search|get_|set_|delete_|create_|update_|list_))",
+        re.I,
+    )
+
+    # Rug pull indicators (tool definition change)
+    _RUG_PULL_RE = re.compile(
+        r"(\"version\"\s*:\s*\"[^\"]+\".*\"tools\"|tool_definition_changed|"
+        r"\"updated_at\".*\"tools\"|manifest.*changed|schema.*modified)",
+        re.I,
+    )
+
+    # Base URL redirect
+    _BASE_URL_RE = re.compile(
+        r"(ANTHROPIC_BASE_URL|OPENAI_BASE_URL|base_url\s*[=:]\s*[\"']https?://(?!api\.(anthropic|openai)\.com))",
+        re.I,
+    )
+
+    # Auto-approve config
+    _AUTO_APPROVE_RE = re.compile(
+        r"(autoApprove|auto_approve|enableAllProjectMcpServers|enabledMcpjsonServers|"
+        r"\"permissions\"\s*:\s*\{.*\"allow\")",
+        re.I,
+    )
+
+    # Prompt injection in tool descriptions
+    _TOOL_INJECTION_RE = re.compile(
+        r"(\"description\"\s*:\s*\"[^\"]*(?:ignore previous|system prompt|you must|"
+        r"always call|before responding|after every|send.*to.*http|"
+        r"fetch.*url|upload.*data|exfiltrate|<\s*system))",
+        re.I,
+    )
+
+    def __init__(self) -> None:
+        self._findings: list[dict[str, Any]] = []
+        self._pattern_hits: dict[str, int] = defaultdict(int)
+        self._observation_count = 0
+
+    def analyze(
+        self, observation: dict, components: dict,
+    ) -> list[dict[str, Any]]:
+        """Run all AI agent attack surface detectors."""
+        self._observation_count += 1
+        findings: list[dict[str, Any]] = []
+
+        body_text = components.get("body_text", "")
+        endpoint = components.get("endpoint", "")
+        url = observation.get("request_data", {}).get("url", "")
+        req_headers = observation.get("request_data", {}).get("headers", {})
+        full_text = body_text + " " + json.dumps(req_headers) + " " + url + " " + endpoint
+
+        # 1. Tool poisoning detection
+        has_tools = bool(self._TOOL_POISON_RE.search(body_text))
+        has_injection = bool(self._TOOL_INJECTION_RE.search(body_text))
+        if has_tools and has_injection:
+            findings.append({
+                "type": "mcp_tool_poisoning",
+                "detail": (
+                    "Tool definition contains suspicious instruction patterns. "
+                    "MCP tool poisoning (OWASP MCP03:2025): malicious tool descriptions "
+                    "inject instructions that make the agent perform unauthorized actions. "
+                    "Claude Sonnet 5 was shown to identify the injection as an attack "
+                    "and STILL execute the exfiltration call."
+                ),
+                "severity": "critical",
+                "confidence": 0.85,
+                "category": "ai_agent_attack",
+                "cwe": "CWE-94",
+            })
+            self._pattern_hits["tool_poisoning"] += 1
+
+        # 2. Hidden instruction / invisible injection
+        hidden = self._HIDDEN_INSTRUCTION_RE.search(full_text)
+        if hidden:
+            findings.append({
+                "type": "invisible_injection",
+                "detail": (
+                    f"Hidden instruction pattern detected: Unicode tags (U+E0000-U+E007F), "
+                    f"zero-width characters, or display:none HTML. These carry instructions "
+                    f"that models read and act on but users can't see. Used in Claudy Day "
+                    f"chain and SKILL.md backdoor attacks. Matched: {hidden.group()[:30]!r}"
+                ),
+                "severity": "critical",
+                "confidence": 0.90,
+                "category": "ai_agent_attack",
+                "cwe": "CWE-94",
+            })
+            self._pattern_hits["invisible_injection"] += 1
+
+        # 3. Markdown image exfiltration
+        md_exfil = self._MD_IMAGE_EXFIL_RE.search(body_text)
+        if md_exfil:
+            findings.append({
+                "type": "markdown_image_exfil",
+                "detail": (
+                    "Markdown image with data-bearing query parameters to external URL. "
+                    "Classic exfil pattern: injected instruction tells model to put secrets "
+                    "in an image URL. When the chat UI renders it, the browser fetches the URL "
+                    "and the data leaves. Used against GitLab Duo (Claude-based) with Base16 "
+                    "encoding and KaTeX rendering."
+                ),
+                "severity": "critical",
+                "confidence": 0.85,
+                "category": "ai_agent_attack",
+                "cwe": "CWE-200",
+            })
+            self._pattern_hits["md_image_exfil"] += 1
+
+        # 4. Agent C2 implant patterns
+        c2 = self._AGENT_C2_RE.search(full_text)
+        if c2:
+            findings.append({
+                "type": "agent_c2_implant",
+                "detail": (
+                    "Agent C2/implant pattern detected. Darktrace (Nov 2026) demonstrated: "
+                    "stolen Claude Console credentials + memory store = covert C2 channel. "
+                    "Agent reads job instructions from memory files, executes them, posts "
+                    "results back. ALL traffic goes through api.anthropic.com -- indistinguishable "
+                    f"from normal coding agent traffic. Matched: {c2.group()[:40]!r}"
+                ),
+                "severity": "critical",
+                "confidence": 0.75,
+                "category": "ai_agent_attack",
+                "cwe": "CWE-506",
+            })
+            self._pattern_hits["agent_c2"] += 1
+
+        # 5. Cross-server data flow
+        cross = self._CROSS_SERVER_RE.search(body_text)
+        if cross and has_tools:
+            findings.append({
+                "type": "cross_server_exfil",
+                "detail": (
+                    "Multi-server MCP configuration with tool definitions. "
+                    "'Trivial Trojans' paper: installing ANY MCP server grants it access to "
+                    "ALL other servers' data through the AI assistant. Permission prompts are "
+                    "recommended in MCP docs, NOT enforced by the protocol. A minimal malicious "
+                    "server can pull data from every trusted server."
+                ),
+                "severity": "high",
+                "confidence": 0.70,
+                "category": "ai_agent_attack",
+                "cwe": "CWE-200",
+            })
+            self._pattern_hits["cross_server"] += 1
+
+        # 6. Tool shadowing / name collision
+        shadow = self._TOOL_SHADOW_RE.search(body_text)
+        if shadow and cross:
+            findings.append({
+                "type": "tool_shadowing",
+                "detail": (
+                    f"Generic tool name ({shadow.group(2)}) in a multi-server context. "
+                    f"Tool shadowing: malicious server registers a tool whose name collides "
+                    f"with a trusted server's tool. MCP clients aggregate tools from every "
+                    f"server into one flat list. All calls get intercepted by the shadow."
+                ),
+                "severity": "high",
+                "confidence": 0.65,
+                "category": "ai_agent_attack",
+                "cwe": "CWE-694",
+            })
+            self._pattern_hits["tool_shadowing"] += 1
+
+        # 7. Rug pull indicators
+        rug = self._RUG_PULL_RE.search(body_text)
+        if rug:
+            findings.append({
+                "type": "mcp_rug_pull",
+                "detail": (
+                    "Tool definition versioning/change indicators detected. "
+                    "Rug pull: server alters tool definitions AFTER user approval. "
+                    "Sleeper variants change behavior without touching the manifest. "
+                    "Exploits the lifecycle gap between initial tool approval and ongoing verification."
+                ),
+                "severity": "high",
+                "confidence": 0.60,
+                "category": "ai_agent_attack",
+                "cwe": "CWE-494",
+            })
+            self._pattern_hits["rug_pull"] += 1
+
+        # 8. Base URL redirect (credential interception)
+        base_url = self._BASE_URL_RE.search(full_text)
+        if base_url:
+            findings.append({
+                "type": "base_url_redirect",
+                "detail": (
+                    "API base URL override pointing to non-standard endpoint. "
+                    "CVE-2026-21852: ANTHROPIC_BASE_URL in repo config redirects all API "
+                    "traffic (including x-api-key header) to attacker's proxy. The proxy "
+                    "forwards to real API so victim sees nothing wrong. No code execution, "
+                    "no disk reads -- just a DNS redirect that steals the credential."
+                ),
+                "severity": "critical",
+                "confidence": 0.85,
+                "category": "ai_agent_attack",
+                "cwe": "CWE-601",
+            })
+            self._pattern_hits["base_url_redirect"] += 1
+
+        # 9. Auto-approve bypass
+        auto = self._AUTO_APPROVE_RE.search(body_text)
+        if auto:
+            findings.append({
+                "type": "auto_approve_bypass",
+                "detail": (
+                    "Auto-approve configuration detected. enableAllProjectMcpServers or "
+                    "autoApprove in repo config auto-approves all MCP tool calls without "
+                    "consent dialog. Combined with tool poisoning or base URL redirect, "
+                    "this gives an attacker arbitrary code execution on clone."
+                ),
+                "severity": "high",
+                "confidence": 0.75,
+                "category": "ai_agent_attack",
+                "cwe": "CWE-862",
+            })
+            self._pattern_hits["auto_approve"] += 1
+
+        # 10. Supply chain credential exposure (npm packages, public repos)
+        supply_chain = bool(re.search(
+            r"(npm.*publish|package\.json.*claude|\.npmrc|registry\.npmjs|"
+            r"\"private\"\s*:\s*false.*\.claude)",
+            full_text, re.I,
+        ))
+        if supply_chain:
+            findings.append({
+                "type": "supply_chain_credential_exposure",
+                "detail": (
+                    "npm package or public repo publishing pattern with Claude config references. "
+                    "428 public npm packages shipped .claude/settings.local.json files, "
+                    "33 contained real credentials. Standard scanners miss these. "
+                    "Also: 371 repos exposed .claude/.credentials.json (Anthropic OAuth login)."
+                ),
+                "severity": "high",
+                "confidence": 0.65,
+                "category": "ai_agent_attack",
+                "cwe": "CWE-200",
+            })
+            self._pattern_hits["supply_chain"] += 1
+
+        self._findings.extend(findings)
+        return findings
+
+    def get_attack_summary(self) -> dict[str, Any]:
+        return {
+            "pattern_hits": dict(self._pattern_hits),
+            "total_findings": len(self._findings),
+            "observations_analyzed": self._observation_count,
+            "critical_findings": sum(1 for f in self._findings if f.get("severity") == "critical"),
+        }
+
+    def get_all_findings(self) -> list[dict[str, Any]]:
+        return self._findings[-200:]
+
+
 # ============================================================================
 # Main LLMReplacementLayer (orchestrates all engines)
 # ============================================================================
@@ -7735,6 +8870,11 @@ class LLMReplacementLayer:
 
         # v6: Payment glue code deep analysis
         self._payment_glue = PaymentGlueCodeAnalyzer()
+
+        # v7: Enterprise + access-without-payment + AI agent attack surface
+        self._enterprise_detector = EnterprisePlatformDetector()
+        self._awp_detector = AccessWithoutPaymentDetector()
+        self._agent_attack = AIAgentAttackSurfaceAnalyzer()
 
     def _compute_adaptive_weights(self) -> dict[str, float]:
         """Adapt engine weights based on historical hit rates."""
@@ -8140,6 +9280,33 @@ class LLMReplacementLayer:
                 f.get("confidence", 0.5) for f in payment_glue_findings
             )
 
+        # --- Engine 21: Enterprise Platform Detection ---
+        enterprise_detections = self._enterprise_detector.detect_platforms(
+            observation, components,
+        )
+        if enterprise_detections:
+            engine_scores["enterprise_platform"] = max(
+                d.get("confidence", 0.5) for d in enterprise_detections
+            )
+
+        # --- Engine 22: Access-Without-Payment Detection ---
+        awp_findings = self._awp_detector.analyze(
+            observation, components, self._memory,
+        )
+        if awp_findings:
+            engine_scores["access_without_payment"] = max(
+                f.get("confidence", 0.5) for f in awp_findings
+            )
+
+        # --- Engine 23: AI Agent Attack Surface Analysis ---
+        agent_attack_findings = self._agent_attack.analyze(
+            observation, components,
+        )
+        if agent_attack_findings:
+            engine_scores["ai_agent_attack"] = max(
+                f.get("confidence", 0.5) for f in agent_attack_findings
+            )
+
         # --- Final synthesis: combine with consensus + cross-engine boost ---
         overall_score = max(engine_scores.values())
         overall_score = min(1.0, overall_score + cross_boost)
@@ -8166,6 +9333,18 @@ class LLMReplacementLayer:
             critical_glue = [f for f in payment_glue_findings if f.get("severity") == "critical"]
             glue_boost = min(0.25, 0.08 * len(critical_glue) + 0.03 * len(payment_glue_findings))
             overall_score = min(1.0, overall_score + glue_boost)
+
+        # Access-without-payment boost (highest weight -- this is the engine's core mission)
+        if awp_findings:
+            critical_awp = [f for f in awp_findings if f.get("severity") == "critical"]
+            awp_boost = min(0.30, 0.10 * len(critical_awp) + 0.04 * len(awp_findings))
+            overall_score = min(1.0, overall_score + awp_boost)
+
+        # AI agent attack boost
+        if agent_attack_findings:
+            critical_agent = [f for f in agent_attack_findings if f.get("severity") == "critical"]
+            agent_boost = min(0.25, 0.08 * len(critical_agent) + 0.03 * len(agent_attack_findings))
+            overall_score = min(1.0, overall_score + agent_boost)
 
         consensus_boost = 0.0
         if consensus["consensus_level"] in ("unanimous", "strong"):
@@ -8291,6 +9470,13 @@ class LLMReplacementLayer:
             # v6: payment glue code analysis outputs
             payment_glue_findings=payment_glue_findings[:20],
             payment_provider_summary=self._payment_glue.get_provider_summary(),
+            # v7: enterprise + access-without-payment + AI agent outputs
+            enterprise_platform_detections=enterprise_detections[:10],
+            access_without_payment_findings=awp_findings[:20],
+            ai_agent_attack_findings=agent_attack_findings[:15],
+            enterprise_platform_summary=self._enterprise_detector.get_platform_summary(),
+            access_without_payment_summary=self._awp_detector.get_pattern_summary(),
+            ai_agent_attack_summary=self._agent_attack.get_attack_summary(),
         )
 
     def get_statistics(self) -> dict[str, Any]:
@@ -8325,4 +9511,8 @@ class LLMReplacementLayer:
             # v6: payment glue code statistics
             "payment_glue_findings_total": len(self._payment_glue.get_all_findings()),
             "payment_provider_summary": self._payment_glue.get_provider_summary(),
+            # v7: enterprise + access-without-payment + AI agent statistics
+            "enterprise_platforms": self._enterprise_detector.get_platform_summary(),
+            "access_without_payment": self._awp_detector.get_pattern_summary(),
+            "ai_agent_attack": self._agent_attack.get_attack_summary(),
         }
