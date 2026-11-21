@@ -129,10 +129,22 @@ function loadSessionCookies() {
 
 async function openLoginBrowser(url) {
   const { chromium } = require("playwright");
-  const browser = await chromium.launch({ headless: false, args: ["--no-sandbox"] });
+  const browser = await chromium.launch({
+    headless: false,
+    channel: "chrome",
+    args: [
+      "--no-sandbox",
+      "--disable-blink-features=AutomationControlled",
+    ],
+  });
   loginBrowser = browser;
-  const context = await browser.newContext();
+  const context = await browser.newContext({
+    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  });
   const page = await context.newPage();
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+  });
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
 
   return new Promise((resolve) => {
@@ -178,8 +190,18 @@ async function openProofBrowser(url) {
   if (!hasSession()) return { success: false, error: "No session state" };
   const state = JSON.parse(fs.readFileSync(SESSION_STATE_PATH, "utf-8"));
   const { chromium } = require("playwright");
-  const browser = await chromium.launch({ headless: false, args: ["--no-sandbox"] });
-  const context = await browser.newContext({ storageState: state });
+  const browser = await chromium.launch({
+    headless: false,
+    channel: "chrome",
+    args: [
+      "--no-sandbox",
+      "--disable-blink-features=AutomationControlled",
+    ],
+  });
+  const context = await browser.newContext({
+    storageState: state,
+    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  });
   const page = await context.newPage();
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
 
