@@ -8238,6 +8238,19 @@ class AccessWithoutPaymentDetector:
         re.I,
     )
 
+    # API key scope/mode escalation
+    _KEY_SCOPE_RE = re.compile(
+        r"(sk_test_|pk_test_|test_key|restricted_key|read_only.*key|"
+        r"\"mode\"\s*:\s*\"test\"|\"scope\"\s*:\s*\"(read|limited|restricted)\")",
+        re.I,
+    )
+    _ADMIN_DATA_RE = re.compile(
+        r"(\"role\"\s*:\s*\"admin\"|admin.*panel|user.*management|"
+        r"billing.*data|\"permissions\".*\"write\"|api_key.*secret|"
+        r"\"admin\"\s*:\s*true|internal.*endpoint)",
+        re.I,
+    )
+
     def __init__(self) -> None:
         self._findings: list[dict[str, Any]] = []
         self._pattern_hits: dict[str, int] = defaultdict(int)
@@ -8246,7 +8259,7 @@ class AccessWithoutPaymentDetector:
     def analyze(
         self, observation: dict, components: dict, memory: Any = None,
     ) -> list[dict[str, Any]]:
-        """Run all 33 attack pattern detectors against an observation."""
+        """Run all 34 attack pattern detectors against an observation."""
         self._observation_count += 1
         findings: list[dict[str, Any]] = []
 
@@ -8263,7 +8276,7 @@ class AccessWithoutPaymentDetector:
         else:
             req_body_text = str(req_body_raw) if req_body_raw else ""
 
-        # ===== 24 GENERAL ACCESS-WITHOUT-PAYMENT PATTERNS =====
+        # ===== 25 GENERAL ACCESS-WITHOUT-PAYMENT PATTERNS =====
 
         # 1. checkout_completed_unpaid: The #1 Stripe bypass
         has_entitlement = bool(self._ENTITLEMENT_GRANT_RE.search(body_text))
@@ -8794,6 +8807,29 @@ class AccessWithoutPaymentDetector:
                 "attack_pattern": "AP-24",
             })
             self._pattern_hits["coupon_stacking"] += 1
+
+        # 25. API key scope escalation (test key accessing live/admin data)
+        has_test_key = bool(self._KEY_SCOPE_RE.search(
+            req_body_text + " " + json.dumps(req_headers),
+        ))
+        has_admin_data = bool(self._ADMIN_DATA_RE.search(body_text))
+        if has_test_key and has_admin_data:
+            findings.append({
+                "type": "api_key_scope_escalation",
+                "detail": (
+                    "Test/restricted API key returned admin/write-level data. "
+                    "If scope enforcement is per-endpoint rather than per-key, "
+                    "a test-mode key (sk_test_) can access live billing, user "
+                    "management, or admin panels. Anthropic-specific: sk_test_ "
+                    "keys should never return production user data."
+                ),
+                "severity": "critical",
+                "confidence": 0.75,
+                "category": "access_without_payment",
+                "cwe": "CWE-269",
+                "attack_pattern": "AP-25",
+            })
+            self._pattern_hits["key_scope_escalation"] += 1
 
         # ===== 9 ANTHROPIC-SPECIFIC ATTACK VECTORS =====
 

@@ -277,9 +277,9 @@ def test_browser_payment_flows_imports():
 # 10. v8.2 ENTERPRISE PATTERNS: SAML/SSO, API version, race, idempotency, seat overflow
 # ============================================================================
 
-def test_access_without_payment_has_33_patterns():
+def test_access_without_payment_has_34_patterns():
     from benchmark.llm_replacement_layer import AccessWithoutPaymentDetector
-    assert "33 attack pattern detectors" in AccessWithoutPaymentDetector.analyze.__doc__
+    assert "34 attack pattern detectors" in AccessWithoutPaymentDetector.analyze.__doc__
 
 
 def test_v82_vuln_categories():
@@ -291,6 +291,7 @@ def test_v82_vuln_categories():
     v83_cats = [
         "CLIENT_PRICE_BYPASS", "REFUND_RETAINED_ACCESS", "USAGE_METERING_BYPASS",
         "WEBHOOK_EVENT_REPLAY", "FEATURE_FLAG_OVERRIDE", "COUPON_STACKING",
+        "API_KEY_SCOPE_ESCALATION",
     ]
     for cat in v82_cats + v83_cats:
         assert hasattr(VulnCategory, cat), f"Missing VulnCategory.{cat}"

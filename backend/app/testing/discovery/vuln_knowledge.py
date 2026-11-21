@@ -105,6 +105,7 @@ class VulnCategory(str, Enum):
     WEBHOOK_EVENT_REPLAY = "webhook_event_replay"
     FEATURE_FLAG_OVERRIDE = "feature_flag_override"
     COUPON_STACKING = "coupon_stacking"
+    API_KEY_SCOPE_ESCALATION = "api_key_scope_escalation"
 
 
 # ---------------------------------------------------------------------------
@@ -460,6 +461,12 @@ RESPONSE_BODY_SIGNATURES: list[DetectionSignature] = [
     DetectionSignature(VulnCategory.COUPON_STACKING, "full_discount_applied",
                        "response_body", re.compile(r'percent_off\s*[":]\s*100|amount_off.*(?:equals?|>=).*(?:total|subtotal)', re.I),
                        "100% discount applied - verify coupon cannot be reused or stacked", 8.0, "critical", "CWE-863"),
+    DetectionSignature(VulnCategory.API_KEY_SCOPE_ESCALATION, "test_key_admin_data",
+                       "response_body", re.compile(r'(?:sk_test_|pk_test_|test_key).*(?:admin|billing_data|user_management|permissions.*write)', re.I),
+                       "Test/restricted API key returned admin-level data", 9.0, "critical", "CWE-269"),
+    DetectionSignature(VulnCategory.API_KEY_SCOPE_ESCALATION, "restricted_scope_write_access",
+                       "response_body", re.compile(r'(?:scope.*(?:read|limited|restricted)).*(?:(?:write|delete|admin).*(?:success|granted|allowed))', re.I),
+                       "Restricted-scope key performed write operation", 8.5, "critical", "CWE-269"),
 ]
 
 # Header-based signatures
