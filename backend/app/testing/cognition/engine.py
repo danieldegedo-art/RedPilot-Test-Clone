@@ -301,6 +301,14 @@ class CognitiveEngine:
         self.llm_replacement = None
         self._try_init_llm_replacement()
 
+        # --- v8: CVE Intelligence Database ---
+        self.cve_intelligence = None
+        self._try_init_cve_intelligence()
+
+        # --- v8: Webhook Forgery Engine ---
+        self.webhook_forgery = None
+        self._try_init_webhook_forgery()
+
         # --- Local ambiguous-case resolution on top of the LLM-Ersatz-Layer
         # (from benchmark/ambiguous_case_resolution.py; formerly an
         # optional real-model escalation path, since removed) -- off
@@ -339,6 +347,30 @@ class CognitiveEngine:
             enable_persistence, enable_event_bus, enable_sub_second,
             enable_experimental_cognition_modules, self.ambiguous_resolver is not None,
         )
+
+    def _try_init_cve_intelligence(self) -> None:
+        try:
+            from app.testing.discovery.cve_intelligence import get_all_cves, get_detection_patterns_for_cve, THREAT_INTELLIGENCE
+            self.cve_intelligence = {
+                "cves": get_all_cves(),
+                "threat_intel": THREAT_INTELLIGENCE,
+                "get_patterns": get_detection_patterns_for_cve,
+            }
+            logger.info("CVE intelligence database loaded: %d CVEs, %d threat metrics", len(self.cve_intelligence["cves"]), len(THREAT_INTELLIGENCE))
+        except ImportError:
+            self.cve_intelligence = None
+
+    def _try_init_webhook_forgery(self) -> None:
+        try:
+            from app.testing.integrity.webhook_forgery import WebhookSignatureVerifier, WebhookEventForger, WebhookEndpointProber
+            self.webhook_forgery = {
+                "verifier": WebhookSignatureVerifier,
+                "forger": WebhookEventForger,
+                "prober": WebhookEndpointProber,
+            }
+            logger.info("Webhook forgery engine loaded (Stripe/PayPal/Braintree/Adyen)")
+        except ImportError:
+            self.webhook_forgery = None
 
     def _try_init_llm_replacement(self) -> None:
         """Versucht den LLM-Ersatz-Layer zu initialisieren."""
@@ -640,6 +672,18 @@ class CognitiveEngine:
                     },
                     priority=EventPriority.HIGH if llm_insights.overall_severity in ("high", "critical") else EventPriority.MEDIUM,
                 ))
+
+        # --- Step 3b: CVE intelligence enrichment ---
+        if self.cve_intelligence is not None and llm_insights is not None:
+            for finding in getattr(llm_insights, "findings", []):
+                cat = finding.get("category", "")
+                for cve_entry in self.cve_intelligence["cves"]:
+                    if cat and cat.lower() in cve_entry.affected_component.lower():
+                        finding.setdefault("cve_references", []).append({
+                            "id": cve_entry.id,
+                            "cvss": cve_entry.cvss_score,
+                            "description": cve_entry.description[:120],
+                        })
 
         # --- Step 4: HYPOTHESIS — Generate hypotheses ---
         hypotheses = self.belief_system.generate_hypotheses(observation)
@@ -978,6 +1022,9 @@ class CognitiveEngine:
             "coverage": self.get_coverage_report(),
             "llm_replacement_active": self.llm_replacement is not None,
             "llm_replacement": self.llm_replacement.get_statistics() if self.llm_replacement else None,
+            "cve_intelligence_active": self.cve_intelligence is not None,
+            "cve_intelligence": {"cve_count": len(self.cve_intelligence["cves"]), "threat_metrics": len(self.cve_intelligence["threat_intel"])} if self.cve_intelligence else None,
+            "webhook_forgery_active": self.webhook_forgery is not None,
             "ambiguous_resolver_active": self.ambiguous_resolver is not None and self.ambiguous_resolver.active,
             "ambiguous_resolver": self.ambiguous_resolver.get_statistics() if self.ambiguous_resolver else None,
             "event_bus_active": self.event_bus is not None,

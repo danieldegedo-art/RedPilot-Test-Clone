@@ -5226,6 +5226,63 @@ class ExploitChainSynthesizer:
             "severity_upgrade": "critical",
             "kill_chain": "access_without_payment",
         },
+        # --- v8: Enterprise attack chain templates ---
+        {
+            "name": "graphql_alias_rate_bypass",
+            "steps": ["graphql_alias_batching", "rate_limit_bypass", "auth_bypass"],
+            "description": "Batch 100+ login attempts in 1 request via aliases -> brute-force credentials -> full access",
+            "severity_upgrade": "critical",
+            "kill_chain": "account_takeover",
+        },
+        {
+            "name": "smuggling_to_cache_poison",
+            "steps": ["http_smuggling", "cache_poisoning", "data_exfiltration"],
+            "description": "CL/TE desync -> poison CDN cache -> serve malicious content to all users",
+            "severity_upgrade": "critical",
+            "kill_chain": "mass_compromise",
+        },
+        {
+            "name": "jwt_to_admin_takeover",
+            "steps": ["jwt_weakness", "auth_bypass", "privilege_escalation"],
+            "description": "JWT alg:none -> forge admin token -> escalate to full control",
+            "severity_upgrade": "critical",
+            "kill_chain": "account_takeover",
+        },
+        {
+            "name": "prototype_to_rce",
+            "steps": ["prototype_pollution", "injection", "data_exfiltration"],
+            "description": "Pollute Object.prototype -> trigger gadget chain (Silent Spring) -> RCE",
+            "severity_upgrade": "critical",
+            "kill_chain": "full_compromise",
+        },
+        {
+            "name": "waf_to_injection_chain",
+            "steps": ["waf_bypass", "injection", "privilege_escalation"],
+            "description": "Exceed WAF body limit (8KB+) -> deliver uninspected payload -> escalate",
+            "severity_upgrade": "critical",
+            "kill_chain": "defense_evasion",
+        },
+        {
+            "name": "device_code_phishing_chain",
+            "steps": ["device_code_flow", "auth_bypass", "entitlement_bypass"],
+            "description": "Storm-2372: phish device code -> steal OAuth session -> access paid features",
+            "severity_upgrade": "critical",
+            "kill_chain": "account_takeover",
+        },
+        {
+            "name": "mcp_tool_poisoning_chain",
+            "steps": ["mcp_tool_poisoning", "injection", "data_exfiltration"],
+            "description": "Poison MCP tool description -> agent executes malicious tool -> exfil data",
+            "severity_upgrade": "critical",
+            "kill_chain": "agent_compromise",
+        },
+        {
+            "name": "webhook_forgery_chain",
+            "steps": ["webhook_forge", "payment_manipulation", "entitlement_bypass"],
+            "description": "Forge checkout.session.completed with empty signing secret -> instant premium",
+            "severity_upgrade": "critical",
+            "kill_chain": "access_without_payment",
+        },
     ]
 
     def __init__(self) -> None:

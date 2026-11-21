@@ -83,6 +83,15 @@ class VulnCategory(str, Enum):
     RATE_LIMIT_BYPASS_ADVANCED = "rate_limit_bypass_advanced"
     SESSION_FIXATION = "session_fixation"
     WEBHOOK_ABUSE = "webhook_abuse"
+    # --- v8: 8 new categories for enterprise attack classes ---
+    GRAPHQL_ALIAS_BATCHING = "graphql_alias_batching"
+    DEVICE_CODE_FLOW = "device_code_flow"
+    OAUTH_CONSENT_PHISHING = "oauth_consent_phishing"
+    LOG_TO_LEAK = "log_to_leak"
+    AGENTIC_BROWSER_HIJACK = "agentic_browser_hijack"
+    WAF_BYPASS = "waf_bypass"
+    MCP_TOOL_POISONING = "mcp_tool_poisoning"
+    WEBHOOK_FORGERY = "webhook_forgery"
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +326,62 @@ RESPONSE_BODY_SIGNATURES: list[DetectionSignature] = [
     DetectionSignature(VulnCategory.RATE_LIMIT_BYPASS_ADVANCED, "rate_limit_inconsistency",
                        "response_body", re.compile(r'(?:x-ratelimit-remaining:\s*(?:-\d+|0))', re.I),
                        "Negative or zero remaining rate limit counter", 5.0, "medium", "CWE-770"),
+    # -- v8: GraphQL alias batching indicators --
+    DetectionSignature(VulnCategory.GRAPHQL_ALIAS_BATCHING, "alias_batching_response",
+                       "response_body", re.compile(r'"(?:a\d{2,}|alias_\d+|q\d{2,})"\s*:\s*\{.*?"(?:a\d{2,}|alias_\d+|q\d{2,})"\s*:', re.S),
+                       "Multiple aliased query results indicate alias batching is unrestricted", 7.0, "high", "CWE-770"),
+    DetectionSignature(VulnCategory.GRAPHQL_ALIAS_BATCHING, "graphql_complexity_absent",
+                       "response_body", re.compile(r'(?:query\s+complexity|cost\s+limit|depth\s+limit).*(?:not\s+enabled|disabled)', re.I),
+                       "GraphQL query complexity/depth limits not enforced", 6.0, "medium", "CWE-770"),
+    # -- v8: Device code flow indicators --
+    DetectionSignature(VulnCategory.DEVICE_CODE_FLOW, "device_code_endpoint_exposed",
+                       "response_body", re.compile(r'"(?:device_code|user_code|verification_uri|verification_url)"', re.I),
+                       "Device code flow endpoint returns device/user codes for phishing", 7.5, "high", "CWE-287"),
+    DetectionSignature(VulnCategory.DEVICE_CODE_FLOW, "device_code_no_binding",
+                       "response_body", re.compile(r'(?:expires_in.*(?:600|900|1[0-8]00))', re.I),
+                       "Long device code expiry (10+ min) enables phishing window", 6.5, "medium", "CWE-613"),
+    # -- v8: OAuth consent phishing indicators --
+    DetectionSignature(VulnCategory.OAUTH_CONSENT_PHISHING, "oauth_scope_overreach",
+                       "response_body", re.compile(r'"scope"\s*:\s*"[^"]*(?:admin|write|delete|manage|full_access|openid\s+profile\s+email\s+offline_access)', re.I),
+                       "OAuth consent scope includes dangerous permissions", 7.0, "high", "CWE-287"),
+    DetectionSignature(VulnCategory.OAUTH_CONSENT_PHISHING, "consent_auto_approve",
+                       "response_body", re.compile(r'(?:consent.*(?:auto|skip|bypass)|prompt\s*=\s*none)', re.I),
+                       "OAuth consent screen can be auto-approved or bypassed", 7.5, "high", "CWE-862"),
+    # -- v8: Log-To-Leak metadata injection indicators --
+    DetectionSignature(VulnCategory.LOG_TO_LEAK, "structured_log_injection",
+                       "response_body", re.compile(r'(?:\{[^}]*"(?:level|severity|msg|message|logger)"[^}]*\})', re.I),
+                       "Structured log entry in response body exposes Log-To-Leak surface", 6.5, "medium", "CWE-117"),
+    DetectionSignature(VulnCategory.LOG_TO_LEAK, "log_metadata_reflected",
+                       "response_body", re.compile(r'(?:user-agent|referer|x-forwarded-for|x-request-id).*(?:logged|recorded|stored)', re.I),
+                       "Request metadata reflected in logs enables injection", 7.0, "high", "CWE-117"),
+    # -- v8: WAF bypass indicators --
+    DetectionSignature(VulnCategory.WAF_BYPASS, "waf_body_size_limit_exposed",
+                       "response_body", re.compile(r'(?:request.*(?:too large|body.*(?:exceeds|limit))|413\s+(?:Request Entity|Payload))', re.I),
+                       "WAF body size limit exposed - payloads beyond threshold pass uninspected", 7.5, "high", "CWE-693"),
+    DetectionSignature(VulnCategory.WAF_BYPASS, "waf_identification_header",
+                       "response_body", re.compile(r'(?:x-(?:akamai|cloudflare|sucuri|imperva|incapsula|aws-waf|waf)-|server:\s*(?:cloudflare|akamaighost|bigip))', re.I),
+                       "WAF vendor identified - vendor-specific bypass techniques applicable", 5.0, "medium", "CWE-693"),
+    # -- v8: Agentic browser hijack indicators --
+    DetectionSignature(VulnCategory.AGENTIC_BROWSER_HIJACK, "agent_instruction_in_page",
+                       "response_body", re.compile(r'(?:<!--\s*(?:SYSTEM|ASSISTANT|INSTRUCTION)|data-(?:agent|prompt|instruction)=)', re.I),
+                       "Hidden agent instructions in page content enable browser hijacking", 8.0, "high", "CWE-74"),
+    DetectionSignature(VulnCategory.AGENTIC_BROWSER_HIJACK, "mcp_tool_reference_in_page",
+                       "response_body", re.compile(r'(?:mcp://|tool_call|function_call|agent_action)', re.I),
+                       "MCP/tool references in page content enable agent manipulation", 7.5, "high", "CWE-74"),
+    # -- v8: MCP tool poisoning indicators --
+    DetectionSignature(VulnCategory.MCP_TOOL_POISONING, "mcp_server_override",
+                       "response_body", re.compile(r'(?:mcp.*(?:server|tool).*(?:override|redirect|proxy)|tool_description.*(?:actually|instead|ignore))', re.I),
+                       "MCP tool poisoning attempt via description override", 8.5, "high", "CWE-94"),
+    DetectionSignature(VulnCategory.MCP_TOOL_POISONING, "mcp_cross_server_injection",
+                       "response_body", re.compile(r'(?:cross.*server.*(?:call|invoke|query)|tool_name.*(?:\.\./|;|&&|\|))', re.I),
+                       "Cross-MCP-server injection attempt detected", 8.5, "high", "CWE-77"),
+    # -- v8: Webhook forgery indicators --
+    DetectionSignature(VulnCategory.WEBHOOK_FORGERY, "webhook_no_sig_header",
+                       "response_body", re.compile(r'(?:stripe-signature|x-hub-signature|paypal-transmission-sig).*(?:missing|absent|empty|null)', re.I),
+                       "Webhook processed without required signature header", 9.0, "high", "CWE-345"),
+    DetectionSignature(VulnCategory.WEBHOOK_FORGERY, "webhook_empty_secret_accepted",
+                       "response_body", re.compile(r'(?:signing.*secret.*(?:empty|null|default|not set)|webhook.*(?:secret|key).*(?:empty|not configured))', re.I),
+                       "Webhook signing secret empty/default - CVE-2026-41432 pattern", 9.5, "high", "CWE-345"),
 ]
 
 # Header-based signatures

