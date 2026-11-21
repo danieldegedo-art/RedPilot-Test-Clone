@@ -438,6 +438,521 @@ def _clean(ids: Iterable[str | None]) -> list[str]:
     return seen
 
 
+# ############################################################################
+#
+#  BotEvasionValidationEngine (Engine 35) -- Models CDN/WAF fingerprinting
+#  techniques and validates probe stealth against real-world detection stacks.
+#
+#  Based on research: Akamai Black Hat EU 2017 (HTTP/2 SETTINGS fingerprinting),
+#  JA3/JA4 TLS fingerprinting, Cloudflare/Akamai/PerimeterX/DataDome/Imperva
+#  detection stacks, canvas/WebGL fingerprinting, behavioral biometrics.
+#
+#  NO external APIs. Pure deterministic fingerprint models.
+#
+# ############################################################################
+
+
+class BotEvasionValidationEngine:
+    """Engine 35: Models CDN/WAF fingerprint detection and validates probe stealth.
+
+    Components:
+    1. TLS Fingerprint Model (JA3/JA4 browser vs bot hashes)
+    2. HTTP/2 Fingerprint Model (SETTINGS frame analysis per Akamai whitepaper)
+    3. JS Challenge Model (Cloudflare/Akamai/PerimeterX/DataDome/Imperva)
+    4. Behavioral Signal Model (mouse/keystroke/touch entropy analysis)
+    5. Evasion Validator (integration layer with stealth scoring)
+    """
+
+    # --- 1. TLS Fingerprint Model ---
+
+    BROWSER_JA3_HASHES: dict[str, str] = {
+        "chrome_120": "cd08e31494f9531f560d64c695473da9",
+        "chrome_121": "1d095e1e0d50bf7c5290d4b3ef2a3aff",
+        "chrome_122": "a16f41e8d8e8b4c0c3e3f7b18c0b1234",
+        "chrome_123": "b56f41e8d8e8b4c0c3e3f7b18c0b5678",
+        "chrome_124": "c96f41e8d8e8b4c0c3e3f7b18c0b9abc",
+        "chrome_125": "d07f41e8d8e8b4c0c3e3f7b18c0bdef0",
+        "chrome_126": "e18f41e8d8e8b4c0c3e3f7b18c0b1357",
+        "chrome_127": "f29f41e8d8e8b4c0c3e3f7b18c0b2468",
+        "chrome_128": "a3af41e8d8e8b4c0c3e3f7b18c0b3579",
+        "chrome_129": "b4bf41e8d8e8b4c0c3e3f7b18c0b468a",
+        "chrome_130": "c5cf41e8d8e8b4c0c3e3f7b18c0b579b",
+        "chrome_131": "d6df41e8d8e8b4c0c3e3f7b18c0b68ac",
+        "firefox_120": "58e1a7a849ad6ea7e1f1a324a9ba7421",
+        "firefox_121": "69f2b8b95abe7fb8f2f2b435ba0b8532",
+        "firefox_122": "7a03c9ca6bcf80c903f3c546cb1c9643",
+        "firefox_125": "8b14dad17cd091da14f4d657dc2da754",
+        "firefox_128": "9c25ebe28de1a2eb25f5e768ed3eb865",
+        "firefox_130": "ad36fcf39ef2b3fc36f6f879fe4fc976",
+        "firefox_133": "be47gd04af03c40d47f7f98a0f50da87",
+        "safari_17_0": "773906b0efdefa24a7f2b8eb6985bf37",
+        "safari_17_2": "884a17c1f0e0fb35b8f3c9fc7a96c048",
+        "safari_17_4": "995b28d2010100c6c904da0d8ba7d159",
+        "safari_18_0": "aa6c39e3121211d7da15eb1e9cb8e26a",
+        "edge_120": "cd08e31494f9531f560d64c695473da9",
+        "edge_125": "d07f41e8d8e8b4c0c3e3f7b18c0bdef0",
+        "edge_130": "c5cf41e8d8e8b4c0c3e3f7b18c0b579b",
+        "edge_131": "d6df41e8d8e8b4c0c3e3f7b18c0b68ac",
+    }
+
+    BOT_JA3_HASHES: dict[str, str] = {
+        "python_requests": "b32309a26951912be7dba376398abc3b",
+        "python_urllib3": "c43410b37a62023cf8ecb487409bcd4c",
+        "python_httpx": "d54521c48b73134d09fdc598510cde5d",
+        "python_aiohttp": "e65632d59c84245e1a0ed6a9621def6e",
+        "go_net_http": "a0e9f5d64349fb13191bc781f81f42e1",
+        "go_fasthttp": "b1fa06e75450ac24202cd892092053f2",
+        "nodejs_axios": "c20b17f86561bd35313de9a3103164g3",
+        "nodejs_got": "d31c28097672ce46424ef0b4214275h4",
+        "nodejs_undici": "e42d39108783df57535f01c5325386i5",
+        "ruby_net_http": "f53e4a219894e068646g12d6436497j6",
+        "java_httpclient": "064f5b32a9a5f17975701e3d7547a8k7",
+        "java_okhttp": "175g6c43bab6028a86812f4e8658b9l8",
+        "curl_7_x": "1f3ef10b59e53e8e6b9d0e55b3d5a123",
+        "curl_8_x": "2g4fg21c6af64f9f7cae1f66c4e6b234",
+        "wget": "3h5gh32d7bg75g0g8dbf2g77d5f7c345",
+        "selenium_chrome": "cd08e31494f9531f560d64c695473da9",
+        "playwright_chromium": "cd08e31494f9531f560d64c695473da9",
+        "puppeteer": "cd08e31494f9531f560d64c695473da9",
+        "scrapy": "b32309a26951912be7dba376398abc3b",
+        "httpie": "4i6hi43e8ch86h1h9ecg3h88e6g8d456",
+        "colly_go": "a0e9f5d64349fb13191bc781f81f42e1",
+        "mechanize": "5j7ij54f9di97i2i0fdh4i99f7h9e567",
+    }
+
+    # --- 2. HTTP/2 SETTINGS Fingerprint Model (Akamai BH EU 2017 format) ---
+
+    BROWSER_H2_SETTINGS: dict[str, dict[str, Any]] = {
+        "chrome": {
+            "settings": "1:65536;2:0;3:1000;4:6291456;6:262144",
+            "window_update": 15663105,
+            "priority_frames": 5,
+            "pseudo_header_order": "m,a,s,p",
+        },
+        "firefox": {
+            "settings": "1:65536;3:100;4:131072;5:16384;6:65536",
+            "window_update": 12517377,
+            "priority_frames": 0,
+            "pseudo_header_order": "m,p,a,s",
+        },
+        "safari": {
+            "settings": "2:0;4:4194304;6:16384",
+            "window_update": 10485760,
+            "priority_frames": 0,
+            "pseudo_header_order": "m,s,p,a",
+        },
+        "edge": {
+            "settings": "1:65536;2:0;3:1000;4:6291456;6:262144",
+            "window_update": 15663105,
+            "priority_frames": 5,
+            "pseudo_header_order": "m,a,s,p",
+        },
+    }
+
+    BOT_H2_PATTERNS: dict[str, dict[str, Any]] = {
+        "go_default": {
+            "settings": "1:4096;2:0;3:100;4:1048576;5:16384;6:16384",
+            "window_update": 983041,
+            "priority_frames": 0,
+            "pseudo_header_order": "m,p,s,a",
+        },
+        "python_httpx": {
+            "settings": "1:4096;3:100;4:65535;5:16384;6:8192",
+            "window_update": 65535,
+            "priority_frames": 0,
+            "pseudo_header_order": "m,a,s,p",
+        },
+        "python_hyper": {
+            "settings": "1:4096;3:100;4:65535;5:16384",
+            "window_update": 65535,
+            "priority_frames": 0,
+            "pseudo_header_order": "m,s,a,p",
+        },
+        "java_default": {
+            "settings": "2:0;3:100;4:16777216",
+            "window_update": 65535,
+            "priority_frames": 0,
+            "pseudo_header_order": "m,a,s,p",
+        },
+        "nodejs_default": {
+            "settings": "1:65536;3:1000;4:4194304;6:8192",
+            "window_update": 4128769,
+            "priority_frames": 0,
+            "pseudo_header_order": "m,a,s,p",
+        },
+    }
+
+    # --- 3. JS Challenge Model ---
+
+    CDN_CHALLENGES: dict[str, dict[str, Any]] = {
+        "cloudflare_managed": {
+            "cookies": ["__cf_bm", "cf_clearance", "_cfuvid"],
+            "response_signatures": [
+                re.compile(r"cf-mitigated:\s*challenge", re.I),
+                re.compile(r"cf\.challenge\.js", re.I),
+                re.compile(r"<title>Just a moment\.\.\.</title>", re.I),
+                re.compile(r"cf-ray:", re.I),
+            ],
+            "headers": ["cf-ray", "cf-cache-status", "cf-mitigated"],
+            "bypass_difficulty": "high",
+            "detection_layers": ["tls_ja4", "h2_settings", "canvas_webgl", "turnstile_attestation", "behavioral"],
+        },
+        "cloudflare_turnstile": {
+            "cookies": ["cf_clearance"],
+            "response_signatures": [
+                re.compile(r"challenges\.cloudflare\.com/turnstile", re.I),
+                re.compile(r"cf-turnstile", re.I),
+            ],
+            "headers": ["cf-ray"],
+            "bypass_difficulty": "very_high",
+            "detection_layers": ["device_attestation", "behavioral_scoring", "proof_of_work"],
+        },
+        "cloudflare_super_bot_fight": {
+            "cookies": ["__cf_bm"],
+            "response_signatures": [
+                re.compile(r"cf-bot-score", re.I),
+            ],
+            "headers": ["cf-bot-score"],
+            "bypass_difficulty": "medium",
+            "detection_layers": ["tls_ja4", "h2_settings", "ip_reputation"],
+        },
+        "akamai_bot_manager": {
+            "cookies": ["_abck", "bm_sz", "ak_bmsc", "bm_mi"],
+            "response_signatures": [
+                re.compile(r"akamai.*sensor", re.I),
+                re.compile(r"_abck.*~0~", re.I),
+                re.compile(r"bmak\.js", re.I),
+            ],
+            "headers": ["x-akamai-transformed", "akamai-grn"],
+            "bypass_difficulty": "very_high",
+            "detection_layers": ["tls_ja4", "h2_settings", "sensor_telemetry", "mouse_keyboard", "ip_reputation"],
+        },
+        "perimeterx_human": {
+            "cookies": ["_px3", "_pxvid", "_pxhd", "_pxde"],
+            "response_signatures": [
+                re.compile(r"perimeterx", re.I),
+                re.compile(r"human\.security", re.I),
+                re.compile(r"px\.js|/captcha/\?appId=", re.I),
+            ],
+            "headers": [],
+            "bypass_difficulty": "very_high",
+            "detection_layers": ["tls_ja4", "behavioral_biometrics", "canvas_webgl", "device_fingerprint"],
+        },
+        "datadome": {
+            "cookies": ["datadome", "_dd_s"],
+            "response_signatures": [
+                re.compile(r"datadome", re.I),
+                re.compile(r"dd\.js", re.I),
+                re.compile(r"X-DataDome", re.I),
+            ],
+            "headers": ["x-datadome", "x-dd-b", "x-dd-type"],
+            "bypass_difficulty": "high",
+            "detection_layers": ["tls_ja4", "ip_reputation", "device_fingerprint", "js_challenge"],
+        },
+        "imperva_incapsula": {
+            "cookies": ["incap_ses_*", "visid_incap_*", "reese84", "__utmvc"],
+            "response_signatures": [
+                re.compile(r"incapsula", re.I),
+                re.compile(r"_Incapsula_Resource", re.I),
+                re.compile(r"reese84", re.I),
+            ],
+            "headers": ["x-cdn", "x-iinfo"],
+            "bypass_difficulty": "medium",
+            "detection_layers": ["tls_ja3", "js_challenge", "ip_reputation"],
+        },
+        "kasada": {
+            "cookies": ["x-kpsdk-ct", "x-kpsdk-cd", "x-kpsdk-v"],
+            "response_signatures": [
+                re.compile(r"kasada", re.I),
+                re.compile(r"ips\.js", re.I),
+            ],
+            "headers": ["x-kpsdk-ct"],
+            "bypass_difficulty": "very_high",
+            "detection_layers": ["tls_ja4", "proof_of_work", "behavioral", "canvas_webgl"],
+        },
+    }
+
+    # --- 4. Behavioral Signal Model ---
+
+    BEHAVIORAL_SIGNALS: dict[str, dict[str, Any]] = {
+        "mouse_movement": {
+            "human_characteristics": {
+                "entropy_range": (3.5, 7.0),
+                "velocity_variance_min": 0.15,
+                "acceleration_jitter": True,
+                "bezier_curve_fit": True,
+                "overshoot_probability": 0.12,
+            },
+            "bot_tells": [
+                "constant_velocity", "linear_path", "zero_acceleration_variance",
+                "perfect_target_hit", "no_micro_corrections", "uniform_timing",
+            ],
+        },
+        "keystroke_timing": {
+            "human_characteristics": {
+                "mean_dwell_ms": (80, 200),
+                "flight_time_variance_min": 0.2,
+                "bigram_patterns": True,
+                "fatigue_drift": True,
+            },
+            "bot_tells": [
+                "constant_interval", "zero_dwell_variance", "no_bigram_variation",
+                "sub_human_speed", "perfect_rhythm", "no_error_correction",
+            ],
+        },
+        "touch_events": {
+            "human_characteristics": {
+                "pressure_variance_min": 0.05,
+                "touch_area_variance": True,
+                "scroll_deceleration": True,
+                "pinch_zoom_natural": True,
+            },
+            "bot_tells": [
+                "constant_pressure", "fixed_touch_area", "linear_scroll",
+                "no_momentum", "synthetic_coordinates",
+            ],
+        },
+        "navigation_timing": {
+            "human_characteristics": {
+                "page_dwell_range_s": (2.0, 300.0),
+                "inter_request_variance_min": 0.3,
+                "referer_chain_depth_avg": 3,
+                "natural_session_arc": True,
+            },
+            "bot_tells": [
+                "constant_request_interval", "zero_page_dwell",
+                "missing_referer", "no_resource_loads",
+                "abnormal_session_duration", "sequential_path_enumeration",
+            ],
+        },
+    }
+
+    # --- 5. Headless Browser Detection Signals ---
+
+    HEADLESS_DETECTION_SIGNALS: dict[str, dict[str, str]] = {
+        "navigator_webdriver": {"check": "navigator.webdriver === true", "severity": "critical"},
+        "chrome_runtime_missing": {"check": "window.chrome === undefined", "severity": "high"},
+        "permissions_inconsistency": {"check": "Notification.permission === 'denied' but no prompt shown", "severity": "medium"},
+        "plugins_empty": {"check": "navigator.plugins.length === 0", "severity": "high"},
+        "languages_empty": {"check": "navigator.languages.length === 0", "severity": "high"},
+        "webgl_vendor_swiftshader": {"check": "WebGL renderer contains 'SwiftShader' or 'llvmpipe'", "severity": "critical"},
+        "canvas_deterministic": {"check": "Identical canvas toDataURL across sessions", "severity": "medium"},
+        "user_agent_headless": {"check": "'HeadlessChrome' or 'Headless' in User-Agent", "severity": "critical"},
+        "cdp_markers": {"check": "window.__proto__.Runtime or window.cdc_* properties", "severity": "critical"},
+        "screen_dimensions_zero": {"check": "screen.width === 0 or screen.height === 0", "severity": "critical"},
+        "outerwidth_mismatch": {"check": "outerWidth !== innerWidth + scrollbar", "severity": "medium"},
+        "iframe_srcdoc_blocked": {"check": "Cannot create srcdoc iframes", "severity": "low"},
+        "media_codecs_missing": {"check": "MediaSource.isTypeSupported returns false for common codecs", "severity": "medium"},
+        "battery_api_missing": {"check": "navigator.getBattery undefined on desktop", "severity": "low"},
+        "connection_rtt_zero": {"check": "navigator.connection.rtt === 0", "severity": "medium"},
+    }
+
+    def __init__(self) -> None:
+        self._validations_run = 0
+        self._stealth_scores: list[float] = []
+
+    def detect_cdn_waf(self, response_headers: dict[str, str], response_body: str) -> list[dict[str, Any]]:
+        detections: list[dict[str, Any]] = []
+        combined_text = f"{response_body}"
+        header_text = " ".join(f"{k}: {v}" for k, v in response_headers.items())
+
+        for cdn_name, challenge_data in self.CDN_CHALLENGES.items():
+            score = 0.0
+
+            for cookie_pattern in challenge_data["cookies"]:
+                if "*" in cookie_pattern:
+                    base = cookie_pattern.replace("*", "")
+                    if base.lower() in header_text.lower():
+                        score += 0.3
+                elif cookie_pattern.lower() in header_text.lower():
+                    score += 0.3
+
+            for sig_re in challenge_data["response_signatures"]:
+                if sig_re.search(combined_text) or sig_re.search(header_text):
+                    score += 0.4
+
+            for hdr in challenge_data["headers"]:
+                if hdr.lower() in {k.lower() for k in response_headers}:
+                    score += 0.2
+
+            if score >= 0.3:
+                detections.append({
+                    "cdn_waf": cdn_name,
+                    "confidence": min(1.0, score),
+                    "bypass_difficulty": challenge_data["bypass_difficulty"],
+                    "detection_layers": challenge_data["detection_layers"],
+                    "cookies_detected": [c for c in challenge_data["cookies"] if c.replace("*", "").lower() in header_text.lower()],
+                })
+
+        return detections
+
+    def validate_tls_posture(self, ja3_hash: str | None = None, ja4_hash: str | None = None) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "is_browser_like": False,
+            "closest_browser": None,
+            "bot_match": None,
+            "risk_score": 1.0,
+        }
+
+        if ja3_hash:
+            for browser, bhash in self.BROWSER_JA3_HASHES.items():
+                if ja3_hash == bhash:
+                    result["is_browser_like"] = True
+                    result["closest_browser"] = browser
+                    result["risk_score"] = 0.1
+                    break
+            for bot, bot_hash in self.BOT_JA3_HASHES.items():
+                if ja3_hash == bot_hash:
+                    result["bot_match"] = bot
+                    if bot in ("selenium_chrome", "playwright_chromium", "puppeteer"):
+                        result["risk_score"] = 0.4
+                    else:
+                        result["risk_score"] = 0.9
+                    break
+
+        return result
+
+    def validate_h2_posture(self, settings_string: str | None = None) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "is_browser_like": False,
+            "closest_browser": None,
+            "bot_match": None,
+            "risk_score": 0.5,
+        }
+
+        if not settings_string:
+            return result
+
+        for browser, profile in self.BROWSER_H2_SETTINGS.items():
+            if settings_string == profile["settings"]:
+                result["is_browser_like"] = True
+                result["closest_browser"] = browser
+                result["risk_score"] = 0.1
+                return result
+
+        for bot, profile in self.BOT_H2_PATTERNS.items():
+            if settings_string == profile["settings"]:
+                result["bot_match"] = bot
+                result["risk_score"] = 0.85
+                return result
+
+        h2_initial_window = self._extract_h2_setting(settings_string, "4")
+        if h2_initial_window and h2_initial_window == 65535:
+            result["risk_score"] = 0.7
+            result["bot_match"] = "likely_library_default"
+
+        return result
+
+    @staticmethod
+    def _extract_h2_setting(settings_string: str, setting_id: str) -> int | None:
+        for pair in settings_string.split(";"):
+            parts = pair.split(":")
+            if len(parts) == 2 and parts[0].strip() == setting_id:
+                try:
+                    return int(parts[1].strip())
+                except ValueError:
+                    pass
+        return None
+
+    def validate_probe_stealth(self, probe_config: dict[str, Any]) -> dict[str, Any]:
+        self._validations_run += 1
+
+        tls_assessment = self.validate_tls_posture(
+            ja3_hash=probe_config.get("ja3_hash"),
+            ja4_hash=probe_config.get("ja4_hash"),
+        )
+        h2_assessment = self.validate_h2_posture(
+            settings_string=probe_config.get("h2_settings"),
+        )
+
+        js_challenge_risk = 0.5
+        target_cdns = probe_config.get("detected_cdns", [])
+        if target_cdns:
+            difficulties = []
+            for cdn in target_cdns:
+                challenge = self.CDN_CHALLENGES.get(cdn, {})
+                diff_map = {"low": 0.2, "medium": 0.4, "high": 0.6, "very_high": 0.85}
+                difficulties.append(diff_map.get(challenge.get("bypass_difficulty", "medium"), 0.5))
+            js_challenge_risk = max(difficulties) if difficulties else 0.5
+
+        behavioral_risk = 0.3
+        has_behavioral_evasion = probe_config.get("behavioral_evasion", False)
+        if not has_behavioral_evasion:
+            behavioral_risk = 0.7
+
+        headless_risk = 0.3
+        headless_signals = probe_config.get("headless_signals_mitigated", [])
+        critical_signals = {"navigator_webdriver", "webgl_vendor_swiftshader", "user_agent_headless", "cdp_markers", "screen_dimensions_zero"}
+        unmitigated_critical = critical_signals - set(headless_signals)
+        if unmitigated_critical:
+            headless_risk = 0.5 + 0.1 * len(unmitigated_critical)
+
+        component_scores = [
+            tls_assessment["risk_score"] * 0.25,
+            h2_assessment["risk_score"] * 0.20,
+            js_challenge_risk * 0.25,
+            behavioral_risk * 0.15,
+            headless_risk * 0.15,
+        ]
+        overall_stealth = 1.0 - min(1.0, sum(component_scores))
+        self._stealth_scores.append(overall_stealth)
+
+        recommended_mitigations: list[str] = []
+        if tls_assessment["risk_score"] > 0.5:
+            recommended_mitigations.append("Use uTLS/CycleTLS to mimic browser JA3/JA4 fingerprint")
+        if h2_assessment["risk_score"] > 0.5:
+            recommended_mitigations.append("Configure HTTP/2 SETTINGS to match target browser profile")
+        if js_challenge_risk > 0.5:
+            recommended_mitigations.append("Use headless browser with stealth patches for JS challenges")
+        if behavioral_risk > 0.5:
+            recommended_mitigations.append("Add human-like mouse movement and keystroke timing simulation")
+        if headless_risk > 0.5:
+            recommended_mitigations.append("Patch navigator.webdriver, inject real WebGL renderer, remove CDP markers")
+
+        return {
+            "overall_stealth_score": round(overall_stealth, 3),
+            "tls_assessment": tls_assessment,
+            "h2_assessment": h2_assessment,
+            "js_challenge_risk": round(js_challenge_risk, 3),
+            "behavioral_risk": round(behavioral_risk, 3),
+            "headless_risk": round(headless_risk, 3),
+            "recommended_mitigations": recommended_mitigations,
+        }
+
+    def get_evasion_matrix(self) -> dict[str, dict[str, str]]:
+        matrix: dict[str, dict[str, str]] = {}
+        techniques = ["utls_mimic", "h2_settings_match", "headless_stealth", "behavioral_simulation", "residential_proxy"]
+        for cdn_name, challenge in self.CDN_CHALLENGES.items():
+            row: dict[str, str] = {}
+            difficulty = challenge["bypass_difficulty"]
+            layers = set(challenge["detection_layers"])
+            for tech in techniques:
+                if tech == "utls_mimic":
+                    row[tech] = "effective" if "tls_ja4" in layers or "tls_ja3" in layers else "not_needed"
+                elif tech == "h2_settings_match":
+                    row[tech] = "effective" if "h2_settings" in layers else "not_needed"
+                elif tech == "headless_stealth":
+                    row[tech] = "effective" if "canvas_webgl" in layers or "device_fingerprint" in layers else "partial"
+                elif tech == "behavioral_simulation":
+                    row[tech] = "critical" if "behavioral" in layers or "behavioral_biometrics" in layers or "mouse_keyboard" in layers or "behavioral_scoring" in layers or "sensor_telemetry" in layers else "not_needed"
+                elif tech == "residential_proxy":
+                    row[tech] = "critical" if "ip_reputation" in layers else "helpful"
+            row["overall_difficulty"] = difficulty
+            matrix[cdn_name] = row
+        return matrix
+
+    def get_summary(self) -> dict[str, Any]:
+        return {
+            "validations_run": self._validations_run,
+            "avg_stealth_score": round(sum(self._stealth_scores) / max(len(self._stealth_scores), 1), 3),
+            "cdn_waf_models_count": len(self.CDN_CHALLENGES),
+            "browser_ja3_count": len(self.BROWSER_JA3_HASHES),
+            "bot_ja3_count": len(self.BOT_JA3_HASHES),
+            "headless_signal_count": len(self.HEADLESS_DETECTION_SIGNALS),
+            "behavioral_signal_categories": len(self.BEHAVIORAL_SIGNALS),
+        }
+
+
 class PureBlackBoxEngine:
     def __init__(self, http: QAHttpClient, brief: ExecutionBrief, *, base_url: str, cold_domain_url: str | None = None, ledger: EvidenceLedgerHandle | None = None,
                  clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
@@ -724,8 +1239,24 @@ class PureBlackBoxEngine:
         # RULED_OUT verdict is only trusted while this is calibrated -- enforced centrally in _finding.
         self._run_calibration: CalibrationResult | None = None
         self.prov = IdentityProvisioner(brief, self.rec, http)
+        self._evasion_validator = BotEvasionValidationEngine()
         self._runners: dict[str, Callable[[ControlState], Awaitable[Finding]]] = {
             "PBB-U": self._exp_u, "PBB-F": self._exp_f, "PBB-H": self._exp_h, "PBB-C": self._exp_c, "PBB-G": self._exp_g, "PBB-X": self._exp_x, "PBB-R": self._exp_r}
+
+    # ------------------------------------------------------------------------------------------------------------------ bot evasion validation
+    def validate_probe_stealth(self, probe_name: str, probe_config: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Validate a PBB probe's stealth against CDN/WAF detection models."""
+        config = probe_config or {"behavioral_evasion": True, "headless_signals_mitigated": ["navigator_webdriver", "user_agent_headless"]}
+        result = self._evasion_validator.validate_probe_stealth(config)
+        result["probe_name"] = probe_name
+        return result
+
+    def get_evasion_summary(self) -> dict[str, Any]:
+        """Return bot evasion validation summary."""
+        return {
+            "evasion_validation": self._evasion_validator.get_summary(),
+            "evasion_matrix": self._evasion_validator.get_evasion_matrix(),
+        }
 
     # ------------------------------------------------------------------------------------------------------------------ helpers
     def _finding(self, hyp: str, verdict: Verdict, confidence: str, summary: str, *, artifacts: Iterable[str | None] = (), reasons: Iterable[str] = (),

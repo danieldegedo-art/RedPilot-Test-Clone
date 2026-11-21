@@ -38,10 +38,10 @@ def test_all_v8_files_parse():
         ast.parse(path.read_text())
 
 
-def test_llm_replacement_layer_has_33_engines():
-    """The LLM Replacement Layer docstring must reference 33 engines."""
+def test_llm_replacement_layer_has_36_engines():
+    """The LLM Replacement Layer docstring must reference 36 engines."""
     src = (_BACKEND / "benchmark" / "llm_replacement_layer.py").read_text()
-    assert "33 reasoning engines" in src
+    assert "36 reasoning engines" in src
 
 
 # ============================================================================
@@ -417,7 +417,145 @@ def test_total_v8_code_volume():
     whf = (_BACKEND / "app" / "testing" / "integrity" / "webhook_forgery.py").read_text()
     bpf = (_BACKEND / "app" / "testing" / "integrity" / "browser_payment_flows.py").read_text()
 
-    assert len(llm.splitlines()) >= 10800, "llm_replacement_layer.py shrunk"
+    assert len(llm.splitlines()) >= 12000, "llm_replacement_layer.py shrunk (v9 engines expected)"
     assert len(cve.splitlines()) >= 750, "cve_intelligence.py shrunk"
     assert len(whf.splitlines()) >= 1200, "webhook_forgery.py shrunk"
     assert len(bpf.splitlines()) >= 1100, "browser_payment_flows.py shrunk"
+
+
+# ============================================================================
+# 12. v9: SYNTHETIC REASONING ENGINE TESTS
+# ============================================================================
+
+def test_v9_synthetic_reasoning_engine_instantiates():
+    """Engine 34: SyntheticReasoningEngine must instantiate with all 5 sub-engines."""
+    from benchmark.llm_replacement_layer import SyntheticReasoningEngine
+    engine = SyntheticReasoningEngine()
+    assert hasattr(engine, "_combinatorial")
+    assert hasattr(engine, "_cross_domain")
+    assert hasattr(engine, "_counterfactual")
+    assert hasattr(engine, "_grammar")
+    assert hasattr(engine, "_amplifier")
+
+
+def test_v9_combinatorial_primitives():
+    """Combinatorial synthesizer has 50 primitives and 30 chain escalations."""
+    from benchmark.llm_replacement_layer import _CombinatorialPrimitiveSynthesizer
+    synth = _CombinatorialPrimitiveSynthesizer()
+    assert len(synth.PRIMITIVES) >= 50
+    assert len(synth.CHAIN_ESCALATION) >= 30
+    assert len(synth.CWE_MAP) >= 50
+    assert len(synth.SURFACES) >= 6
+
+
+def test_v9_combinatorial_synthesis_produces_findings():
+    """Combinatorial synthesis detects chains on payment endpoints."""
+    from benchmark.llm_replacement_layer import _CombinatorialPrimitiveSynthesizer, Hypothesis
+    synth = _CombinatorialPrimitiveSynthesizer()
+    hyps = [
+        Hypothesis(hypothesis_id="h1", category="auth_bypass", prior=0.5, posterior=0.6, description="Auth bypass", evidence_for=[], evidence_against=[]),
+        Hypothesis(hypothesis_id="h2", category="payment_manipulation", prior=0.3, posterior=0.4, description="Payment manip", evidence_for=[], evidence_against=[]),
+    ]
+    findings = synth.synthesize(
+        {"endpoint": "/api/payment/checkout", "method": "POST", "headers": {}},
+        hyps, {},
+    )
+    assert len(findings) >= 1, "Should produce combinatorial chain findings"
+    assert any(f["type"] == "combinatorial_chain" for f in findings)
+
+
+def test_v9_cross_domain_transfer():
+    """Cross-domain transfer detects vendor-specific patterns."""
+    from benchmark.llm_replacement_layer import _CrossDomainPatternTransfer
+    transfer = _CrossDomainPatternTransfer()
+    assert len(transfer.VENDOR_DOMAINS) >= 9
+    assert len(transfer.KNOWN_ATTACK_PATTERNS) >= 8
+    obs = {
+        "request_data": {"url": "/v1/checkout/sessions", "headers": {}, "body": '{"price_id": "price_123"}'},
+        "response_data": {"body": '{"id": "cs_test_123", "object": "checkout.session"}', "headers": {}},
+    }
+    findings = transfer.transfer(obs, {"endpoint": "/v1/checkout/sessions"})
+    assert len(findings) >= 1, "Should detect Stripe price_id pattern"
+
+
+def test_v9_counterfactual_analysis():
+    """Counterfactual analyzer generates hypotheses for missing defenses."""
+    from benchmark.llm_replacement_layer import _CounterfactualAnalyzer
+    analyzer = _CounterfactualAnalyzer()
+    assert len(analyzer.DEFENSE_LAYERS) >= 15
+    findings = analyzer.analyze(
+        {"endpoint": "/api/payment/charge", "method": "POST", "headers": {}, "has_auth_header": False},
+        {},
+    )
+    assert len(findings) >= 1, "Should generate counterfactual findings for unprotected payment endpoint"
+    missing_auth = [f for f in findings if "auth_header" in f.get("defense_layer", "")]
+    assert len(missing_auth) >= 1, "Should flag missing auth on payment endpoint"
+
+
+def test_v9_adversarial_grammar():
+    """Adversarial grammar generates payloads for detected attack surfaces."""
+    from benchmark.llm_replacement_layer import _AdversarialGrammar
+    grammar = _AdversarialGrammar()
+    assert len(grammar.GRAMMARS) >= 6
+    findings = grammar.generate_payloads(
+        {"endpoint": "/api/search?q=test", "method": "GET", "headers": {}},
+    )
+    assert len(findings) >= 1, "Should generate grammar payloads for search endpoint"
+    assert any(f["grammar"] == "sqli" for f in findings)
+
+
+def test_v9_anomaly_amplifier():
+    """Anomaly amplifier escalates low-severity findings via chaining."""
+    from benchmark.llm_replacement_layer import _AnomalyAmplifier, Hypothesis
+    amplifier = _AnomalyAmplifier()
+    assert len(amplifier.AMPLIFICATION_MATRIX) >= 9
+    hyps = [
+        Hypothesis(hypothesis_id="h1", category="unknown_cat", prior=0.1, posterior=0.2, description="Info leak", evidence_for=[], evidence_against=[]),
+    ]
+    findings = amplifier.amplify(hyps, {}, {})
+    assert len(findings) >= 1, "Should amplify low-severity info_disclosure finding via chaining"
+
+
+def test_v9_cve_pattern_extrapolation():
+    """Engine 36: CVE extrapolation maps seed CVEs to sibling weaknesses."""
+    from benchmark.llm_replacement_layer import CVEPatternExtrapolationEngine
+    engine = CVEPatternExtrapolationEngine()
+    assert len(engine.SEED_CVES) >= 11
+    assert len(engine.CWE_HIERARCHY) >= 15
+    assert len(engine.CAPEC_PATTERNS) >= 9
+    assert len(engine.EXTRAPOLATION_RULES) >= 6
+    obs = {
+        "request_data": {"url": "/billing/subscription", "headers": {}, "body": ""},
+        "response_data": {"body": '{"status": "active", "plan": "enterprise"}', "headers": {}},
+    }
+    findings = engine.extrapolate(obs, {"endpoint": "/billing/subscription", "method": "GET"}, None)
+    assert len(findings) >= 1, "Should extrapolate patterns for payment endpoint"
+    summary = engine.get_summary()
+    assert summary["seed_cve_count"] >= 11
+
+
+def test_v9_engines_in_llm_replacement_layer():
+    """v9 engines must be wired into the main LLMReplacementLayer."""
+    from benchmark.llm_replacement_layer import LLMReplacementLayer
+    layer = LLMReplacementLayer()
+    assert hasattr(layer, "_synthetic_reasoner")
+    assert hasattr(layer, "_cve_extrapolator")
+    stats = layer.get_statistics()
+    assert "v9_synthetic_reasoning" in stats
+    assert "v9_cve_extrapolation" in stats
+
+
+def test_v9_bot_evasion_engine_syntax():
+    """Engine 35: BotEvasionValidationEngine must parse and have correct structure."""
+    import ast
+    src = (_BACKEND / "app" / "testing" / "integrity" / "engine.py").read_text()
+    ast.parse(src)
+    assert "class BotEvasionValidationEngine" in src
+    assert "BROWSER_JA3_HASHES" in src
+    assert "BOT_JA3_HASHES" in src
+    assert "BROWSER_H2_SETTINGS" in src
+    assert "CDN_CHALLENGES" in src
+    assert "BEHAVIORAL_SIGNALS" in src
+    assert "HEADLESS_DETECTION_SIGNALS" in src
+    assert "def validate_probe_stealth" in src
+    assert "def get_evasion_matrix" in src
