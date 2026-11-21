@@ -100,6 +100,18 @@ LINKS: dict[str, ChainLink] = {
     "PBB-BROWSE": ChainLink(frozenset({"fresh_identity"}), frozenset({"browser_probed"})),
     "PBB-MORCH": ChainLink(frozenset({"exploit_chain_viable"}), frozenset({"multi_agent_validated"})),
     "PBB-DTEST": ChainLink(frozenset({"fresh_identity"}), frozenset({"distributed_tested"})),
+    # v8 enterprise probes
+    "PBB-WHOOK": ChainLink(frozenset({"checkout_available"}), frozenset({"webhook_forged"})),
+    "PBB-BFLOW": ChainLink(frozenset({"checkout_available"}), frozenset({"payment_flow_intercepted"})),
+    "PBB-GQL": ChainLink(frozenset({"fresh_identity"}), frozenset({"graphql_introspected"})),
+    "PBB-JWTF": ChainLink(frozenset({"fresh_identity"}), frozenset({"jwt_forged"})),
+    "PBB-SMUG": ChainLink(frozenset({"fresh_identity"}), frozenset({"request_smuggled"})),
+    "PBB-PPOLL": ChainLink(frozenset({"fresh_identity"}), frozenset({"parameter_polluted"})),
+    "PBB-CACHE": ChainLink(frozenset({"fresh_identity"}), frozenset({"cache_poisoned"})),
+    "PBB-WAFB": ChainLink(frozenset({"defense_bypassed"}), frozenset({"waf_bypassed"})),
+    "PBB-RACE": ChainLink(frozenset({"checkout_available"}), frozenset({"race_condition_exploited"})),
+    "PBB-SAML": ChainLink(frozenset({"feature_denied_baseline"}), frozenset({"saml_assertion_forged"})),
+    "PBB-APIVER": ChainLink(frozenset({"fresh_identity"}), frozenset({"api_version_abused"})),
 }
 assert set(LINKS) == set(EXPERIMENT_CLASSES), "chain catalog must cover exactly the pre-registered classes"
 

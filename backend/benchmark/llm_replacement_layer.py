@@ -1150,6 +1150,31 @@ class LLMReplacementResult:
     access_without_payment_summary: dict = field(default_factory=dict)
     ai_agent_attack_summary: dict = field(default_factory=dict)
 
+    # v8: 10 attack class detector outputs
+    v8_findings: dict = field(default_factory=dict)
+    v8_summaries: dict = field(default_factory=dict)
+
+    # v9: frontier reasoning engine outputs
+    synthetic_reasoning_findings: list[dict] = field(default_factory=list)
+    cve_extrapolation_findings: list[dict] = field(default_factory=list)
+    v9_summaries: dict = field(default_factory=dict)
+
+    # combined findings shortcut
+    @property
+    def findings(self) -> list[dict]:
+        all_f: list[dict] = []
+        all_f.extend(self.zero_shot_findings)
+        all_f.extend(self.semantic_findings)
+        all_f.extend(self.payment_glue_findings)
+        all_f.extend(self.access_without_payment_findings)
+        all_f.extend(self.enterprise_platform_detections)
+        all_f.extend(self.ai_agent_attack_findings)
+        for v in self.v8_findings.values():
+            all_f.extend(v)
+        all_f.extend(self.synthetic_reasoning_findings)
+        all_f.extend(self.cve_extrapolation_findings)
+        return all_f
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "suspicious_fields": self.suspicious_fields,
