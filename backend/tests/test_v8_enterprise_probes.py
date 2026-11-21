@@ -277,9 +277,9 @@ def test_browser_payment_flows_imports():
 # 10. v8.2 ENTERPRISE PATTERNS: SAML/SSO, API version, race, idempotency, seat overflow
 # ============================================================================
 
-def test_access_without_payment_has_27_patterns():
+def test_access_without_payment_has_33_patterns():
     from benchmark.llm_replacement_layer import AccessWithoutPaymentDetector
-    assert "27 attack pattern detectors" in AccessWithoutPaymentDetector.analyze.__doc__
+    assert "33 attack pattern detectors" in AccessWithoutPaymentDetector.analyze.__doc__
 
 
 def test_v82_vuln_categories():
@@ -288,7 +288,11 @@ def test_v82_vuln_categories():
         "SAML_SSO_BYPASS", "API_VERSION_DOWNGRADE", "IDEMPOTENCY_ABUSE",
         "SUBSCRIPTION_STATE_CONFUSION", "SEAT_OVERFLOW",
     ]
-    for cat in v82_cats:
+    v83_cats = [
+        "CLIENT_PRICE_BYPASS", "REFUND_RETAINED_ACCESS", "USAGE_METERING_BYPASS",
+        "WEBHOOK_EVENT_REPLAY", "FEATURE_FLAG_OVERRIDE", "COUPON_STACKING",
+    ]
+    for cat in v82_cats + v83_cats:
         assert hasattr(VulnCategory, cat), f"Missing VulnCategory.{cat}"
 
 
@@ -311,9 +315,15 @@ def test_v82_exploit_chain_templates():
         "race_condition_double_spend", "idempotency_replay_chain",
         "subscription_state_exploit", "seat_overflow_chain",
     }
+    v83_names = {
+        "price_id_substitution_chain", "refund_abuse_chain",
+        "metering_evasion_chain", "webhook_replay_stacking",
+        "feature_flag_self_grant", "coupon_stacking_free_enterprise",
+    }
     actual = {t["name"] for t in templates}
-    assert v82_names <= actual, f"Missing templates: {v82_names - actual}"
-    assert len(templates) >= 30, f"Expected 30+ templates, got {len(templates)}"
+    assert v82_names <= actual, f"Missing v8.2 templates: {v82_names - actual}"
+    assert v83_names <= actual, f"Missing v8.3 templates: {v83_names - actual}"
+    assert len(templates) >= 36, f"Expected 36+ templates, got {len(templates)}"
 
 
 def test_saml_bypass_detection():
@@ -348,6 +358,51 @@ def test_subscription_state_confusion_detection():
     })
     state_findings = [f for f in findings if "state_confusion" in f.get("type", "")]
     assert len(state_findings) >= 1, "Should detect subscription state confusion"
+
+
+def test_client_price_id_bypass_detection():
+    """Cap #2222 pattern: client-supplied priceId accepted at checkout."""
+    from benchmark.llm_replacement_layer import AccessWithoutPaymentDetector
+    detector = AccessWithoutPaymentDetector()
+    obs = {
+        "request_data": {
+            "url": "/api/checkout/create-session",
+            "headers": {"Content-Type": "application/json"},
+            "body": '{"priceId": "price_1abc", "quantity": 1}',
+        },
+        "response_data": {
+            "body": '{"session_id": "cs_123", "entitlement": true, "plan": "pro", "priceId": "price_1abc"}',
+            "headers": {},
+        },
+    }
+    findings = detector.analyze(obs, {
+        "body_text": obs["response_data"]["body"],
+        "endpoint": "/api/checkout/create-session",
+        "method": "POST",
+        "status_code": 200,
+    })
+    price_findings = [f for f in findings if "client_price" in f.get("type", "")]
+    assert len(price_findings) >= 1, "Should detect client-supplied priceId bypass"
+
+
+def test_refund_retained_access_detection():
+    from benchmark.llm_replacement_layer import AccessWithoutPaymentDetector
+    detector = AccessWithoutPaymentDetector()
+    obs = {
+        "request_data": {"url": "/api/billing", "headers": {}},
+        "response_data": {
+            "body": '{"refunded": true, "amount_refunded": 2000, "entitlement": true, "plan": "pro"}',
+            "headers": {},
+        },
+    }
+    findings = detector.analyze(obs, {
+        "body_text": obs["response_data"]["body"],
+        "endpoint": "/api/billing",
+        "method": "POST",
+        "status_code": 200,
+    })
+    refund_findings = [f for f in findings if "refund" in f.get("type", "")]
+    assert len(refund_findings) >= 1, "Should detect refund with retained access"
 
 
 # ============================================================================
