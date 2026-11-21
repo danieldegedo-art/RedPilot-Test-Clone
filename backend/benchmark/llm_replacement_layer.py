@@ -5150,6 +5150,63 @@ class ExploitChainSynthesizer:
             "severity_upgrade": "critical",
             "kill_chain": "data_breach",
         },
+        # --- Payment glue code attack chains ---
+        {
+            "name": "webhook_to_entitlement",
+            "steps": ["webhook_forge", "entitlement_bypass"],
+            "description": "Forge webhook event -> gain premium entitlement without payment",
+            "severity_upgrade": "critical",
+            "kill_chain": "access_without_payment",
+        },
+        {
+            "name": "trial_abuse_chain",
+            "steps": ["entitlement_bypass", "coupon_stacking", "refund_abuse"],
+            "description": "Extend trial indefinitely -> stack coupons -> refund for profit",
+            "severity_upgrade": "critical",
+            "kill_chain": "financial_fraud",
+        },
+        {
+            "name": "stripe_object_confusion",
+            "steps": ["idor", "payment_manipulation", "entitlement_bypass"],
+            "description": "Enumerate Stripe objects -> swap customer references -> access another's subscription",
+            "severity_upgrade": "critical",
+            "kill_chain": "account_takeover",
+        },
+        {
+            "name": "amount_manipulation_chain",
+            "steps": ["payment_manipulation", "race_condition"],
+            "description": "Modify amount client-side -> race payment confirmation -> pay less or zero",
+            "severity_upgrade": "critical",
+            "kill_chain": "financial_fraud",
+        },
+        {
+            "name": "api_version_downgrade",
+            "steps": ["info_disclosure", "injection", "auth_bypass"],
+            "description": "Discover old API version -> exploit unpatched vuln -> bypass auth",
+            "severity_upgrade": "critical",
+            "kill_chain": "defense_evasion",
+        },
+        {
+            "name": "idempotency_abuse",
+            "steps": ["race_condition", "payment_manipulation", "entitlement_bypass"],
+            "description": "Replay idempotent request -> duplicate payment success -> double entitlement",
+            "severity_upgrade": "high",
+            "kill_chain": "financial_fraud",
+        },
+        {
+            "name": "connect_platform_drain",
+            "steps": ["auth_bypass", "payment_manipulation"],
+            "description": "Access platform account -> manipulate transfer amounts -> drain funds",
+            "severity_upgrade": "critical",
+            "kill_chain": "financial_fraud",
+        },
+        {
+            "name": "subscription_state_exploit",
+            "steps": ["entitlement_bypass", "payment_manipulation", "refund_abuse"],
+            "description": "Exploit subscription state machine gap -> access while unpaid -> refund",
+            "severity_upgrade": "critical",
+            "kill_chain": "access_without_payment",
+        },
     ]
 
     def __init__(self) -> None:
@@ -5557,6 +5614,322 @@ class SemanticPatternReasoner:
                 "severity": "medium",
             })
 
+        # Rule 8: Subscription lifecycle anomalies
+        trial_end = re.search(r'"(?:trial_end|trial_ends_at)":\s*(\d+)', body_text, re.I)
+        sub_status_m = re.search(r'"(?:status)":\s*"(trialing|active|past_due|canceled|unpaid)"', body_text, re.I)
+        cancel_at_end = re.search(r'"cancel_at_period_end":\s*(true)', body_text, re.I)
+        period_end = re.search(r'"current_period_end":\s*(\d+)', body_text, re.I)
+        if trial_end and sub_status_m:
+            if sub_status_m.group(1) == "trialing":
+                try:
+                    ts = int(trial_end.group(1))
+                    if ts < int(time.time()) and ts > 946684800:
+                        findings.append({
+                            "type": "subscription_lifecycle_anomaly",
+                            "rule": "expired_trial_still_trialing",
+                            "detail": f"trial_end={ts} is in the past but status is still 'trialing' -- "
+                                      f"glue code fails to transition trial -> expired/active",
+                            "category": "entitlement_bypass",
+                            "confidence": 0.9,
+                            "severity": "critical",
+                        })
+                except (ValueError, OverflowError):
+                    pass
+        if cancel_at_end and period_end:
+            try:
+                pe = int(period_end.group(1))
+                if pe < int(time.time()) and pe > 946684800:
+                    findings.append({
+                        "type": "subscription_lifecycle_anomaly",
+                        "rule": "cancel_period_end_lapsed",
+                        "detail": f"cancel_at_period_end=true but current_period_end={pe} is past -- "
+                                  f"subscription should be canceled but is still active",
+                        "category": "entitlement_bypass",
+                        "confidence": 0.85,
+                        "severity": "critical",
+                    })
+            except (ValueError, OverflowError):
+                pass
+
+        # Rule 9: Stripe-specific glue code bugs
+        pi_status = re.search(r'"payment_intent"[^}]*"status":\s*"(\w+)"', body_text, re.I)
+        if not pi_status:
+            pi_status = re.search(r'"payment_intent_status":\s*"(\w+)"', body_text, re.I)
+        inv_paid = re.search(r'"(?:invoice[^"]*)"[^}]*"paid":\s*(true|false)', body_text, re.I)
+        if not inv_paid:
+            inv_paid = re.search(r'"invoice_paid":\s*(true|false)', body_text, re.I)
+        if pi_status and inv_paid:
+            if pi_status.group(1) == "succeeded" and inv_paid.group(1) == "false":
+                findings.append({
+                    "type": "stripe_glue_bug",
+                    "rule": "pi_succeeded_invoice_unpaid",
+                    "detail": "payment_intent.status=succeeded but invoice.paid=false -- "
+                              "glue code trusts PI status without verifying invoice settlement",
+                    "category": "payment_manipulation",
+                    "confidence": 0.92,
+                    "severity": "critical",
+                })
+
+        sub_active = re.search(r'"(?:subscription[^"]*)"[^}]*"status":\s*"active"', body_text, re.I)
+        if not sub_active:
+            sub_active = re.search(r'"subscription_status":\s*"active"', body_text, re.I)
+        latest_inv = re.search(r'"latest_invoice[^"]*"[^}]*"status":\s*"(\w+)"', body_text, re.I)
+        if not latest_inv:
+            latest_inv = re.search(r'"latest_invoice_status":\s*"(\w+)"', body_text, re.I)
+        if sub_active and latest_inv:
+            if latest_inv.group(1) not in ("paid", "void"):
+                findings.append({
+                    "type": "stripe_glue_bug",
+                    "rule": "active_sub_unpaid_invoice",
+                    "detail": f"subscription.status=active but latest_invoice.status="
+                              f"'{latest_inv.group(1)}' -- entitlement granted before payment clears",
+                    "category": "entitlement_bypass",
+                    "confidence": 0.88,
+                    "severity": "critical",
+                })
+
+        default_source = re.search(r'"default_source":\s*null', body_text, re.I)
+        default_pm = re.search(r'"default_payment_method":\s*null', body_text, re.I)
+        if (default_source or default_pm) and sub_active:
+            findings.append({
+                "type": "stripe_glue_bug",
+                "rule": "no_payment_method_active_sub",
+                "detail": "Active subscription with null default_source/default_payment_method -- "
+                          "subscription will fail to renew, possible free-ride window",
+                "category": "payment_manipulation",
+                "confidence": 0.75,
+                "severity": "high",
+            })
+
+        cs_payment = re.search(r'"payment_status":\s*"(unpaid|no_payment_required)"', body_text, re.I)
+        cs_status = re.search(r'"(?:checkout_session_status|cs_status)":\s*"complete"', body_text, re.I)
+        if not cs_status:
+            cs_status = re.search(r'"status":\s*"complete".*"object":\s*"checkout.session"', body_text, re.I)
+        if cs_payment and cs_status:
+            if cs_payment.group(1) == "unpaid":
+                findings.append({
+                    "type": "stripe_glue_bug",
+                    "rule": "checkout_complete_unpaid",
+                    "detail": "checkout.session.status=complete but payment_status=unpaid -- "
+                              "glue code grants access on session completion without payment check",
+                    "category": "payment_manipulation",
+                    "confidence": 0.93,
+                    "severity": "critical",
+                })
+
+        # Rule 10: Amount normalization attacks
+        neg_amount = re.search(r'"(?:amount|price|total|cost|charge)":\s*(-[0-9.]+)', body_text, re.I)
+        if neg_amount:
+            findings.append({
+                "type": "amount_anomaly",
+                "rule": "negative_amount",
+                "detail": f"Negative amount ({neg_amount.group(1)}) -- possible refund abuse or credit injection",
+                "category": "refund_abuse",
+                "confidence": 0.9,
+                "severity": "critical",
+            })
+        if amount_match:
+            amount_val = float(amount_match.group(1))
+            if 0 < amount_val <= 1 and "cent" not in body_text.lower():
+                findings.append({
+                    "type": "amount_anomaly",
+                    "rule": "minimum_charge_bypass",
+                    "detail": f"Amount={amount_val} (sub-penny or 1-cent) -- minimum charge bypass attempt",
+                    "category": "payment_manipulation",
+                    "confidence": 0.7,
+                    "severity": "high",
+                })
+            elif amount_val > 99999900:
+                findings.append({
+                    "type": "amount_anomaly",
+                    "rule": "excessive_amount",
+                    "detail": f"Amount={amount_val} exceeds sane bounds -- integer overflow or injection",
+                    "category": "payment_manipulation",
+                    "confidence": 0.8,
+                    "severity": "critical",
+                })
+
+        url_amount = re.search(r'[?&]amount=([0-9.]+)', components.get("url", ""), re.I)
+        if url_amount and amount_match:
+            try:
+                url_amt = float(url_amount.group(1))
+                resp_amt = float(amount_match.group(1))
+                if url_amt != resp_amt and url_amt > 0:
+                    findings.append({
+                        "type": "amount_anomaly",
+                        "rule": "amount_mismatch_url_vs_body",
+                        "detail": f"URL amount={url_amt} but response amount={resp_amt} -- "
+                                  f"client-side amount not validated server-side",
+                        "category": "payment_manipulation",
+                        "confidence": 0.85,
+                        "severity": "critical",
+                    })
+            except ValueError:
+                pass
+
+        # Rule 11: Privilege boundary crossings
+        role_matches = re.findall(r'"(?:role|user_role)":\s*"(\w+)"', body_text, re.I)
+        if len(set(role_matches)) > 1:
+            findings.append({
+                "type": "privilege_boundary",
+                "rule": "confused_role_assignment",
+                "detail": f"Multiple roles in single response: {sorted(set(role_matches))} -- "
+                          f"confused deputy or role bleed",
+                "category": "privilege_escalation",
+                "confidence": 0.75,
+                "severity": "high",
+            })
+
+        resp_org = re.search(r'"(?:organization_id|org_id|tenant_id)":\s*"([^"]+)"', body_text, re.I)
+        req_org = re.search(r'(?:organization_id|org_id|tenant_id)[=:]([^&"\s]+)',
+                            components.get("url", "") + str(components.get("request_body", "")), re.I)
+        if resp_org and req_org:
+            if resp_org.group(1) != req_org.group(1):
+                findings.append({
+                    "type": "privilege_boundary",
+                    "rule": "cross_tenant_leak",
+                    "detail": f"Request org='{req_org.group(1)}' but response org='{resp_org.group(1)}' -- "
+                              f"cross-tenant data leak",
+                    "category": "idor",
+                    "confidence": 0.9,
+                    "severity": "critical",
+                })
+
+        resp_uid = re.search(r'"(?:user_id|userId|uid)":\s*"([^"]+)"', body_text, re.I)
+        req_uid = re.search(r'(?:user_id|userId|uid)[=:]([^&"\s]+)',
+                            components.get("url", ""), re.I)
+        if resp_uid and req_uid:
+            if resp_uid.group(1) != req_uid.group(1):
+                findings.append({
+                    "type": "privilege_boundary",
+                    "rule": "user_id_mismatch",
+                    "detail": f"Request user='{req_uid.group(1)}' but response user='{resp_uid.group(1)}' -- IDOR",
+                    "category": "idor",
+                    "confidence": 0.88,
+                    "severity": "critical",
+                })
+
+        # Rule 12: API versioning inconsistencies
+        resp_headers = components.get("headers", {})
+        req_headers = components.get("request_headers", {})
+        resp_version = None
+        req_version = None
+        for hdr_dict, store in [(resp_headers, "resp"), (req_headers, "req")]:
+            for k, v in (hdr_dict.items() if isinstance(hdr_dict, dict) else []):
+                lk = k.lower()
+                if lk in ("stripe-version", "api-version", "x-api-version", "paypal-auth-version"):
+                    if store == "resp":
+                        resp_version = v
+                    else:
+                        req_version = v
+        if req_version and resp_version and req_version != resp_version:
+            findings.append({
+                "type": "api_versioning",
+                "rule": "version_mismatch",
+                "detail": f"Request API version='{req_version}' but response='{resp_version}' -- "
+                          f"server may ignore client version or pin to older/newer",
+                "category": "info_disclosure",
+                "confidence": 0.6,
+                "severity": "medium",
+            })
+
+        deprecated_fields = [
+            "source", "sources", "bitcoin_amount", "three_d_secure",
+            "alipay", "bancontact", "eps", "ideal", "multibanco", "p24",
+        ]
+        for dep_field in deprecated_fields:
+            if re.search(rf'"{dep_field}":', body_text, re.I):
+                findings.append({
+                    "type": "api_versioning",
+                    "rule": "deprecated_field_present",
+                    "detail": f"Deprecated field '{dep_field}' in response -- "
+                              f"server uses old Stripe API version with known issues",
+                    "category": "info_disclosure",
+                    "confidence": 0.55,
+                    "severity": "medium",
+                })
+                break
+
+        # Rule 13: Rate limit intelligence
+        rl_remaining = None
+        rl_limit = None
+        for k, v in (resp_headers.items() if isinstance(resp_headers, dict) else []):
+            lk = k.lower()
+            if lk in ("x-ratelimit-remaining", "ratelimit-remaining", "x-rate-limit-remaining"):
+                try:
+                    rl_remaining = int(v)
+                except (ValueError, TypeError):
+                    pass
+            if lk in ("x-ratelimit-limit", "ratelimit-limit", "x-rate-limit-limit"):
+                try:
+                    rl_limit = int(v)
+                except (ValueError, TypeError):
+                    pass
+
+        if rl_remaining is not None and rl_remaining <= 0 and status in range(200, 300):
+            findings.append({
+                "type": "rate_limit_anomaly",
+                "rule": "rate_limit_bypass",
+                "detail": f"X-RateLimit-Remaining={rl_remaining} but request succeeded (HTTP {status}) -- "
+                          f"rate limit header present but NOT enforced",
+                "category": "rate_limit_bypass",
+                "confidence": 0.85,
+                "severity": "high",
+            })
+
+        method = components.get("method", "GET")
+        if method in _MUTATING_METHODS and rl_remaining is None and rl_limit is None:
+            if status in range(200, 300):
+                findings.append({
+                    "type": "rate_limit_anomaly",
+                    "rule": "no_rate_limit_mutation",
+                    "detail": f"No rate limit headers on {method} endpoint -- "
+                              f"mutation endpoint unprotected against abuse/brute-force",
+                    "category": "race_condition",
+                    "confidence": 0.5,
+                    "severity": "medium",
+                })
+
+        # Rule 14: Webhook event type confusion
+        event_type = re.search(r'"(?:type|event_type)":\s*"([^"]+)"', body_text, re.I)
+        if event_type:
+            evt = event_type.group(1)
+            if evt == "checkout.session.completed":
+                if not re.search(r'"payment_status":\s*"paid"', body_text, re.I):
+                    findings.append({
+                        "type": "webhook_confusion",
+                        "rule": "checkout_completed_no_payment_check",
+                        "detail": "checkout.session.completed event without payment_status=paid -- "
+                                  "glue code grants access on session completion, not payment success",
+                        "category": "payment_manipulation",
+                        "confidence": 0.88,
+                        "severity": "critical",
+                    })
+
+            if evt == "invoice.paid":
+                if re.search(r'"amount_paid":\s*0', body_text, re.I):
+                    findings.append({
+                        "type": "webhook_confusion",
+                        "rule": "invoice_paid_zero_amount",
+                        "detail": "invoice.paid event with amount_paid=0 -- "
+                                  "glue code treats $0 invoice (trial/coupon) as paid subscription",
+                        "category": "entitlement_bypass",
+                        "confidence": 0.8,
+                        "severity": "high",
+                    })
+
+            if evt == "customer.subscription.updated":
+                if not re.search(r'"previous_attributes"', body_text, re.I):
+                    findings.append({
+                        "type": "webhook_confusion",
+                        "rule": "subscription_updated_no_diff",
+                        "detail": "customer.subscription.updated without checking previous_attributes -- "
+                                  "glue code may re-grant entitlements on any subscription change",
+                        "category": "entitlement_bypass",
+                        "confidence": 0.65,
+                        "severity": "high",
+                    })
+
         self._semantic_findings.extend(findings)
         return findings
 
@@ -5772,6 +6145,979 @@ class IterativeHypothesisRefiner:
                 if len(v) >= 2 and v[-1] > v[0]
             ),
         }
+
+
+# ############################################################################
+#
+#  M. PAYMENT GLUE CODE ANALYZER
+#
+#  Domain expert for the glue code between enterprise systems and payment
+#  processors. Not more regex -- deep understanding of how payment
+#  integration bugs ACTUALLY work in production.
+#
+#  Covers: Stripe, PayPal, Braintree, Adyen, Klarna, Recurly, Chargebee,
+#  Paddle, Square, GoCardless.
+#
+#  Seven analysis domains:
+#    1. Provider state machine validation (illegal transitions)
+#    2. Webhook security (missing signatures, replay, event confusion)
+#    3. Amount / currency manipulation
+#    4. Idempotency key analysis
+#    5. Customer / object confusion
+#    6. Trial / proration / coupon abuse
+#    7. Connect / marketplace platform bugs
+#
+# ############################################################################
+
+
+class PaymentGlueCodeAnalyzer:
+    """Detects vulnerabilities in the glue code between enterprise apps and
+    payment processors.
+
+    Every payment integration has the same fundamental surface: the app
+    trusts provider-shaped data to make access-control decisions. When the
+    glue code trusts the wrong signal, skips a state, or mis-converts an
+    amount, attackers get paid features for free.
+
+    This class encodes the EXACT state machines of Stripe, PayPal,
+    Braintree, and Adyen, and flags illegal transitions, missing webhook
+    verification, amount confusion, idempotency abuse, and more."""
+
+    # ------------------------------------------------------------------
+    # Provider state machines: {object_type: ordered list of valid states}
+    # Transitions are only valid FORWARD through the list (with the noted
+    # exceptions for terminal states like canceled).
+    # ------------------------------------------------------------------
+
+    _STRIPE_STATE_MACHINES: dict[str, list[list[str]]] = {
+        "payment_intent": [
+            ["requires_payment_method", "requires_confirmation",
+             "requires_action", "processing", "succeeded"],
+            ["requires_payment_method", "requires_confirmation",
+             "requires_action", "processing", "canceled"],
+        ],
+        "subscription": [
+            ["incomplete", "trialing", "active", "past_due", "canceled"],
+            ["incomplete", "trialing", "active", "past_due", "unpaid"],
+            ["incomplete", "trialing", "active", "paused"],
+            ["incomplete", "incomplete_expired"],
+        ],
+        "checkout.session": [
+            ["open", "complete"],
+            ["open", "expired"],
+        ],
+        "invoice": [
+            ["draft", "open", "paid"],
+            ["draft", "open", "uncollectible"],
+            ["draft", "open", "void"],
+            ["draft", "void"],
+        ],
+        "charge": [
+            ["pending", "succeeded"],
+            ["pending", "failed"],
+        ],
+        "refund": [
+            ["pending", "succeeded"],
+            ["pending", "failed"],
+            ["pending", "canceled"],
+        ],
+    }
+
+    _PAYPAL_STATE_MACHINES: dict[str, list[list[str]]] = {
+        "order": [
+            ["CREATED", "APPROVED", "COMPLETED"],
+            ["CREATED", "APPROVED", "VOIDED"],
+            ["CREATED", "VOIDED"],
+        ],
+        "capture": [
+            ["PENDING", "COMPLETED"],
+            ["PENDING", "DECLINED"],
+            ["PENDING", "REFUNDED"],
+        ],
+        "subscription": [
+            ["APPROVAL_PENDING", "APPROVED", "ACTIVE", "SUSPENDED", "CANCELLED"],
+            ["APPROVAL_PENDING", "APPROVED", "ACTIVE", "EXPIRED"],
+        ],
+    }
+
+    _BRAINTREE_STATE_MACHINES: dict[str, list[list[str]]] = {
+        "transaction": [
+            ["authorized", "submitted_for_settlement", "settled"],
+            ["authorized", "voided"],
+            ["authorized", "submitted_for_settlement", "settlement_declined"],
+            ["authorized", "settlement_declined"],
+        ],
+        "subscription": [
+            ["pending", "active", "past_due", "canceled"],
+            ["pending", "active", "expired"],
+        ],
+    }
+
+    _ADYEN_STATE_MACHINES: dict[str, list[list[str]]] = {
+        "payment": [
+            ["Authorised", "Captured"],
+            ["Authorised", "Cancelled"],
+            ["Authorised", "Captured", "Refunded"],
+            ["RedirectShopper", "Authorised", "Captured"],
+            ["Refused"],
+        ],
+    }
+
+    # Statuses that must NOT grant entitlements
+    _NON_GRANT_STATUSES: set[str] = {
+        "requires_payment_method", "requires_confirmation", "requires_action",
+        "processing", "pending", "failed", "canceled", "cancelled", "voided",
+        "incomplete", "incomplete_expired", "past_due", "unpaid", "paused",
+        "draft", "open", "expired", "suspended", "declined", "refused",
+        "CREATED", "APPROVED", "PENDING", "VOIDED", "DECLINED",
+        "APPROVAL_PENDING", "SUSPENDED", "CANCELLED",
+        "authorized", "submitted_for_settlement",
+        "settlement_declined", "RedirectShopper", "Refused", "Cancelled",
+    }
+
+    # Zero-decimal currencies where 1 unit = 1 of the currency (not cents)
+    _ZERO_DECIMAL_CURRENCIES: set[str] = {
+        "BIF", "CLP", "DJF", "GNF", "JPY", "KMF", "KRW", "MGA", "PYG",
+        "RWF", "UGX", "VND", "VUV", "XAF", "XOF", "XPF",
+    }
+
+    # Webhook event types that commonly confuse integrations
+    _STRIPE_EVENT_CONFUSION: list[tuple[str, str, str]] = [
+        ("invoice.paid", "invoice.payment_succeeded",
+         "invoice.paid fires for ALL payments including free invoices; "
+         "invoice.payment_succeeded fires only when money moves. "
+         "Using invoice.paid for entitlement grants free-tier users premium access."),
+        ("checkout.session.completed", "payment_intent.succeeded",
+         "checkout.session.completed fires when session is filled, but payment "
+         "may still be processing (async methods). payment_intent.succeeded is "
+         "the actual money event. Granting on session.completed = access before payment."),
+        ("customer.subscription.created", "customer.subscription.updated",
+         "subscription.created fires before first payment. Using it for "
+         "entitlement grants access before money arrives."),
+        ("invoice.finalized", "invoice.paid",
+         "invoice.finalized means the invoice is ready to collect, NOT that "
+         "it was collected. Granting on finalized = access before payment."),
+    ]
+
+    def __init__(self) -> None:
+        self._provider_history: dict[str, list[str]] = defaultdict(list)
+        self._seen_idempotency_keys: dict[str, dict[str, Any]] = {}
+        self._findings: list[dict[str, Any]] = []
+
+    # ------------------------------------------------------------------
+    # Provider detection
+    # ------------------------------------------------------------------
+
+    def detect_provider(self, body_text: str, headers: dict[str, str]) -> list[str]:
+        """Identify which payment providers are present in the response."""
+        providers: list[str] = []
+        combined = body_text + " " + str(headers)
+
+        for provider, patterns in _PROVIDER_SIGNATURES.items():
+            if any(p.search(combined) for p in patterns):
+                providers.append(provider)
+
+        # Extended detection beyond _PROVIDER_SIGNATURES
+        extended: list[tuple[str, re.Pattern[str]]] = [
+            ("klarna", re.compile(r"(?:klarna\.com|klarna_session|klarna_client_token)", re.I)),
+            ("recurly", re.compile(r"(?:recurly\.com|recurly-|x-recurly)", re.I)),
+            ("chargebee", re.compile(r"(?:chargebee\.com|cb_|chargebee_)", re.I)),
+            ("paddle", re.compile(r"(?:paddle\.com|paddle_|p_cus_|txn_|pri_)", re.I)),
+            ("square", re.compile(r"(?:squareup\.com|square_|sq_)", re.I)),
+            ("gocardless", re.compile(r"(?:gocardless\.com|gc_|gocardless_)", re.I)),
+        ]
+        for name, pattern in extended:
+            if pattern.search(combined):
+                providers.append(name)
+
+        return providers
+
+    # ------------------------------------------------------------------
+    # State machine validation
+    # ------------------------------------------------------------------
+
+    def validate_state_machine(
+        self, provider: str, object_type: str, current_status: str,
+    ) -> list[dict[str, Any]]:
+        """Check if a status transition is valid for this provider/object."""
+        findings: list[dict[str, Any]] = []
+        history_key = f"{provider}:{object_type}"
+        prev_statuses = self._provider_history.get(history_key, [])
+
+        machines: dict[str, list[list[str]]] = {}
+        if provider == "stripe":
+            machines = self._STRIPE_STATE_MACHINES
+        elif provider == "paypal":
+            machines = self._PAYPAL_STATE_MACHINES
+        elif provider == "braintree":
+            machines = self._BRAINTREE_STATE_MACHINES
+        elif provider == "adyen":
+            machines = self._ADYEN_STATE_MACHINES
+
+        valid_paths = machines.get(object_type, [])
+        if not valid_paths or not prev_statuses:
+            self._provider_history[history_key].append(current_status)
+            return findings
+
+        prev = prev_statuses[-1]
+
+        # Check if any valid path contains prev -> current as adjacent steps
+        transition_valid = False
+        for path in valid_paths:
+            for i in range(len(path) - 1):
+                if path[i].lower() == prev.lower() and path[i + 1].lower() == current_status.lower():
+                    transition_valid = True
+                    break
+            if transition_valid:
+                break
+
+        if not transition_valid and prev.lower() != current_status.lower():
+            # Check for state skip (both states in a path but not adjacent)
+            skipped = False
+            for path in valid_paths:
+                lower_path = [s.lower() for s in path]
+                if prev.lower() in lower_path and current_status.lower() in lower_path:
+                    pi = lower_path.index(prev.lower())
+                    ci = lower_path.index(current_status.lower())
+                    if ci > pi + 1:
+                        skipped_states = path[pi + 1:ci]
+                        findings.append({
+                            "type": "state_machine_violation",
+                            "rule": "state_skip",
+                            "detail": (
+                                f"{provider} {object_type}: jumped from '{prev}' to "
+                                f"'{current_status}', skipping {skipped_states}. "
+                                f"The glue code may be granting access before payment completes."
+                            ),
+                            "category": "payment_manipulation",
+                            "confidence": 0.85,
+                            "severity": "critical",
+                            "provider": provider,
+                        })
+                        skipped = True
+                        break
+                    elif ci < pi:
+                        findings.append({
+                            "type": "state_machine_violation",
+                            "rule": "backward_transition",
+                            "detail": (
+                                f"{provider} {object_type}: went backward from "
+                                f"'{prev}' to '{current_status}'. Possible state "
+                                f"manipulation allowing re-use of completed payment."
+                            ),
+                            "category": "payment_manipulation",
+                            "confidence": 0.8,
+                            "severity": "high",
+                            "provider": provider,
+                        })
+                        skipped = True
+                        break
+
+            if not skipped:
+                findings.append({
+                    "type": "state_machine_violation",
+                    "rule": "invalid_transition",
+                    "detail": (
+                        f"{provider} {object_type}: transition '{prev}' -> "
+                        f"'{current_status}' not in any valid path."
+                    ),
+                    "category": "payment_manipulation",
+                    "confidence": 0.7,
+                    "severity": "high",
+                    "provider": provider,
+                })
+
+        self._provider_history[history_key].append(current_status)
+        return findings
+
+    # ------------------------------------------------------------------
+    # Main analysis
+    # ------------------------------------------------------------------
+
+    def analyze(
+        self,
+        observation: dict[str, Any],
+        components: dict[str, Any],
+        memory: EpisodicMemory,
+    ) -> list[dict[str, Any]]:
+        """Full payment glue code analysis."""
+        findings: list[dict[str, Any]] = []
+        req = observation.get("request_data") or {}
+        resp = observation.get("response_data") or {}
+        body_text = components.get("body_text", "")
+        headers = resp.get("headers") or {}
+        req_headers = req.get("headers") or {}
+        endpoint = components.get("endpoint", "")
+        method = components.get("method", "GET")
+        status_code = components.get("status_code", 0)
+        lower_headers = {k.lower(): v for k, v in headers.items()}
+
+        providers = self.detect_provider(body_text, {**headers, **req_headers})
+        if not providers:
+            return findings
+
+        for provider in providers:
+            findings.extend(self._analyze_state_machine(provider, body_text))
+            findings.extend(self._analyze_premature_entitlement(
+                provider, body_text, endpoint,
+            ))
+
+        findings.extend(self._analyze_webhook_security(
+            endpoint, method, body_text, req_headers, lower_headers, providers,
+        ))
+        findings.extend(self._analyze_amount_currency(body_text, providers))
+        findings.extend(self._analyze_idempotency(
+            endpoint, method, req_headers, body_text, providers,
+        ))
+        findings.extend(self._analyze_object_confusion(body_text, providers))
+        findings.extend(self._analyze_trial_abuse(body_text, providers))
+        findings.extend(self._analyze_connect_platform(body_text, providers))
+        findings.extend(self._analyze_event_confusion(body_text, providers))
+
+        self._findings.extend(findings)
+        return findings
+
+    # ------------------------------------------------------------------
+    # 1. State machine
+    # ------------------------------------------------------------------
+
+    def _analyze_state_machine(
+        self, provider: str, body_text: str,
+    ) -> list[dict[str, Any]]:
+        findings: list[dict[str, Any]] = []
+
+        if provider == "stripe":
+            obj_match = _STRIPE_OBJECT_RE.search(body_text)
+            status_match = _STRIPE_STATUS_RE.search(body_text)
+            if obj_match and status_match:
+                findings.extend(self.validate_state_machine(
+                    "stripe", obj_match.group(1), status_match.group(1),
+                ))
+        elif provider == "paypal":
+            status_m = re.search(
+                r'"status"\s*:\s*"(CREATED|APPROVED|COMPLETED|VOIDED|PENDING|'
+                r'DECLINED|REFUNDED|ACTIVE|SUSPENDED|CANCELLED|EXPIRED|'
+                r'APPROVAL_PENDING)"', body_text, re.I,
+            )
+            obj_m = re.search(
+                r'"(?:intent|resource_type|name)"\s*:\s*"(CAPTURE|AUTHORIZE|order|'
+                r'subscription|capture)"', body_text, re.I,
+            )
+            if status_m:
+                obj_type = obj_m.group(1).lower() if obj_m else "order"
+                findings.extend(self.validate_state_machine(
+                    "paypal", obj_type, status_m.group(1),
+                ))
+        elif provider == "braintree":
+            status_m = re.search(
+                r'"status"\s*:\s*"(authorized|submitted_for_settlement|settled|'
+                r'voided|settlement_declined|pending|active|past_due|canceled|expired)"',
+                body_text, re.I,
+            )
+            if status_m:
+                is_sub = bool(re.search(r'"(?:plan_id|subscription)"', body_text, re.I))
+                obj_type = "subscription" if is_sub else "transaction"
+                findings.extend(self.validate_state_machine(
+                    "braintree", obj_type, status_m.group(1),
+                ))
+        elif provider == "adyen":
+            result_m = re.search(
+                r'"resultCode"\s*:\s*"(Authorised|Refused|Cancelled|Captured|'
+                r'Refunded|RedirectShopper)"', body_text, re.I,
+            )
+            if result_m:
+                findings.extend(self.validate_state_machine(
+                    "adyen", "payment", result_m.group(1),
+                ))
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # 1b. Premature entitlement
+    # ------------------------------------------------------------------
+
+    def _analyze_premature_entitlement(
+        self, provider: str, body_text: str, endpoint: str,
+    ) -> list[dict[str, Any]]:
+        findings: list[dict[str, Any]] = []
+
+        status_match = re.search(
+            r'"(?:status|state|resultCode)"\s*:\s*"([^"]+)"', body_text, re.I,
+        )
+        if not status_match:
+            return findings
+
+        status = status_match.group(1)
+        if status.lower() not in {s.lower() for s in self._NON_GRANT_STATUSES}:
+            return findings
+
+        entitlement_signals = [
+            re.search(r'"(?:access|entitled|feature|granted|active_subscription)"'
+                       r'\s*:\s*true', body_text, re.I),
+            re.search(r'"(?:plan|tier|access_level)"\s*:\s*"(?:premium|pro|enterprise|'
+                       r'business|unlimited)"', body_text, re.I),
+            re.search(r'"(?:can_access|is_premium|has_access|is_subscribed)"'
+                       r'\s*:\s*true', body_text, re.I),
+        ]
+        if any(entitlement_signals):
+            findings.append({
+                "type": "premature_entitlement",
+                "rule": "grant_before_payment",
+                "detail": (
+                    f"Payment status is '{status}' (non-terminal) but response "
+                    f"contains entitlement/access grant. The glue code is granting "
+                    f"access BEFORE the payment has actually completed. Classic "
+                    f"TOCTOU bug in payment integration."
+                ),
+                "category": "entitlement_bypass",
+                "confidence": 0.92,
+                "severity": "critical",
+                "provider": provider,
+            })
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # 2. Webhook security
+    # ------------------------------------------------------------------
+
+    def _analyze_webhook_security(
+        self,
+        endpoint: str, method: str, body_text: str,
+        req_headers: dict[str, str], lower_headers: dict[str, str],
+        providers: list[str],
+    ) -> list[dict[str, Any]]:
+        findings: list[dict[str, Any]] = []
+
+        is_webhook = bool(_WEBHOOK_PATH_RE.search(endpoint))
+        has_event_type = bool(re.search(r'"(?:type|event_type|eventType)"', body_text))
+
+        if not (is_webhook or has_event_type):
+            return findings
+
+        lower_req = {k.lower(): v for k, v in req_headers.items()}
+
+        # Missing signature verification
+        sig_headers = {
+            "stripe": "stripe-signature",
+            "paypal": "paypal-transmission-sig",
+            "braintree": "bt-signature",
+            "adyen": "x-adyen-hmackey",
+        }
+        for provider in providers:
+            sig_header = sig_headers.get(provider)
+            if sig_header and sig_header not in lower_req:
+                findings.append({
+                    "type": "webhook_security",
+                    "rule": "missing_signature",
+                    "detail": (
+                        f"Webhook endpoint '{endpoint}' received {provider} event "
+                        f"without '{sig_header}' header. The glue code may not be "
+                        f"verifying webhook authenticity. An attacker can forge "
+                        f"payment-success events to get free access."
+                    ),
+                    "category": "webhook_forge",
+                    "confidence": 0.88,
+                    "severity": "critical",
+                    "provider": provider,
+                })
+
+        # Replay attack potential
+        if is_webhook and method == "POST":
+            has_timestamp = bool(re.search(
+                r'"(?:created|timestamp|event_time|ts|created_at)"', body_text,
+            ))
+            has_idempotency = bool(re.search(
+                r'"(?:id|event_id|idempotency_key|webhook_id)":\s*"[a-zA-Z0-9_-]{10,}"',
+                body_text,
+            ))
+            if not has_timestamp and not has_idempotency:
+                findings.append({
+                    "type": "webhook_security",
+                    "rule": "replay_vulnerable",
+                    "detail": (
+                        "Webhook payload lacks timestamp and unique event ID. "
+                        "An attacker who intercepts one valid webhook can replay "
+                        "it indefinitely for repeated entitlement grants."
+                    ),
+                    "category": "webhook_forge",
+                    "confidence": 0.75,
+                    "severity": "high",
+                    "provider": providers[0] if providers else "unknown",
+                })
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # 2b. Event type confusion
+    # ------------------------------------------------------------------
+
+    def _analyze_event_confusion(
+        self, body_text: str, providers: list[str],
+    ) -> list[dict[str, Any]]:
+        findings: list[dict[str, Any]] = []
+        if "stripe" not in providers:
+            return findings
+
+        event_type_m = re.search(r'"type"\s*:\s*"([^"]+)"', body_text)
+        if not event_type_m:
+            return findings
+
+        event_type = event_type_m.group(1)
+        for risky, correct, explanation in self._STRIPE_EVENT_CONFUSION:
+            if event_type == risky:
+                findings.append({
+                    "type": "event_confusion",
+                    "rule": "wrong_event_type",
+                    "detail": (
+                        f"Event type '{risky}' detected. This is commonly confused "
+                        f"with '{correct}'. {explanation}"
+                    ),
+                    "category": "entitlement_bypass",
+                    "confidence": 0.7,
+                    "severity": "high",
+                    "provider": "stripe",
+                })
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # 3. Amount / currency manipulation
+    # ------------------------------------------------------------------
+
+    def _analyze_amount_currency(
+        self, body_text: str, providers: list[str],
+    ) -> list[dict[str, Any]]:
+        findings: list[dict[str, Any]] = []
+
+        amount_m = re.search(
+            r'"(?:amount|total|unit_amount|amount_total|amount_due|'
+            r'amount_paid|gross_amount|net_amount|price)"'
+            r'\s*:\s*(-?[0-9]+\.?[0-9]*)',
+            body_text, re.I,
+        )
+        currency_m = re.search(
+            r'"(?:currency|currency_code)"\s*:\s*"([A-Z]{3})"', body_text, re.I,
+        )
+
+        if amount_m:
+            amount = float(amount_m.group(1))
+
+            # Negative amount
+            if amount < 0:
+                findings.append({
+                    "type": "amount_manipulation",
+                    "rule": "negative_amount",
+                    "detail": (
+                        f"Negative amount ({amount}) detected. In refund "
+                        f"contexts a negative amount can become a double-negative "
+                        f"credit. In charge contexts it may underflow."
+                    ),
+                    "category": "payment_manipulation",
+                    "confidence": 0.85,
+                    "severity": "critical",
+                    "provider": providers[0] if providers else "unknown",
+                })
+
+            # Integer overflow for cent-based providers
+            if amount > 2_147_483_647 and "stripe" in providers:
+                findings.append({
+                    "type": "amount_manipulation",
+                    "rule": "integer_overflow",
+                    "detail": (
+                        f"Amount {amount} exceeds INT32_MAX (2,147,483,647). "
+                        f"Stripe uses integer cents internally. This may overflow "
+                        f"to a negative or zero value."
+                    ),
+                    "category": "payment_manipulation",
+                    "confidence": 0.75,
+                    "severity": "high",
+                    "provider": "stripe",
+                })
+
+            # Cents vs dollars confusion
+            if currency_m:
+                currency = currency_m.group(1).upper()
+                if currency in self._ZERO_DECIMAL_CURRENCIES:
+                    # JPY amount=100 means 100 yen; if treated as cents = 1 yen
+                    if amount > 0 and amount == int(amount) and amount < 1000:
+                        pass  # Plausible for zero-decimal
+                    # Flagging happens below if mismatches detected
+                elif "stripe" in providers and 0 < amount < 100:
+                    findings.append({
+                        "type": "amount_manipulation",
+                        "rule": "cents_vs_dollars",
+                        "detail": (
+                            f"Stripe amount={amount} with currency={currency}. "
+                            f"Stripe uses CENTS (amount=100 = $1.00). If the glue "
+                            f"code passes dollar values directly, customers pay "
+                            f"100x less than intended."
+                        ),
+                        "category": "payment_manipulation",
+                        "confidence": 0.65,
+                        "severity": "high",
+                        "provider": "stripe",
+                    })
+                elif "paypal" in providers and amount > 100000:
+                    findings.append({
+                        "type": "amount_manipulation",
+                        "rule": "dollars_as_cents",
+                        "detail": (
+                            f"PayPal amount={amount}. PayPal uses DOLLARS "
+                            f"(amount=1.00 = $1.00). If the glue code passes "
+                            f"cent values, customers are charged 100x more."
+                        ),
+                        "category": "payment_manipulation",
+                        "confidence": 0.55,
+                        "severity": "medium",
+                        "provider": "paypal",
+                    })
+
+        # Currency mismatch between fields
+        all_currencies = re.findall(r'"(?:currency|currency_code)"\s*:\s*"([A-Z]{3})"', body_text, re.I)
+        unique_currencies = set(c.upper() for c in all_currencies)
+        if len(unique_currencies) > 1:
+            findings.append({
+                "type": "amount_manipulation",
+                "rule": "currency_mismatch",
+                "detail": (
+                    f"Multiple currencies in single response: {sorted(unique_currencies)}. "
+                    f"If the glue code doesn't normalize, a user can pay in a weaker "
+                    f"currency while the app credits the stronger one."
+                ),
+                "category": "payment_manipulation",
+                "confidence": 0.8,
+                "severity": "critical",
+                "provider": providers[0] if providers else "unknown",
+            })
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # 4. Idempotency key analysis
+    # ------------------------------------------------------------------
+
+    def _analyze_idempotency(
+        self,
+        endpoint: str, method: str,
+        req_headers: dict[str, str], body_text: str,
+        providers: list[str],
+    ) -> list[dict[str, Any]]:
+        findings: list[dict[str, Any]] = []
+
+        is_payment_mutation = (
+            method in _MUTATING_METHODS
+            and _PAYMENT_SENSITIVE_PATH_RE.search(endpoint)
+        )
+        if not is_payment_mutation:
+            return findings
+
+        lower_req = {k.lower(): v for k, v in req_headers.items()}
+        idemp_key = lower_req.get("idempotency-key", "")
+
+        if not idemp_key:
+            findings.append({
+                "type": "idempotency",
+                "rule": "missing_idempotency_key",
+                "detail": (
+                    f"Payment mutation {method} {endpoint} has no Idempotency-Key "
+                    f"header. Without idempotency, network retries can cause "
+                    f"duplicate charges, and race conditions can double-create "
+                    f"subscriptions."
+                ),
+                "category": "race_condition",
+                "confidence": 0.7,
+                "severity": "high",
+                "provider": providers[0] if providers else "unknown",
+            })
+        else:
+            amount_m = re.search(r'"amount"\s*:\s*([0-9]+)', body_text)
+            amount = amount_m.group(1) if amount_m else "?"
+            if idemp_key in self._seen_idempotency_keys:
+                prev = self._seen_idempotency_keys[idemp_key]
+                if prev.get("amount") != amount:
+                    findings.append({
+                        "type": "idempotency",
+                        "rule": "key_reuse_different_amount",
+                        "detail": (
+                            f"Idempotency key '{idemp_key[:20]}...' reused with "
+                            f"different amount ({prev.get('amount')} -> {amount}). "
+                            f"Stripe returns cached result for reused keys -- "
+                            f"attacker can get a $1 charge cached, then replay "
+                            f"with $1000 and still pay $1."
+                        ),
+                        "category": "payment_manipulation",
+                        "confidence": 0.9,
+                        "severity": "critical",
+                        "provider": providers[0] if providers else "unknown",
+                    })
+            self._seen_idempotency_keys[idemp_key] = {
+                "endpoint": endpoint, "amount": amount,
+            }
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # 5. Customer / object confusion
+    # ------------------------------------------------------------------
+
+    def _analyze_object_confusion(
+        self, body_text: str, providers: list[str],
+    ) -> list[dict[str, Any]]:
+        findings: list[dict[str, Any]] = []
+
+        # Test mode keys in production context
+        if re.search(r'(?:sk_test_|pk_test_)', body_text):
+            if re.search(r'"livemode"\s*:\s*true', body_text):
+                findings.append({
+                    "type": "object_confusion",
+                    "rule": "test_key_livemode_conflict",
+                    "detail": (
+                        "Test-mode API keys (sk_test_/pk_test_) present alongside "
+                        "'livemode': true. The glue code may be mixing test and "
+                        "production environments, allowing test-card payments "
+                        "to trigger real entitlements."
+                    ),
+                    "category": "payment_manipulation",
+                    "confidence": 0.85,
+                    "severity": "critical",
+                    "provider": "stripe",
+                })
+            elif not re.search(r'"livemode"', body_text):
+                findings.append({
+                    "type": "object_confusion",
+                    "rule": "test_keys_exposed",
+                    "detail": (
+                        "Test-mode API keys visible in response. If the app "
+                        "doesn't check livemode, an attacker can use test-mode "
+                        "tokens (tok_visa, tok_mastercard) to complete payments "
+                        "for free."
+                    ),
+                    "category": "payment_manipulation",
+                    "confidence": 0.8,
+                    "severity": "high",
+                    "provider": "stripe",
+                })
+
+        # Livemode false in production response
+        if re.search(r'"livemode"\s*:\s*false', body_text):
+            findings.append({
+                "type": "object_confusion",
+                "rule": "livemode_false",
+                "detail": (
+                    "Response contains 'livemode: false'. This is a test-mode "
+                    "object. If the glue code doesn't verify livemode, attackers "
+                    "can submit test payments that grant real entitlements."
+                ),
+                "category": "payment_manipulation",
+                "confidence": 0.82,
+                "severity": "critical",
+                "provider": providers[0] if providers else "unknown",
+            })
+
+        # Cross-customer references
+        customer_ids = re.findall(r'cus_[A-Za-z0-9]{14,}', body_text)
+        if len(set(customer_ids)) > 1:
+            findings.append({
+                "type": "object_confusion",
+                "rule": "cross_customer_reference",
+                "detail": (
+                    f"Multiple distinct customer IDs in single response: "
+                    f"{sorted(set(customer_ids))[:3]}. The glue code may be "
+                    f"allowing cross-customer object references -- using cus_A's "
+                    f"payment_intent to fulfill cus_B's order."
+                ),
+                "category": "idor",
+                "confidence": 0.7,
+                "severity": "high",
+                "provider": "stripe",
+            })
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # 6. Trial / proration / coupon abuse
+    # ------------------------------------------------------------------
+
+    def _analyze_trial_abuse(
+        self, body_text: str, providers: list[str],
+    ) -> list[dict[str, Any]]:
+        findings: list[dict[str, Any]] = []
+
+        # Trial without payment method
+        is_trial = bool(re.search(
+            r'"(?:status|state)"\s*:\s*"(?:trialing|trial)"', body_text, re.I,
+        ))
+        has_payment_method = bool(re.search(
+            r'"(?:default_payment_method|payment_method|card|source)"'
+            r'\s*:\s*(?:"[^"]+"|{)',
+            body_text, re.I,
+        ))
+        no_pm = bool(re.search(
+            r'"(?:default_payment_method|payment_method)"\s*:\s*null',
+            body_text, re.I,
+        ))
+
+        if is_trial and (no_pm or not has_payment_method):
+            findings.append({
+                "type": "trial_abuse",
+                "rule": "trial_no_payment_method",
+                "detail": (
+                    "Active trial subscription with no payment method on file. "
+                    "Users can create unlimited trial accounts without ever "
+                    "providing payment information, getting indefinite free access."
+                ),
+                "category": "entitlement_bypass",
+                "confidence": 0.8,
+                "severity": "high",
+                "provider": providers[0] if providers else "unknown",
+            })
+
+        # Coupon stacking
+        coupon_matches = re.findall(
+            r'"(?:coupon|percent_off|amount_off|promotion_code)"', body_text, re.I,
+        )
+        discount_matches = re.findall(
+            r'"(?:discount|discounts)"', body_text, re.I,
+        )
+        if len(coupon_matches) >= 2 or len(discount_matches) >= 2:
+            findings.append({
+                "type": "trial_abuse",
+                "rule": "coupon_stacking",
+                "detail": (
+                    "Multiple coupon/discount references in response. If the "
+                    "glue code doesn't enforce single-coupon limits, attackers "
+                    "can stack 50%+50% coupons for 100% discount."
+                ),
+                "category": "payment_manipulation",
+                "confidence": 0.6,
+                "severity": "high",
+                "provider": providers[0] if providers else "unknown",
+            })
+
+        # Grace period after payment failure
+        past_due = bool(re.search(
+            r'"status"\s*:\s*"(?:past_due|unpaid)"', body_text, re.I,
+        ))
+        has_access = bool(re.search(
+            r'"(?:has_access|is_active|can_access|entitled)"\s*:\s*true',
+            body_text, re.I,
+        ))
+        if past_due and has_access:
+            findings.append({
+                "type": "trial_abuse",
+                "rule": "grace_period_abuse",
+                "detail": (
+                    "Subscription is past_due/unpaid but response still shows "
+                    "active access. The glue code's grace period may be too long "
+                    "or not enforced at all, allowing indefinite free access "
+                    "after a single failed payment."
+                ),
+                "category": "entitlement_bypass",
+                "confidence": 0.85,
+                "severity": "critical",
+                "provider": providers[0] if providers else "unknown",
+            })
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # 7. Connect / marketplace platform bugs
+    # ------------------------------------------------------------------
+
+    def _analyze_connect_platform(
+        self, body_text: str, providers: list[str],
+    ) -> list[dict[str, Any]]:
+        findings: list[dict[str, Any]] = []
+
+        is_connect = bool(re.search(
+            r'"(?:destination|transfer_data|application_fee|on_behalf_of|'
+            r'connected_account|platform_fee|transfer_group)"',
+            body_text, re.I,
+        ))
+        if not is_connect:
+            return findings
+
+        # Application fee vs amount check
+        amount_m = re.search(r'"amount"\s*:\s*([0-9]+)', body_text)
+        fee_m = re.search(r'"(?:application_fee_amount|application_fee|platform_fee)"\s*:\s*([0-9]+)', body_text)
+        if amount_m and fee_m:
+            amount = int(amount_m.group(1))
+            fee = int(fee_m.group(1))
+            if fee > amount:
+                findings.append({
+                    "type": "connect_platform",
+                    "rule": "fee_exceeds_amount",
+                    "detail": (
+                        f"Platform fee ({fee}) exceeds charge amount ({amount}). "
+                        f"The connected account would receive negative funds. "
+                        f"An attacker controlling the fee field can drain the "
+                        f"connected account."
+                    ),
+                    "category": "payment_manipulation",
+                    "confidence": 0.9,
+                    "severity": "critical",
+                    "provider": "stripe",
+                })
+            elif fee == 0 and amount > 0:
+                findings.append({
+                    "type": "connect_platform",
+                    "rule": "zero_platform_fee",
+                    "detail": (
+                        f"Platform fee is zero on a {amount}-unit charge. "
+                        f"If the client can set the fee, the platform earns nothing."
+                    ),
+                    "category": "payment_manipulation",
+                    "confidence": 0.6,
+                    "severity": "medium",
+                    "provider": "stripe",
+                })
+
+        # Transfer amount vs captured amount
+        transfer_m = re.search(r'"(?:transfer_amount|amount)"\s*:\s*([0-9]+)', body_text)
+        captured_m = re.search(r'"amount_captured"\s*:\s*([0-9]+)', body_text)
+        if transfer_m and captured_m:
+            transfer = int(transfer_m.group(1))
+            captured = int(captured_m.group(1))
+            if transfer > captured:
+                findings.append({
+                    "type": "connect_platform",
+                    "rule": "transfer_exceeds_capture",
+                    "detail": (
+                        f"Transfer amount ({transfer}) exceeds captured amount "
+                        f"({captured}). The platform is sending more to the "
+                        f"connected account than it collected from the customer."
+                    ),
+                    "category": "payment_manipulation",
+                    "confidence": 0.85,
+                    "severity": "critical",
+                    "provider": "stripe",
+                })
+
+        # Connected account not fully onboarded
+        onboarding_m = re.search(
+            r'"(?:charges_enabled|payouts_enabled)"\s*:\s*false', body_text, re.I,
+        )
+        has_payments = bool(re.search(r'"payment_intent|charge|transfer"', body_text, re.I))
+        if onboarding_m and has_payments:
+            findings.append({
+                "type": "connect_platform",
+                "rule": "incomplete_onboarding",
+                "detail": (
+                    "Connected account has charges_enabled or payouts_enabled = false "
+                    "but is involved in a payment flow. Funds may be stuck or "
+                    "the platform is processing payments for an unverified merchant."
+                ),
+                "category": "business_logic",
+                "confidence": 0.7,
+                "severity": "high",
+                "provider": "stripe",
+            })
+
+        return findings
+
+    def get_all_findings(self) -> list[dict[str, Any]]:
+        return self._findings[-100:]
 
 
 # ============================================================================
