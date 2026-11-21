@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require("electron");
+const { app, BrowserWindow, ipcMain, session } = require("electron");
 const path = require("path");
 const { spawn } = require("child_process");
 const http = require("http");
@@ -125,33 +125,26 @@ function loadSessionCookies() {
   return (state.cookies || []).map((c) => `${c.name}=${c.value}`).join("; ");
 }
 
-// --- Playwright: login flow ---
+// --- Electron native browser: login flow ---
+// Uses Electron's built-in Chromium (NOT Playwright) so Cloudflare
+// sees a real browser with zero automation flags.
 
-const CHROME_PROFILE_DIR = path.join(app.getPath("userData"), "redpilot-chrome-profile");
-
-const STEALTH_ARGS = [
-  "--no-sandbox",
-  "--disable-blink-features=AutomationControlled",
-  "--disable-features=IsolateOrigins,site-per-process",
-  "--disable-dev-shm-usage",
-];
+const LOGIN_PARTITION = "persist:redpilot-login";
 
 async function openLoginBrowser(url) {
-  const { chromium } = require("playwright");
-  const context = await chromium.launchPersistentContext(CHROME_PROFILE_DIR, {
-    headless: false,
-    channel: "chrome",
-    args: STEALTH_ARGS,
-    ignoreDefaultArgs: ["--enable-automation"],
-    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  const loginSession = session.fromPartition(LOGIN_PARTITION);
+  const loginWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    title: "RedPilot — Log in",
+    webPreferences: {
+      partition: LOGIN_PARTITION,
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
   });
-  loginBrowser = context.browser() || context;
-  const page = context.pages()[0] || await context.newPage();
-  await page.addInitScript(() => {
-    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
-    delete navigator.__proto__.webdriver;
-  });
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+  loginBrowser = loginWindow;
+  loginWindow.loadURL(url);
 
   return new Promise((resolve) => {
     let resolved = false;
@@ -160,20 +153,15 @@ async function openLoginBrowser(url) {
       if (resolved) return;
       resolved = true;
       try {
-        await page.waitForTimeout(1500);
-        const cookies = await context.cookies();
-        const storage = await page.evaluate(() => {
-          const ls = {};
-          for (let i = 0; i < localStorage.length; i++) {
-            const k = localStorage.key(i);
-            ls[k] = localStorage.getItem(k);
-          }
-          return { localStorage: ls };
-        });
-        const state = { cookies, origins: [{ origin: new URL(page.url()).origin, localStorage: Object.entries(storage.localStorage).map(([name, value]) => ({ name, value })) }] };
+        const cookies = await loginSession.cookies.get({});
+        const state = { cookies: cookies.map((c) => ({
+          name: c.name, value: c.value, domain: c.domain, path: c.path,
+          expires: c.expirationDate || -1, httpOnly: c.httpOnly, secure: c.secure,
+          sameSite: (c.sameSite || "Lax"),
+        }))};
         ensureStateDir();
         fs.writeFileSync(SESSION_STATE_PATH, JSON.stringify(state, null, 2));
-        await context.close();
+        loginWindow.close();
         loginBrowser = null;
         resolve({ success: true });
       } catch (err) {
@@ -183,49 +171,47 @@ async function openLoginBrowser(url) {
 
     ipcMain.once("confirm-login", finish);
 
-    page.on("close", () => {
+    loginWindow.on("closed", () => {
       if (!resolved) {
         resolved = true;
+        loginBrowser = null;
         resolve({ success: false, error: "Browser was closed before login was confirmed" });
-      }
-    });
-
-    context.on("close", () => {
-      if (!resolved) {
-        resolved = true;
-        resolve({ success: false, error: "Browser disconnected" });
       }
     });
   });
 }
 
-// --- Playwright: proof-of-bypass ---
+// --- Electron native browser: proof-of-bypass ---
 
 async function openProofBrowser(url) {
   if (!hasSession()) return { success: false, error: "No session state" };
   const state = JSON.parse(fs.readFileSync(SESSION_STATE_PATH, "utf-8"));
-  const { chromium } = require("playwright");
-  const context = await chromium.launchPersistentContext(CHROME_PROFILE_DIR, {
-    headless: false,
-    channel: "chrome",
-    args: STEALTH_ARGS,
-    ignoreDefaultArgs: ["--enable-automation"],
-    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  const proofSession = session.fromPartition("persist:redpilot-proof");
+  if (state.cookies && state.cookies.length) {
+    for (const c of state.cookies) {
+      const cookieObj = {
+        url: `${c.secure ? "https" : "http"}://${(c.domain || "").replace(/^\./, "")}${c.path || "/"}`,
+        name: c.name, value: c.value, domain: c.domain, path: c.path || "/",
+        secure: !!c.secure, httpOnly: !!c.httpOnly,
+      };
+      if (c.expires && c.expires > 0) cookieObj.expirationDate = c.expires;
+      try { await proofSession.cookies.set(cookieObj); } catch {}
+    }
+  }
+  const proofWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    title: "RedPilot — Proof of Bypass",
+    webPreferences: {
+      partition: "persist:redpilot-proof",
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
   });
-  const page = context.pages()[0] || await context.newPage();
-  await page.addInitScript(() => {
-    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
-    delete navigator.__proto__.webdriver;
-  });
-  if (state.cookies && state.cookies.length) await context.addCookies(state.cookies);
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+  proofWindow.loadURL(url);
 
   return new Promise((resolve) => {
-    context.on("close", () => resolve({ success: true }));
-    page.on("close", async () => {
-      try { await context.close(); } catch {}
-      resolve({ success: true });
-    });
+    proofWindow.on("closed", () => resolve({ success: true }));
   });
 }
 
