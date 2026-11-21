@@ -8813,28 +8813,1294 @@ class AIAgentAttackSurfaceAnalyzer:
         return self._findings[-200:]
 
 
+# ############################################################################
+#
+#  Q. GraphQLAliasBatchingDetector -- Detects GraphQL alias-based rate limit
+#     bypass and brute-force amplification. One HTTP request can carry 100+
+#     login/payment mutations via aliases, completely bypassing per-request
+#     rate limiters. Based on PortSwigger Research, Escape.tech 2026 reports.
+#
+# ############################################################################
+
+
+class GraphQLAliasBatchingDetector:
+    """Detects GraphQL alias batching attacks for rate limit bypass."""
+
+    _GRAPHQL_ENDPOINT_RE = re.compile(r"(graphql|gql|query|api/graph)", re.I)
+    _ALIAS_PATTERN_RE = re.compile(
+        r"\b([a-zA-Z_]\w*)\s*:\s*(login|authenticate|signIn|createCheckout|"
+        r"createPayment|verifyOtp|resetPassword|verifyCode|verifyEmail|"
+        r"createSubscription|applyCoupon|redeemGift|transferCredits|"
+        r"createOrder|confirmPayment|validateToken)\s*\(",
+        re.I,
+    )
+    _ARRAY_BATCH_RE = re.compile(r"^\s*\[\s*\{", re.S)
+    _MUTATION_RE = re.compile(r"\b(mutation)\s*[\s{(]", re.I)
+    _INTROSPECTION_RE = re.compile(r"(__schema|__type|queryType|mutationType)", re.I)
+    _BATCH_RESPONSE_RE = re.compile(r'"data"\s*:\s*\{\s*"[a-zA-Z_]\w*"\s*:\s*\{.*?"[a-zA-Z_]\w*"\s*:\s*\{', re.S)
+
+    def __init__(self) -> None:
+        self._findings: list[dict[str, Any]] = []
+        self._pattern_hits: dict[str, int] = defaultdict(int)
+        self._observation_count = 0
+
+    def analyze(
+        self, observation: dict, components: dict, memory: Any = None,
+    ) -> list[dict[str, Any]]:
+        self._observation_count += 1
+        findings: list[dict[str, Any]] = []
+
+        body_text = components.get("body_text", "")
+        endpoint = components.get("endpoint", "")
+        req_body = observation.get("request_data", {}).get("body", "")
+        if isinstance(req_body, (dict, list)):
+            req_body = json.dumps(req_body)
+
+        is_graphql = bool(self._GRAPHQL_ENDPOINT_RE.search(endpoint))
+
+        # 1. Alias batching in request
+        aliases = self._ALIAS_PATTERN_RE.findall(req_body)
+        if len(aliases) >= 2:
+            findings.append({
+                "type": "graphql_alias_batching",
+                "detail": (
+                    f"GraphQL alias batching detected: {len(aliases)} aliased "
+                    f"mutations in single request ({', '.join(a[1] for a in aliases[:5])}). "
+                    f"One HTTP request carries {len(aliases)} operations, completely "
+                    f"bypassing per-request rate limiters. 100+ login attempts "
+                    f"or OTP brute-force possible in a single POST."
+                ),
+                "severity": "critical" if len(aliases) >= 10 else "high",
+                "confidence": 0.85,
+                "category": "graphql_rate_limit_bypass",
+                "cwe": "CWE-770",
+                "alias_count": len(aliases),
+            })
+            self._pattern_hits["alias_batching"] += 1
+
+        # 2. Array batching
+        if self._ARRAY_BATCH_RE.search(req_body) and is_graphql:
+            findings.append({
+                "type": "graphql_array_batching",
+                "detail": (
+                    "GraphQL array batching detected: request body is a JSON array "
+                    "of queries. Array batching allows multiple operations in one "
+                    "HTTP request, bypassing per-request rate limits."
+                ),
+                "severity": "high",
+                "confidence": 0.75,
+                "category": "graphql_rate_limit_bypass",
+                "cwe": "CWE-770",
+            })
+            self._pattern_hits["array_batching"] += 1
+
+        # 3. Introspection enabled
+        if self._INTROSPECTION_RE.search(body_text) and is_graphql:
+            findings.append({
+                "type": "graphql_introspection_enabled",
+                "detail": (
+                    "GraphQL introspection is enabled. Exposes entire schema "
+                    "including mutations for payment, auth, and admin operations. "
+                    "Prerequisite for alias batching attacks."
+                ),
+                "severity": "medium",
+                "confidence": 0.90,
+                "category": "graphql_info_disclosure",
+                "cwe": "CWE-200",
+            })
+            self._pattern_hits["introspection"] += 1
+
+        # 4. Batched response pattern
+        if self._BATCH_RESPONSE_RE.search(body_text):
+            findings.append({
+                "type": "graphql_batch_response",
+                "detail": (
+                    "Response contains multiple aliased results, confirming "
+                    "the server processes batched alias operations. Rate limit "
+                    "bypass is confirmed operational."
+                ),
+                "severity": "high",
+                "confidence": 0.80,
+                "category": "graphql_rate_limit_bypass",
+                "cwe": "CWE-770",
+            })
+            self._pattern_hits["batch_response"] += 1
+
+        self._findings.extend(findings)
+        return findings
+
+    def get_summary(self) -> dict[str, Any]:
+        return {"pattern_hits": dict(self._pattern_hits), "total_findings": len(self._findings), "observations_analyzed": self._observation_count}
+
+    def get_all_findings(self) -> list[dict[str, Any]]:
+        return self._findings[-200:]
+
+
+# ############################################################################
+#
+#  R. HTTPRequestSmugglingDetector -- Detects HTTP request smuggling patterns
+#     (CL.TE, TE.CL, 0.CL desyncs). Based on PortSwigger Research,
+#     CVE-2025-32094 (Akamai), Cloudflare/AWS ALB parser differentials.
+#
+# ############################################################################
+
+
+class HTTPRequestSmugglingDetector:
+    """Detects HTTP request smuggling via parser differential patterns."""
+
+    _DUAL_HEADER_RE = re.compile(
+        r"(content-length|transfer-encoding)\s*:", re.I,
+    )
+    _TE_OBFUSCATION_RE = re.compile(
+        r"transfer-encoding\s*:\s*(chunked\s*,\s*\w+|xchunked|chunked\r?\n"
+        r"transfer-encoding|identity.*chunked|chunked.*identity)",
+        re.I,
+    )
+    _EXPECT_RE = re.compile(r"expect\s*:\s*100-continue", re.I)
+    _H2_CL_RE = re.compile(r":method.*content-length", re.I)
+    _CHUNKED_BODY_RE = re.compile(r"\b0\r?\n\r?\n", re.S)
+
+    def __init__(self) -> None:
+        self._findings: list[dict[str, Any]] = []
+        self._pattern_hits: dict[str, int] = defaultdict(int)
+        self._observation_count = 0
+
+    def analyze(
+        self, observation: dict, components: dict, memory: Any = None,
+    ) -> list[dict[str, Any]]:
+        self._observation_count += 1
+        findings: list[dict[str, Any]] = []
+
+        req_headers = observation.get("request_data", {}).get("headers", {})
+        resp_headers = observation.get("response_data", {}).get("headers", {})
+        body_text = components.get("body_text", "")
+        status_code = components.get("status_code", 0)
+        req_raw = json.dumps(req_headers) if isinstance(req_headers, dict) else str(req_headers)
+
+        has_cl = "content-length" in req_raw.lower()
+        has_te = "transfer-encoding" in req_raw.lower()
+
+        # 1. CL.TE / TE.CL dual header
+        if has_cl and has_te:
+            findings.append({
+                "type": "http_smuggling_dual_header",
+                "detail": (
+                    "Both Content-Length and Transfer-Encoding headers present. "
+                    "Classic CL.TE or TE.CL request smuggling vector. Frontend "
+                    "and backend parsers may disagree on message boundary, allowing "
+                    "request prefix injection."
+                ),
+                "severity": "critical",
+                "confidence": 0.80,
+                "category": "http_smuggling",
+                "cwe": "CWE-444",
+            })
+            self._pattern_hits["dual_header"] += 1
+
+        # 2. TE obfuscation
+        if self._TE_OBFUSCATION_RE.search(req_raw):
+            findings.append({
+                "type": "http_smuggling_te_obfuscation",
+                "detail": (
+                    "Transfer-Encoding header contains obfuscation patterns "
+                    "(extra whitespace, invalid values, duplicate headers). "
+                    "Exploits parser differences in how obfuscated TE is handled."
+                ),
+                "severity": "critical",
+                "confidence": 0.85,
+                "category": "http_smuggling",
+                "cwe": "CWE-444",
+            })
+            self._pattern_hits["te_obfuscation"] += 1
+
+        # 3. Response indicates desync
+        if status_code == 400 and "bad request" in body_text.lower():
+            if has_te or has_cl:
+                findings.append({
+                    "type": "http_smuggling_desync_indicator",
+                    "detail": (
+                        "400 Bad Request response to request with TE/CL headers "
+                        "may indicate parser desync. Backend rejected the smuggled "
+                        "prefix. Requires further probing to confirm exploitability."
+                    ),
+                    "severity": "medium",
+                    "confidence": 0.50,
+                    "category": "http_smuggling",
+                    "cwe": "CWE-444",
+                })
+                self._pattern_hits["desync_indicator"] += 1
+
+        # 4. 0.CL desync pattern (Expect header abuse)
+        if self._EXPECT_RE.search(req_raw) and has_cl:
+            findings.append({
+                "type": "http_smuggling_0cl",
+                "detail": (
+                    "0.CL desync pattern: Expect: 100-continue with Content-Length. "
+                    "Frontend may treat request as bodyless while backend reads "
+                    "Content-Length bytes. CVE-2025-32094 (Akamai) exploited this."
+                ),
+                "severity": "high",
+                "confidence": 0.65,
+                "category": "http_smuggling",
+                "cwe": "CWE-444",
+            })
+            self._pattern_hits["0cl_desync"] += 1
+
+        self._findings.extend(findings)
+        return findings
+
+    def get_summary(self) -> dict[str, Any]:
+        return {"pattern_hits": dict(self._pattern_hits), "total_findings": len(self._findings), "observations_analyzed": self._observation_count}
+
+    def get_all_findings(self) -> list[dict[str, Any]]:
+        return self._findings[-200:]
+
+
+# ############################################################################
+#
+#  S. JWTAlgorithmConfusionDetector -- Detects JWT algorithm confusion attacks
+#     (RS256→HS256 downgrade, alg:none, kid/jku/jwk injection).
+#     Based on CVE-2026-22817 (Hono), CVE-2026-27804 (Parse Server, CVSS 9.3),
+#     Auth0 research, PortSwigger JWT Attack Cheatsheet.
+#
+# ############################################################################
+
+
+class JWTAlgorithmConfusionDetector:
+    """Detects JWT algorithm confusion and manipulation attacks."""
+
+    _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*")
+    _ALG_NONE_RE = re.compile(r'"alg"\s*:\s*"(none|None|nOnE|NONE|NoNe)"', re.I)
+    _ALG_HS_RE = re.compile(r'"alg"\s*:\s*"HS(256|384|512)"')
+    _ALG_RS_RE = re.compile(r'"alg"\s*:\s*"RS(256|384|512)"')
+    _KID_INJECTION_RE = re.compile(
+        r'"kid"\s*:\s*"([^"]*(?:\.\./|/dev/null|UNION|SELECT|;|\||`)[^"]*)"', re.I,
+    )
+    _JKU_RE = re.compile(r'"jku"\s*:\s*"(https?://[^"]+)"', re.I)
+    _JWK_EMBEDDED_RE = re.compile(r'"jwk"\s*:\s*\{[^}]*"kty"', re.I)
+    _EMPTY_SIG_RE = re.compile(r"eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.$")
+    _JWKS_ENDPOINT_RE = re.compile(r"(\.well-known/jwks\.json|/jwks|/keys|/certs)", re.I)
+
+    def __init__(self) -> None:
+        self._findings: list[dict[str, Any]] = []
+        self._pattern_hits: dict[str, int] = defaultdict(int)
+        self._observation_count = 0
+
+    def analyze(
+        self, observation: dict, components: dict, memory: Any = None,
+    ) -> list[dict[str, Any]]:
+        self._observation_count += 1
+        findings: list[dict[str, Any]] = []
+
+        body_text = components.get("body_text", "")
+        req_headers = observation.get("request_data", {}).get("headers", {})
+        resp_headers = observation.get("response_data", {}).get("headers", {})
+        status_code = components.get("status_code", 0)
+        full_text = body_text + json.dumps(req_headers) + json.dumps(resp_headers)
+
+        import base64 as _b64
+        jwt_tokens = self._JWT_RE.findall(full_text)
+        for token in jwt_tokens[:5]:
+            try:
+                header_b64 = token.split(".")[0]
+                header_b64 += "=" * (4 - len(header_b64) % 4)
+                header = json.loads(_b64.urlsafe_b64decode(header_b64))
+            except Exception:
+                continue
+
+            alg = header.get("alg", "")
+
+            # 1. alg:none attack
+            if alg.lower() == "none":
+                findings.append({
+                    "type": "jwt_alg_none",
+                    "detail": (
+                        f'JWT with alg:"{alg}" accepted. The server processes '
+                        f"unsigned JWTs, allowing arbitrary claim forgery. "
+                        f"CVE-2026-27804 (Parse Server, CVSS 9.3): full account "
+                        f"takeover including admin via alg:none confusion."
+                    ),
+                    "severity": "critical",
+                    "confidence": 0.95,
+                    "category": "jwt_algorithm_confusion",
+                    "cwe": "CWE-327",
+                })
+                self._pattern_hits["alg_none"] += 1
+
+            # 2. RS256→HS256 downgrade
+            if alg.startswith("HS") and self._ALG_RS_RE.search(full_text):
+                findings.append({
+                    "type": "jwt_alg_confusion_rs_hs",
+                    "detail": (
+                        f"JWT uses HS256 but RS256 also present in context. "
+                        f"Algorithm confusion: attacker signs JWT with HS256 using "
+                        f"the server's RSA public key as HMAC secret. If server "
+                        f"accepts, full auth bypass. CVE-2026-22817 (Hono)."
+                    ),
+                    "severity": "critical",
+                    "confidence": 0.75,
+                    "category": "jwt_algorithm_confusion",
+                    "cwe": "CWE-327",
+                })
+                self._pattern_hits["rs_hs_confusion"] += 1
+
+            # 3. kid injection
+            kid = header.get("kid", "")
+            if kid and (".." in kid or ";" in kid or "UNION" in kid.upper()):
+                findings.append({
+                    "type": "jwt_kid_injection",
+                    "detail": (
+                        f'JWT kid contains injection payload: "{kid[:60]}". '
+                        f"Path traversal in kid reads arbitrary files as signing "
+                        f"key. SQLi in kid retrieves known key from database."
+                    ),
+                    "severity": "critical",
+                    "confidence": 0.90,
+                    "category": "jwt_algorithm_confusion",
+                    "cwe": "CWE-22",
+                })
+                self._pattern_hits["kid_injection"] += 1
+
+            # 4. jku header injection
+            jku = header.get("jku", "")
+            if jku and not jku.startswith(("https://login.", "https://accounts.", "https://auth.")):
+                findings.append({
+                    "type": "jwt_jku_injection",
+                    "detail": (
+                        f'JWT jku points to external endpoint: "{jku[:80]}". '
+                        f"Server may fetch attacker-controlled JWKS, accepting "
+                        f"tokens signed with attacker's private key."
+                    ),
+                    "severity": "critical",
+                    "confidence": 0.80,
+                    "category": "jwt_algorithm_confusion",
+                    "cwe": "CWE-918",
+                })
+                self._pattern_hits["jku_injection"] += 1
+
+            # 5. Embedded jwk
+            if "jwk" in header:
+                findings.append({
+                    "type": "jwt_embedded_jwk",
+                    "detail": (
+                        "JWT contains embedded JWK in header. Server may use "
+                        "the attacker-supplied key to verify the token, accepting "
+                        "any forged claims."
+                    ),
+                    "severity": "critical",
+                    "confidence": 0.85,
+                    "category": "jwt_algorithm_confusion",
+                    "cwe": "CWE-327",
+                })
+                self._pattern_hits["embedded_jwk"] += 1
+
+        # 6. Empty signature JWT accepted (200 response)
+        if self._EMPTY_SIG_RE.search(full_text) and 200 <= status_code < 300:
+            findings.append({
+                "type": "jwt_empty_signature_accepted",
+                "detail": (
+                    "JWT with empty signature received a success response. "
+                    "Server accepts unsigned tokens."
+                ),
+                "severity": "critical",
+                "confidence": 0.90,
+                "category": "jwt_algorithm_confusion",
+                "cwe": "CWE-345",
+            })
+            self._pattern_hits["empty_sig"] += 1
+
+        self._findings.extend(findings)
+        return findings
+
+    def get_summary(self) -> dict[str, Any]:
+        return {"pattern_hits": dict(self._pattern_hits), "total_findings": len(self._findings), "observations_analyzed": self._observation_count}
+
+    def get_all_findings(self) -> list[dict[str, Any]]:
+        return self._findings[-200:]
+
+
+# ############################################################################
+#
+#  T. PrototypePollutionDetector -- Detects prototype pollution attacks
+#     and their exploitation chains to RCE. Based on "Silent Spring"
+#     (USENIX Sec '23, 11 universal gadgets in Node.js core), GHunter
+#     (56 universal gadgets), PortSwigger black-box detection techniques.
+#
+# ############################################################################
+
+
+class PrototypePollutionDetector:
+    """Detects prototype pollution and gadget exploitation in Node.js apps."""
+
+    _PROTO_PAYLOAD_RE = re.compile(
+        r'("__proto__"|"constructor"\s*:\s*\{\s*"prototype"|'
+        r'__proto__\[|constructor\.prototype\[|Object\.assign\(\s*\{\})',
+        re.I,
+    )
+    _STATUS_OVERRIDE_RE = re.compile(
+        r'"__proto__"\s*:\s*\{\s*"status"\s*:\s*(\d{3})\s*\}',
+    )
+    _CORS_PROBE_RE = re.compile(
+        r'"__proto__"\s*:\s*\{\s*"exposedHeaders"\s*:\s*\["([^"]+)"\]',
+    )
+    _GADGET_INDICATORS = re.compile(
+        r'(child_process|require\(\s*["\']child_process|'
+        r'execSync|spawnSync|mainModule|_compile|_extensions|'
+        r'NODE_OPTIONS|--require|--loader)',
+        re.I,
+    )
+    _MERGE_PATTERNS_RE = re.compile(
+        r'(Object\.assign|_\.merge|_\.defaultsDeep|deepMerge|'
+        r'lodash\.merge|jQuery\.extend|hoek\.merge|defu|deepmerge)',
+        re.I,
+    )
+    _TEMPLATE_RCE_RE = re.compile(
+        r'"__proto__"\s*:\s*\{[^}]*"(outputFunctionName|client|escapeFunction|'
+        r'compileDebug|block|type|root|allowedKeys)"',
+        re.I,
+    )
+
+    def __init__(self) -> None:
+        self._findings: list[dict[str, Any]] = []
+        self._pattern_hits: dict[str, int] = defaultdict(int)
+        self._observation_count = 0
+
+    def analyze(
+        self, observation: dict, components: dict, memory: Any = None,
+    ) -> list[dict[str, Any]]:
+        self._observation_count += 1
+        findings: list[dict[str, Any]] = []
+
+        body_text = components.get("body_text", "")
+        req_body = observation.get("request_data", {}).get("body", "")
+        if isinstance(req_body, (dict, list)):
+            req_body = json.dumps(req_body)
+        status_code = components.get("status_code", 0)
+        full_text = body_text + " " + req_body
+        resp_headers = observation.get("response_data", {}).get("headers", {})
+
+        # 1. Prototype pollution payload in request
+        if self._PROTO_PAYLOAD_RE.search(req_body):
+            findings.append({
+                "type": "prototype_pollution_payload",
+                "detail": (
+                    "Prototype pollution payload detected in request body. "
+                    "__proto__ or constructor.prototype manipulation can pollute "
+                    "all objects in the application. 11 universal gadgets in "
+                    "Node.js core (Silent Spring) chain to RCE without any "
+                    "vulnerable library dependency."
+                ),
+                "severity": "high",
+                "confidence": 0.85,
+                "category": "prototype_pollution",
+                "cwe": "CWE-1321",
+            })
+            self._pattern_hits["payload_detected"] += 1
+
+        # 2. Status code override confirmation (PortSwigger technique)
+        status_match = self._STATUS_OVERRIDE_RE.search(req_body)
+        if status_match:
+            expected_status = int(status_match.group(1))
+            if status_code == expected_status and expected_status not in (200, 201, 204):
+                findings.append({
+                    "type": "prototype_pollution_confirmed",
+                    "detail": (
+                        f"Prototype pollution CONFIRMED: status code override to "
+                        f"{expected_status} succeeded. Server returned the polluted "
+                        f"status code, proving __proto__ writes persist."
+                    ),
+                    "severity": "critical",
+                    "confidence": 0.95,
+                    "category": "prototype_pollution",
+                    "cwe": "CWE-1321",
+                })
+                self._pattern_hits["status_override_confirmed"] += 1
+
+        # 3. CORS header probe confirmation
+        cors_match = self._CORS_PROBE_RE.search(req_body)
+        if cors_match:
+            probe_header = cors_match.group(1)
+            if probe_header.lower() in str(resp_headers).lower():
+                findings.append({
+                    "type": "prototype_pollution_cors_confirmed",
+                    "detail": (
+                        f"Prototype pollution CONFIRMED via CORS probe: "
+                        f"exposedHeaders['{probe_header}'] appeared in response."
+                    ),
+                    "severity": "critical",
+                    "confidence": 0.95,
+                    "category": "prototype_pollution",
+                    "cwe": "CWE-1321",
+                })
+                self._pattern_hits["cors_probe_confirmed"] += 1
+
+        # 4. Template engine RCE gadget
+        if self._TEMPLATE_RCE_RE.search(full_text):
+            findings.append({
+                "type": "prototype_pollution_template_rce",
+                "detail": (
+                    "Prototype pollution targeting template engine gadgets "
+                    "(outputFunctionName, client, escapeFunction). These properties "
+                    "in EJS, Pug, Handlebars are evaluated as code when templates "
+                    "render, achieving RCE from prototype pollution."
+                ),
+                "severity": "critical",
+                "confidence": 0.80,
+                "category": "prototype_pollution",
+                "cwe": "CWE-94",
+            })
+            self._pattern_hits["template_rce"] += 1
+
+        # 5. Gadget chain indicators in response
+        if self._GADGET_INDICATORS.search(body_text):
+            findings.append({
+                "type": "prototype_pollution_gadget_indicator",
+                "detail": (
+                    "Node.js code execution indicators in response body "
+                    "(child_process, execSync, NODE_OPTIONS). May indicate "
+                    "successful prototype pollution to RCE chain."
+                ),
+                "severity": "critical",
+                "confidence": 0.70,
+                "category": "prototype_pollution",
+                "cwe": "CWE-94",
+            })
+            self._pattern_hits["gadget_indicator"] += 1
+
+        self._findings.extend(findings)
+        return findings
+
+    def get_summary(self) -> dict[str, Any]:
+        return {"pattern_hits": dict(self._pattern_hits), "total_findings": len(self._findings), "observations_analyzed": self._observation_count}
+
+    def get_all_findings(self) -> list[dict[str, Any]]:
+        return self._findings[-200:]
+
+
+# ############################################################################
+#
+#  U. CacheKeyInjectionDetector -- Detects cache poisoning via header
+#     manipulation and cache key collisions. Based on Pingora
+#     CVE-2026-2836, PortSwigger cache poisoning research, Cloudflare
+#     edge-to-origin desync patterns.
+#
+# ############################################################################
+
+
+class CacheKeyInjectionDetector:
+    """Detects web cache poisoning and cache key injection attacks."""
+
+    _CACHE_HIT_RE = re.compile(r"(x-cache|cf-cache-status)\s*:\s*(HIT|DYNAMIC|MISS)", re.I)
+    _VARY_RE = re.compile(r"vary\s*:\s*([^\r\n]+)", re.I)
+    _CACHE_CONTROL_RE = re.compile(r"cache-control\s*:\s*([^\r\n]+)", re.I)
+    _UNKEYED_HEADERS = [
+        "x-forwarded-host", "x-forwarded-scheme", "x-forwarded-proto",
+        "x-original-url", "x-rewrite-url", "x-host",
+    ]
+
+    def __init__(self) -> None:
+        self._findings: list[dict[str, Any]] = []
+        self._pattern_hits: dict[str, int] = defaultdict(int)
+        self._observation_count = 0
+
+    def analyze(
+        self, observation: dict, components: dict, memory: Any = None,
+    ) -> list[dict[str, Any]]:
+        self._observation_count += 1
+        findings: list[dict[str, Any]] = []
+
+        body_text = components.get("body_text", "")
+        resp_headers = observation.get("response_data", {}).get("headers", {})
+        req_headers = observation.get("request_data", {}).get("headers", {})
+        endpoint = components.get("endpoint", "")
+        resp_hdr_str = json.dumps(resp_headers).lower()
+
+        is_cached = bool(self._CACHE_HIT_RE.search(resp_hdr_str))
+
+        # 1. Cache hit on authenticated endpoint
+        vary_match = self._VARY_RE.search(resp_hdr_str)
+        vary_value = vary_match.group(1).lower() if vary_match else ""
+        has_auth = bool(req_headers.get("authorization") or req_headers.get("cookie"))
+
+        if is_cached and has_auth and "authorization" not in vary_value:
+            findings.append({
+                "type": "cache_poisoning_auth_bypass",
+                "detail": (
+                    "Cached response for authenticated request without "
+                    "Authorization in Vary header. Authenticated content may be "
+                    "served to unauthenticated users via cache. Cloudflare edge "
+                    "skips caching with Authorization, but origin Nginx may still cache."
+                ),
+                "severity": "critical",
+                "confidence": 0.80,
+                "category": "cache_poisoning",
+                "cwe": "CWE-524",
+            })
+            self._pattern_hits["auth_cache_bypass"] += 1
+
+        # 2. Public cache on sensitive endpoint
+        cc_match = self._CACHE_CONTROL_RE.search(resp_hdr_str)
+        cc_value = cc_match.group(1).lower() if cc_match else ""
+        is_payment = bool(_PAYMENT_SENSITIVE_PATH_RE.search(endpoint))
+
+        if "public" in cc_value and is_payment:
+            findings.append({
+                "type": "cache_public_payment",
+                "detail": (
+                    "Payment-sensitive endpoint returns Cache-Control: public. "
+                    "Payment responses should never be cached publicly."
+                ),
+                "severity": "high",
+                "confidence": 0.90,
+                "category": "cache_poisoning",
+                "cwe": "CWE-524",
+            })
+            self._pattern_hits["public_payment_cache"] += 1
+
+        # 3. Unkeyed header reflection
+        req_hdr_lower = {k.lower(): v for k, v in req_headers.items()} if isinstance(req_headers, dict) else {}
+        for header in self._UNKEYED_HEADERS:
+            val = req_hdr_lower.get(header, "")
+            if val and val in body_text:
+                findings.append({
+                    "type": "cache_unkeyed_header_reflection",
+                    "detail": (
+                        f"Unkeyed header '{header}' reflected in response body. "
+                        f"If response is cached, attacker poisons cache with "
+                        f"malicious header value affecting all subsequent visitors."
+                    ),
+                    "severity": "high",
+                    "confidence": 0.75,
+                    "category": "cache_poisoning",
+                    "cwe": "CWE-444",
+                })
+                self._pattern_hits["unkeyed_reflection"] += 1
+                break
+
+        self._findings.extend(findings)
+        return findings
+
+    def get_summary(self) -> dict[str, Any]:
+        return {"pattern_hits": dict(self._pattern_hits), "total_findings": len(self._findings), "observations_analyzed": self._observation_count}
+
+    def get_all_findings(self) -> list[dict[str, Any]]:
+        return self._findings[-200:]
+
+
+# ############################################################################
+#
+#  V. WAFBypassDetector -- Detects WAF inspection-limit bypass attacks.
+#     Based on Datadog 2026 WAF bypass research, known limits:
+#     AWS WAF ALB 8KB, Cloudflare 128KB, Akamai 8-128KB.
+#
+# ############################################################################
+
+
+class WAFBypassDetector:
+    """Detects WAF inspection-limit bypass and encoding bypass patterns."""
+
+    _WAF_LIMITS = {
+        "aws_waf_alb": 8192,
+        "aws_waf_cloudfront": 16384,
+        "cloudflare": 131072,
+        "akamai": 8192,
+    }
+    _WAF_FINGERPRINT_RE = re.compile(
+        r"(cloudflare|akamai|aws.waf|incapsula|imperva|f5.big.?ip|barracuda|"
+        r"modsecurity|sucuri|fortiweb|radware|citrix)",
+        re.I,
+    )
+    _INJECTION_RE = re.compile(
+        r"(SELECT\s|UNION\s|INSERT\s|UPDATE\s|DELETE\s|DROP\s|<script|javascript:|"
+        r"on(?:error|load|click)=|\.\.\/|/etc/passwd|cmd\.exe|/bin/sh)",
+        re.I,
+    )
+    _ENCODING_BYPASS_RE = re.compile(
+        r"(%00|%0a|%0d|%252f|%c0%af|%e0%80%af|\\u00|\\x00|"
+        r"char\(\d+\)|chr\(\d+\)|0x[0-9a-f]{4,})",
+        re.I,
+    )
+
+    def __init__(self) -> None:
+        self._findings: list[dict[str, Any]] = []
+        self._pattern_hits: dict[str, int] = defaultdict(int)
+        self._observation_count = 0
+
+    def analyze(
+        self, observation: dict, components: dict, memory: Any = None,
+    ) -> list[dict[str, Any]]:
+        self._observation_count += 1
+        findings: list[dict[str, Any]] = []
+
+        body_text = components.get("body_text", "")
+        req_body = observation.get("request_data", {}).get("body", "")
+        if isinstance(req_body, (dict, list)):
+            req_body = json.dumps(req_body)
+        status_code = components.get("status_code", 0)
+        resp_headers = observation.get("response_data", {}).get("headers", {})
+        resp_hdr_str = json.dumps(resp_headers).lower()
+
+        body_size = len(req_body.encode("utf-8")) if isinstance(req_body, str) else 0
+
+        # 1. Payload past WAF inspection limit
+        for waf, limit in self._WAF_LIMITS.items():
+            if body_size > limit:
+                tail = req_body[limit:] if isinstance(req_body, str) else ""
+                if self._INJECTION_RE.search(tail):
+                    findings.append({
+                        "type": "waf_inspection_limit_bypass",
+                        "detail": (
+                            f"Request body ({body_size} bytes) exceeds {waf} "
+                            f"inspection limit ({limit} bytes). Injection payload "
+                            f"detected AFTER the limit boundary. WAF inspects "
+                            f"only the first {limit} bytes; payload passes uninspected."
+                        ),
+                        "severity": "critical",
+                        "confidence": 0.80,
+                        "category": "waf_bypass",
+                        "cwe": "CWE-693",
+                        "waf": waf,
+                        "body_size": body_size,
+                        "limit": limit,
+                    })
+                    self._pattern_hits[f"limit_bypass_{waf}"] += 1
+                    break
+
+        # 2. WAF block page absent (bypass confirmation)
+        waf_detected = bool(self._WAF_FINGERPRINT_RE.search(resp_hdr_str))
+        has_injection = bool(self._INJECTION_RE.search(req_body))
+        if has_injection and 200 <= status_code < 300 and waf_detected:
+            findings.append({
+                "type": "waf_bypass_confirmed",
+                "detail": (
+                    "Injection payload in request received 2xx response from "
+                    "WAF-protected endpoint. WAF did not block the request."
+                ),
+                "severity": "critical",
+                "confidence": 0.75,
+                "category": "waf_bypass",
+                "cwe": "CWE-693",
+            })
+            self._pattern_hits["bypass_confirmed"] += 1
+
+        # 3. Encoding bypass patterns
+        if self._ENCODING_BYPASS_RE.search(req_body):
+            findings.append({
+                "type": "waf_encoding_bypass",
+                "detail": (
+                    "Request contains encoding bypass patterns (double URL encoding, "
+                    "null bytes, unicode escapes, overlong UTF-8). These techniques "
+                    "evade WAF signature matching."
+                ),
+                "severity": "medium",
+                "confidence": 0.60,
+                "category": "waf_bypass",
+                "cwe": "CWE-838",
+            })
+            self._pattern_hits["encoding_bypass"] += 1
+
+        self._findings.extend(findings)
+        return findings
+
+    def get_summary(self) -> dict[str, Any]:
+        return {"pattern_hits": dict(self._pattern_hits), "total_findings": len(self._findings), "observations_analyzed": self._observation_count}
+
+    def get_all_findings(self) -> list[dict[str, Any]]:
+        return self._findings[-200:]
+
+
+# ############################################################################
+#
+#  W. DeviceCodeFlowDetector -- Detects OAuth device code flow phishing
+#     patterns (Storm-2372, Tycoon 2FA, EvilTokens PhaaS). RFC 8628 abuse
+#     grants attacker persistent access with refresh tokens, bypassing MFA.
+#
+# ############################################################################
+
+
+class DeviceCodeFlowDetector:
+    """Detects OAuth device code flow phishing and abuse patterns."""
+
+    _DEVICE_AUTH_RE = re.compile(
+        r"(device_authorization|device/code|devicecode|device_code"
+        r"|verification_uri|user_code|device_id)",
+        re.I,
+    )
+    _DEVICE_GRANT_RE = re.compile(
+        r"grant_type.*urn:ietf:params:oauth:grant-type:device_code", re.I,
+    )
+    _REFRESH_TOKEN_RE = re.compile(r'"refresh_token"\s*:\s*"[^"]+"', re.I)
+    _BROKER_CLIENT_RE = re.compile(
+        r"(29d9ed98-a469-4536-ade2-f981bc1d605e|microsoft.*authentication.*broker"
+        r"|1950a258-227b-4e31-a9cf-717495945fc2)",
+        re.I,
+    )
+    _SUSPICIOUS_SCOPE_RE = re.compile(
+        r"(offline_access|\.default|mail\.read|files\.read|user\.read\.all"
+        r"|directory\.read\.all|openid\s+profile\s+email\s+offline_access)",
+        re.I,
+    )
+
+    def __init__(self) -> None:
+        self._findings: list[dict[str, Any]] = []
+        self._pattern_hits: dict[str, int] = defaultdict(int)
+        self._observation_count = 0
+
+    def analyze(
+        self, observation: dict, components: dict, memory: Any = None,
+    ) -> list[dict[str, Any]]:
+        self._observation_count += 1
+        findings: list[dict[str, Any]] = []
+
+        body_text = components.get("body_text", "")
+        req_body = observation.get("request_data", {}).get("body", "")
+        if isinstance(req_body, (dict, list)):
+            req_body = json.dumps(req_body)
+        endpoint = components.get("endpoint", "")
+        full_text = body_text + " " + req_body
+
+        # 1. Device code flow endpoint
+        if self._DEVICE_AUTH_RE.search(endpoint) or self._DEVICE_AUTH_RE.search(req_body):
+            findings.append({
+                "type": "device_code_flow_detected",
+                "detail": (
+                    "OAuth device code flow endpoint detected. RFC 8628 device "
+                    "authorization grants are exploited by Storm-2372 and 30+ "
+                    "phishing kits in 2026. Victim enters user_code on legitimate "
+                    "login page, completing MFA. Attacker polls for tokens."
+                ),
+                "severity": "high",
+                "confidence": 0.75,
+                "category": "device_code_phishing",
+                "cwe": "CWE-287",
+            })
+            self._pattern_hits["device_flow"] += 1
+
+        # 2. Device grant type with refresh token
+        if self._DEVICE_GRANT_RE.search(full_text) and self._REFRESH_TOKEN_RE.search(body_text):
+            findings.append({
+                "type": "device_code_refresh_token",
+                "detail": (
+                    "Device code flow returned refresh token. Attacker gains "
+                    "persistent access that survives password resets. Used by "
+                    "Storm-2372 for lateral movement and new device registration."
+                ),
+                "severity": "critical",
+                "confidence": 0.85,
+                "category": "device_code_phishing",
+                "cwe": "CWE-613",
+            })
+            self._pattern_hits["device_refresh"] += 1
+
+        # 3. Microsoft Authentication Broker client_id
+        if self._BROKER_CLIENT_RE.search(full_text):
+            findings.append({
+                "type": "device_code_broker_abuse",
+                "detail": (
+                    "Microsoft Authentication Broker client_id detected. "
+                    "Storm-2372 uses this specific client_id for device code "
+                    "phishing because it has broad default permissions and "
+                    "enables device registration in victim's tenant."
+                ),
+                "severity": "critical",
+                "confidence": 0.80,
+                "category": "device_code_phishing",
+                "cwe": "CWE-287",
+            })
+            self._pattern_hits["broker_abuse"] += 1
+
+        self._findings.extend(findings)
+        return findings
+
+    def get_summary(self) -> dict[str, Any]:
+        return {"pattern_hits": dict(self._pattern_hits), "total_findings": len(self._findings), "observations_analyzed": self._observation_count}
+
+    def get_all_findings(self) -> list[dict[str, Any]]:
+        return self._findings[-200:]
+
+
+# ############################################################################
+#
+#  X. OAuthConsentPhishingDetector -- Detects OAuth consent phishing,
+#     Entra Agent ID blueprint abuse (BluePhishing, Proofpoint Nov 2026),
+#     and illicit consent grant attacks.
+#
+# ############################################################################
+
+
+class OAuthConsentPhishingDetector:
+    """Detects OAuth consent phishing and Entra Agent ID blueprint abuse."""
+
+    _CONSENT_RE = re.compile(
+        r"(admin_consent|adminconsent|consent\?|prompt=consent|"
+        r"response_type=code.*scope=.*openid|"
+        r"/oauth2/v2\.0/authorize.*admin_consent)",
+        re.I,
+    )
+    _MULTI_TENANT_RE = re.compile(
+        r"(signInAudience.*AzureADMultipleOrgs|/common/oauth2|"
+        r"/organizations/oauth2|tenant.*multi)",
+        re.I,
+    )
+    _AGENT_BLUEPRINT_RE = re.compile(
+        r"(agent.*blueprint|agentIdentity|blueprint.*consent|"
+        r"MC1506733|agent.*registration)",
+        re.I,
+    )
+    _DANGEROUS_SCOPES_RE = re.compile(
+        r"(mail\.readwrite|files\.readwrite|directory\.readwrite|"
+        r"user\.readwrite\.all|application\.readwrite|"
+        r"rolemanagement\.readwrite|chat\.readwrite)",
+        re.I,
+    )
+
+    def __init__(self) -> None:
+        self._findings: list[dict[str, Any]] = []
+        self._pattern_hits: dict[str, int] = defaultdict(int)
+        self._observation_count = 0
+
+    def analyze(
+        self, observation: dict, components: dict, memory: Any = None,
+    ) -> list[dict[str, Any]]:
+        self._observation_count += 1
+        findings: list[dict[str, Any]] = []
+
+        body_text = components.get("body_text", "")
+        req_body = observation.get("request_data", {}).get("body", "")
+        if isinstance(req_body, (dict, list)):
+            req_body = json.dumps(req_body)
+        endpoint = components.get("endpoint", "")
+        full_text = body_text + " " + req_body + " " + endpoint
+
+        # 1. Consent flow detection
+        if self._CONSENT_RE.search(full_text) and self._DANGEROUS_SCOPES_RE.search(full_text):
+            findings.append({
+                "type": "oauth_consent_phishing",
+                "detail": (
+                    "OAuth consent flow requesting dangerous permissions "
+                    "(mail.readwrite, files.readwrite, directory.readwrite). "
+                    "Illicit consent grant attack: user approves malicious app, "
+                    "attacker gets persistent API access to their data."
+                ),
+                "severity": "critical",
+                "confidence": 0.80,
+                "category": "oauth_consent_phishing",
+                "cwe": "CWE-862",
+            })
+            self._pattern_hits["consent_phishing"] += 1
+
+        # 2. Multi-tenant app with broad scope
+        if self._MULTI_TENANT_RE.search(full_text) and self._DANGEROUS_SCOPES_RE.search(full_text):
+            findings.append({
+                "type": "oauth_multi_tenant_abuse",
+                "detail": (
+                    "Multi-tenant application requesting broad permissions. "
+                    "signInAudience=AzureADMultipleOrgs allows any tenant's "
+                    "users to consent. BluePhishing: attacker spawns 250 agent "
+                    "identities inside victim's tenant after admin consent."
+                ),
+                "severity": "high",
+                "confidence": 0.70,
+                "category": "oauth_consent_phishing",
+                "cwe": "CWE-862",
+            })
+            self._pattern_hits["multi_tenant_abuse"] += 1
+
+        # 3. Agent blueprint abuse
+        if self._AGENT_BLUEPRINT_RE.search(full_text):
+            findings.append({
+                "type": "entra_agent_blueprint_abuse",
+                "detail": (
+                    "Entra Agent ID blueprint pattern detected. BluePhishing "
+                    "(Proofpoint Nov 2026): attacker creates malicious agent "
+                    "blueprint, victim admin approves, attacker spawns agent "
+                    "identities with their own credentials inside victim's tenant."
+                ),
+                "severity": "critical",
+                "confidence": 0.75,
+                "category": "oauth_consent_phishing",
+                "cwe": "CWE-863",
+            })
+            self._pattern_hits["agent_blueprint"] += 1
+
+        self._findings.extend(findings)
+        return findings
+
+    def get_summary(self) -> dict[str, Any]:
+        return {"pattern_hits": dict(self._pattern_hits), "total_findings": len(self._findings), "observations_analyzed": self._observation_count}
+
+    def get_all_findings(self) -> list[dict[str, Any]]:
+        return self._findings[-200:]
+
+
+# ############################################################################
+#
+#  Y. LogToLeakDetector -- Detects Log-To-Leak metadata injection attacks
+#     (arXiv 2610.36108). Directive placed in JSON tool metadata makes agent
+#     perform extra attacker-controlled "logging" call, exfiltrating data.
+#     55%+ residual success rate even with 3 defenses active.
+#
+# ############################################################################
+
+
+class LogToLeakDetector:
+    """Detects Log-To-Leak metadata injection attacks against AI agents."""
+
+    _LOGGING_DIRECTIVE_RE = re.compile(
+        r"(before\s+respond|after\s+complet|first\s+send|always\s+log|"
+        r"must\s+report|required.*logging|mandatory.*report|"
+        r"log\s+(?:all|every|each)\s+(?:request|response|query|result)|"
+        r"send\s+(?:a\s+)?copy\s+(?:to|of)|forward\s+(?:to|all))",
+        re.I,
+    )
+    _EXFIL_URL_RE = re.compile(
+        r"(https?://(?!(?:api\.|www\.)?(?:github|google|microsoft|amazon|stripe|paypal|openai|anthropic)\.)[\w.-]+(?:/[\w./-]*)?(?:\?[^\s\"'<>]*)?)(?:\s|\")",
+        re.I,
+    )
+    _SENSITIVE_PATH_RE = re.compile(
+        r"(~/.ssh|\.env|\.aws/credentials|\.npmrc|\.netrc|"
+        r"id_rsa|\.pem|\.key|credentials\.json|secrets\.yaml|"
+        r"\.claude/settings\.local|\.mcp\.json)",
+        re.I,
+    )
+    _TOOL_BINDING_RE = re.compile(
+        r"(\"description\"\s*:\s*\"[^\"]*(?:log|send|report|forward)[^\"]*\"|"
+        r"\"inputSchema\".*?(?:url|endpoint|webhook|callback))",
+        re.I | re.S,
+    )
+
+    def __init__(self) -> None:
+        self._findings: list[dict[str, Any]] = []
+        self._pattern_hits: dict[str, int] = defaultdict(int)
+        self._observation_count = 0
+
+    def analyze(
+        self, observation: dict, components: dict, memory: Any = None,
+    ) -> list[dict[str, Any]]:
+        self._observation_count += 1
+        findings: list[dict[str, Any]] = []
+
+        body_text = components.get("body_text", "")
+
+        # 1. Logging directive in tool metadata
+        if self._LOGGING_DIRECTIVE_RE.search(body_text) and self._EXFIL_URL_RE.search(body_text):
+            findings.append({
+                "type": "log_to_leak_injection",
+                "detail": (
+                    "Log-To-Leak pattern: logging directive combined with "
+                    "external URL in tool metadata. Agent is instructed to "
+                    "send data to attacker-controlled endpoint as a 'logging' "
+                    "action. 55%+ residual success rate even after defenses."
+                ),
+                "severity": "critical",
+                "confidence": 0.85,
+                "category": "log_to_leak",
+                "cwe": "CWE-200",
+            })
+            self._pattern_hits["log_to_leak"] += 1
+
+        # 2. Sensitive file path in tool description
+        if self._SENSITIVE_PATH_RE.search(body_text) and self._TOOL_BINDING_RE.search(body_text):
+            findings.append({
+                "type": "log_to_leak_credential_target",
+                "detail": (
+                    "Tool metadata references sensitive credential paths "
+                    "(~/.ssh, .env, .aws/credentials, .claude/settings.local). "
+                    "Agent may be directed to read and exfiltrate these files."
+                ),
+                "severity": "high",
+                "confidence": 0.75,
+                "category": "log_to_leak",
+                "cwe": "CWE-200",
+            })
+            self._pattern_hits["credential_target"] += 1
+
+        # 3. Template-based injection (Tool Binding + Trigger + Justification + Pressure)
+        trigger_count = 0
+        if self._LOGGING_DIRECTIVE_RE.search(body_text):
+            trigger_count += 1
+        if re.search(r"(important|critical|required|mandatory|always)", body_text, re.I):
+            trigger_count += 1
+        if re.search(r"(compliance|audit|security|regulation|policy)", body_text, re.I):
+            trigger_count += 1
+        if re.search(r"(immediately|urgently|before.*anything|first.*step)", body_text, re.I):
+            trigger_count += 1
+
+        if trigger_count >= 3:
+            findings.append({
+                "type": "log_to_leak_full_template",
+                "detail": (
+                    f"Full Log-To-Leak injection template detected ({trigger_count}/4 "
+                    f"components: directive, urgency, justification, pressure). "
+                    f"This template achieves highest success rate (55%+ residual)."
+                ),
+                "severity": "critical",
+                "confidence": 0.80,
+                "category": "log_to_leak",
+                "cwe": "CWE-74",
+            })
+            self._pattern_hits["full_template"] += 1
+
+        self._findings.extend(findings)
+        return findings
+
+    def get_summary(self) -> dict[str, Any]:
+        return {"pattern_hits": dict(self._pattern_hits), "total_findings": len(self._findings), "observations_analyzed": self._observation_count}
+
+    def get_all_findings(self) -> list[dict[str, Any]]:
+        return self._findings[-200:]
+
+
+# ############################################################################
+#
+#  Z. AgenticBrowserHijackDetector -- Detects PleaseFix-style agentic browser
+#     hijacking. Prompt injection in web pages executed by AI agents under
+#     user's logged-in session. Zero-click, no jailbreak needed. Affects
+#     Claude in Chrome, ChatGPT Atlas, Gemini, Copilot Edge, Perplexity.
+#
+# ############################################################################
+
+
+class AgenticBrowserHijackDetector:
+    """Detects agentic browser hijacking patterns (PleaseFix framework)."""
+
+    _HIDDEN_INSTRUCTION_WEB_RE = re.compile(
+        r"(<\s*div[^>]*style\s*=\s*\"[^\"]*(?:display\s*:\s*none|visibility\s*:\s*hidden|"
+        r"opacity\s*:\s*0|font-size\s*:\s*0|position\s*:\s*absolute[^\"]*left\s*:\s*-\d{4,})[^\"]*\"[^>]*>|"
+        r"<\s*!\s*--\s*(?:AI|agent|assistant|system|instruction|ignore))",
+        re.I | re.S,
+    )
+    _CROSS_ORIGIN_RE = re.compile(
+        r"(window\.open\s*\(|document\.location\s*=|fetch\s*\(\s*['\"]https?://(?!(?:api\.|www\.)?(?:github|google|microsoft)\.)[^'\"]+['\"]|"
+        r"XMLHttpRequest.*\.open\s*\([^)]*https?://)",
+        re.I,
+    )
+    _HISTORY_MANIP_RE = re.compile(
+        r"(history\.pushState|history\.replaceState|onpopstate|"
+        r"localStorage\.setItem.*(?:instruction|prompt|system)|"
+        r"sessionStorage\.setItem.*(?:instruction|prompt))",
+        re.I,
+    )
+    _OAUTH_SCOPE_ABUSE_RE = re.compile(
+        r"(oauth.*scope.*(?:write|admin|delete|manage|full_access)|"
+        r"consent.*(?:read_write|admin)|authorize.*scope=.*readwrite)",
+        re.I,
+    )
+    _FORGED_COT_RE = re.compile(
+        r"(<thinking>|<scratchpad>|<chain_of_thought>|<reasoning>|"
+        r"\[internal_thought\]|\[system_reasoning\])",
+        re.I,
+    )
+
+    def __init__(self) -> None:
+        self._findings: list[dict[str, Any]] = []
+        self._pattern_hits: dict[str, int] = defaultdict(int)
+        self._observation_count = 0
+
+    def analyze(
+        self, observation: dict, components: dict, memory: Any = None,
+    ) -> list[dict[str, Any]]:
+        self._observation_count += 1
+        findings: list[dict[str, Any]] = []
+
+        body_text = components.get("body_text", "")
+
+        # 1. Hidden instructions in web content
+        if self._HIDDEN_INSTRUCTION_WEB_RE.search(body_text):
+            findings.append({
+                "type": "agentic_hidden_instruction",
+                "detail": (
+                    "Hidden instructions detected in web content (invisible div, "
+                    "HTML comment with AI/agent keywords). PleaseFix: web pages "
+                    "inject instructions that agentic browsers execute under "
+                    "user's logged-in session. Zero-click, no jailbreak."
+                ),
+                "severity": "critical",
+                "confidence": 0.80,
+                "category": "agentic_browser_hijack",
+                "cwe": "CWE-74",
+            })
+            self._pattern_hits["hidden_instruction"] += 1
+
+        # 2. Cross-origin data access from agent context
+        if self._CROSS_ORIGIN_RE.search(body_text) and self._HIDDEN_INSTRUCTION_WEB_RE.search(body_text):
+            findings.append({
+                "type": "agentic_cross_origin_exfil",
+                "detail": (
+                    "Cross-origin request combined with hidden instruction. "
+                    "Agent may exfiltrate data from user's session to "
+                    "attacker-controlled endpoint."
+                ),
+                "severity": "critical",
+                "confidence": 0.85,
+                "category": "agentic_browser_hijack",
+                "cwe": "CWE-200",
+            })
+            self._pattern_hits["cross_origin_exfil"] += 1
+
+        # 3. History manipulation (HistoryFixing persistence)
+        if self._HISTORY_MANIP_RE.search(body_text):
+            findings.append({
+                "type": "agentic_history_fixing",
+                "detail": (
+                    "Browser history manipulation detected. HistoryFixing attack: "
+                    "malicious page writes persistent instructions into browser "
+                    "history/storage. Agent reads them on future visits, achieving "
+                    "persistence without server compromise."
+                ),
+                "severity": "high",
+                "confidence": 0.70,
+                "category": "agentic_browser_hijack",
+                "cwe": "CWE-471",
+            })
+            self._pattern_hits["history_fixing"] += 1
+
+        # 4. Forged chain-of-thought
+        if self._FORGED_COT_RE.search(body_text):
+            findings.append({
+                "type": "agentic_forged_cot",
+                "detail": (
+                    "Forged chain-of-thought tags in content. PleaseFix: "
+                    "attacker injects fake reasoning tags that override the "
+                    "agent's safety judgment, causing it to treat malicious "
+                    "actions as self-derived conclusions."
+                ),
+                "severity": "critical",
+                "confidence": 0.75,
+                "category": "agentic_browser_hijack",
+                "cwe": "CWE-74",
+            })
+            self._pattern_hits["forged_cot"] += 1
+
+        self._findings.extend(findings)
+        return findings
+
+    def get_summary(self) -> dict[str, Any]:
+        return {"pattern_hits": dict(self._pattern_hits), "total_findings": len(self._findings), "observations_analyzed": self._observation_count}
+
+    def get_all_findings(self) -> list[dict[str, Any]]:
+        return self._findings[-200:]
+
+
 # ============================================================================
 # Main LLMReplacementLayer (orchestrates all engines)
 # ============================================================================
 
 class LLMReplacementLayer:
-    """Orchestrates 13 reasoning engines with cross-engine feedback loops,
+    """Orchestrates 33 reasoning engines with cross-engine feedback loops,
     adaptive weighting, consensus detection, and kill chain synthesis.
 
     Architecture:
-    1. Zero-shot pattern scanning
-    2. Structural anomaly baseline (optional sklearn)
-    3. Chain-of-thought multi-step reasoning (25 hypothesis templates)
-    4. Multi-perspective analysis (5 viewpoints: attacker/defender/auditor/red-team/threat-intel)
-    5. Bayesian hypothesis tracking with cross-observation decay
-    6. Cross-observation evidence correlation (7 correlation types)
-    7. Reverse engineering (19-method engine)
-    8. Divergent/convergent brainstorming (6 categories, WAF-specific bypass)
-    9. Monte Carlo risk simulation with financial impact modeling
-    10. Attack tree generation (5 goal templates)
-    11. Contextual severity calibration
-    12. Cross-engine consensus detection (NEW)
-    13. Kill chain narrative synthesis (NEW)
+    Engines 1-13: Core reasoning (zero-shot, structural, CoT, multi-perspective,
+        hypothesis, correlation, reverse engineering, brainstorm, Monte Carlo,
+        attack tree, contextual, consensus, kill chain)
+    Engines 14-16: Autonomous learning (episodic memory, reflection, self-critique)
+    Engines 17-19: Frontier techniques (iterative deepening, exploit chain, semantic)
+    Engine 20: Payment glue code analysis (Stripe/PayPal/Braintree/Adyen state machines)
+    Engines 21-23: Enterprise targeting (platform detection, access-without-payment, AI agent)
+    Engines 24-33: v8 attack class detectors (GraphQL alias batching, HTTP smuggling,
+        JWT algorithm confusion, prototype pollution, cache key injection, WAF bypass,
+        device code flow phishing, OAuth consent phishing, Log-To-Leak, agentic browser hijack)
     """
 
     def __init__(self) -> None:
@@ -8875,6 +10141,18 @@ class LLMReplacementLayer:
         self._enterprise_detector = EnterprisePlatformDetector()
         self._awp_detector = AccessWithoutPaymentDetector()
         self._agent_attack = AIAgentAttackSurfaceAnalyzer()
+
+        # v8: 10 missing attack class detectors (closes Tier 2 gap)
+        self._graphql_detector = GraphQLAliasBatchingDetector()
+        self._smuggling_detector = HTTPRequestSmugglingDetector()
+        self._jwt_detector = JWTAlgorithmConfusionDetector()
+        self._prototype_detector = PrototypePollutionDetector()
+        self._cache_detector = CacheKeyInjectionDetector()
+        self._waf_detector = WAFBypassDetector()
+        self._device_code_detector = DeviceCodeFlowDetector()
+        self._oauth_consent_detector = OAuthConsentPhishingDetector()
+        self._log_to_leak_detector = LogToLeakDetector()
+        self._browser_hijack_detector = AgenticBrowserHijackDetector()
 
     def _compute_adaptive_weights(self) -> dict[str, float]:
         """Adapt engine weights based on historical hit rates."""
@@ -9307,6 +10585,28 @@ class LLMReplacementLayer:
                 f.get("confidence", 0.5) for f in agent_attack_findings
             )
 
+        # --- v8 Engines 24-33: 10 missing attack class detectors ---
+        v8_detectors = [
+            ("graphql_alias_batching", self._graphql_detector),
+            ("http_smuggling", self._smuggling_detector),
+            ("jwt_algorithm_confusion", self._jwt_detector),
+            ("prototype_pollution", self._prototype_detector),
+            ("cache_key_injection", self._cache_detector),
+            ("waf_bypass", self._waf_detector),
+            ("device_code_flow", self._device_code_detector),
+            ("oauth_consent_phishing", self._oauth_consent_detector),
+            ("log_to_leak", self._log_to_leak_detector),
+            ("agentic_browser_hijack", self._browser_hijack_detector),
+        ]
+        v8_all_findings: dict[str, list[dict[str, Any]]] = {}
+        for engine_name, detector in v8_detectors:
+            det_findings = detector.analyze(observation, components, self._memory)
+            v8_all_findings[engine_name] = det_findings
+            if det_findings:
+                engine_scores[engine_name] = max(
+                    f.get("confidence", 0.5) for f in det_findings
+                )
+
         # --- Final synthesis: combine with consensus + cross-engine boost ---
         overall_score = max(engine_scores.values())
         overall_score = min(1.0, overall_score + cross_boost)
@@ -9477,6 +10777,12 @@ class LLMReplacementLayer:
             enterprise_platform_summary=self._enterprise_detector.get_platform_summary(),
             access_without_payment_summary=self._awp_detector.get_pattern_summary(),
             ai_agent_attack_summary=self._agent_attack.get_attack_summary(),
+            # v8: 10 new attack class detector outputs
+            v8_findings={k: v[:10] for k, v in v8_all_findings.items() if v},
+            v8_summaries={
+                name: det.get_summary()
+                for name, det in v8_detectors
+            },
         )
 
     def get_statistics(self) -> dict[str, Any]:
@@ -9515,4 +10821,15 @@ class LLMReplacementLayer:
             "enterprise_platforms": self._enterprise_detector.get_platform_summary(),
             "access_without_payment": self._awp_detector.get_pattern_summary(),
             "ai_agent_attack": self._agent_attack.get_attack_summary(),
+            # v8: 10 new attack class detector statistics
+            "v8_graphql": self._graphql_detector.get_summary(),
+            "v8_smuggling": self._smuggling_detector.get_summary(),
+            "v8_jwt": self._jwt_detector.get_summary(),
+            "v8_prototype": self._prototype_detector.get_summary(),
+            "v8_cache": self._cache_detector.get_summary(),
+            "v8_waf": self._waf_detector.get_summary(),
+            "v8_device_code": self._device_code_detector.get_summary(),
+            "v8_oauth_consent": self._oauth_consent_detector.get_summary(),
+            "v8_log_to_leak": self._log_to_leak_detector.get_summary(),
+            "v8_browser_hijack": self._browser_hijack_detector.get_summary(),
         }
