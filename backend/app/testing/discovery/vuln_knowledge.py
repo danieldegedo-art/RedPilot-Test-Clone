@@ -92,6 +92,12 @@ class VulnCategory(str, Enum):
     WAF_BYPASS = "waf_bypass"
     MCP_TOOL_POISONING = "mcp_tool_poisoning"
     WEBHOOK_FORGERY = "webhook_forgery"
+    # --- v8.2: 5 new categories for enterprise-critical patterns ---
+    SAML_SSO_BYPASS = "saml_sso_bypass"
+    API_VERSION_DOWNGRADE = "api_version_downgrade"
+    IDEMPOTENCY_ABUSE = "idempotency_abuse"
+    SUBSCRIPTION_STATE_CONFUSION = "subscription_state_confusion"
+    SEAT_OVERFLOW = "seat_overflow"
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +388,37 @@ RESPONSE_BODY_SIGNATURES: list[DetectionSignature] = [
     DetectionSignature(VulnCategory.WEBHOOK_FORGERY, "webhook_empty_secret_accepted",
                        "response_body", re.compile(r'(?:signing.*secret.*(?:empty|null|default|not set)|webhook.*(?:secret|key).*(?:empty|not configured))', re.I),
                        "Webhook signing secret empty/default - CVE-2026-41432 pattern", 9.5, "high", "CWE-345"),
+    # --- v8.2: 10 new detection signatures for enterprise patterns ---
+    DetectionSignature(VulnCategory.SAML_SSO_BYPASS, "saml_unsigned_assertion",
+                       "response_body", re.compile(r'(?:<(?:saml[2p]?:)?Assertion[^>]*>(?:(?!<(?:ds:)?Signature).)*</(?:saml[2p]?:)?Assertion>)', re.I),
+                       "SAML assertion without digital signature allows identity spoofing", 9.5, "critical", "CWE-347"),
+    DetectionSignature(VulnCategory.SAML_SSO_BYPASS, "saml_response_manipulation",
+                       "response_body", re.compile(r'(?:SAMLResponse|saml2?:Response|<Response)', re.I),
+                       "SAML response surface detected - test for assertion wrapping and replay", 5.0, "medium", "CWE-287"),
+    DetectionSignature(VulnCategory.API_VERSION_DOWNGRADE, "deprecated_api_version",
+                       "response_body", re.compile(r'(?:deprecated|sunset|obsolete).*(?:api|version|endpoint)', re.I),
+                       "Deprecated API version still responding - may lack newer security controls", 6.5, "high", "CWE-863"),
+    DetectionSignature(VulnCategory.API_VERSION_DOWNGRADE, "multiple_api_versions",
+                       "response_body", re.compile(r'(?:/api/v[12]/.*|/v[12]/)', re.I),
+                       "Multiple API versions present - older may bypass auth controls", 5.5, "medium", "CWE-863"),
+    DetectionSignature(VulnCategory.IDEMPOTENCY_ABUSE, "null_idempotency_key",
+                       "response_body", re.compile(r'(?:"idempotency_key"\s*:\s*null|idempotency.*(?:missing|not checked|ignored))', re.I),
+                       "Null/missing idempotency key allows webhook replay and duplicate events", 7.5, "high", "CWE-294"),
+    DetectionSignature(VulnCategory.IDEMPOTENCY_ABUSE, "duplicate_event_accepted",
+                       "response_body", re.compile(r'(?:event.*(?:already|previously).*processed.*(?:success|200)|duplicate.*(?:accepted|processed))', re.I),
+                       "Duplicate event was accepted instead of rejected", 8.0, "high", "CWE-294"),
+    DetectionSignature(VulnCategory.SUBSCRIPTION_STATE_CONFUSION, "entitlement_in_bad_state",
+                       "response_body", re.compile(r'(?:(?:past_due|incomplete_expired|paused|canceled).*(?:access|entitlement|feature).*(?:true|enabled|granted))', re.I),
+                       "Entitlement active despite failed/canceled subscription state", 8.5, "critical", "CWE-863"),
+    DetectionSignature(VulnCategory.SUBSCRIPTION_STATE_CONFUSION, "grace_period_exploit",
+                       "response_body", re.compile(r'(?:grace.*period|cancel_at_period_end.*true.*(?:access|feature).*(?:true|enabled))', re.I),
+                       "Access persists through grace period - potential infinite grace exploit", 7.0, "high", "CWE-863"),
+    DetectionSignature(VulnCategory.SEAT_OVERFLOW, "team_seat_limit_bypass",
+                       "response_body", re.compile(r'(?:(?:seats?|members?).*(?:exceed|over|limit|max).*|(?:max_seats|seat_limit).*(?:\d+).*(?:current|active).*(?:\d+))', re.I),
+                       "Team seats may exceed paid limit - race or validation gap", 7.5, "high", "CWE-863"),
+    DetectionSignature(VulnCategory.SEAT_OVERFLOW, "org_member_added_over_limit",
+                       "response_body", re.compile(r'(?:member.*added|invite.*(?:sent|accepted)).*(?:over|exceed|beyond).*(?:limit|quota|plan)', re.I),
+                       "Organization member added beyond plan seat limit", 7.0, "high", "CWE-863"),
 ]
 
 # Header-based signatures

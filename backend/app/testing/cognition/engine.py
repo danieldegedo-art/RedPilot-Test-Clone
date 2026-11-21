@@ -685,6 +685,25 @@ class CognitiveEngine:
                             "description": cve_entry.description[:120],
                         })
 
+        # --- Step 3c: Webhook endpoint discovery feedback ---
+        if self._webhook_forgery_active and llm_insights is not None:
+            try:
+                from app.testing.integrity.webhook_forgery import WebhookEndpointProber
+                prober = WebhookEndpointProber()
+                traffic = [observation] + list(getattr(self, "_recent_observations", []))
+                discovered = prober.discover_webhook_endpoints(traffic)
+                for ep in discovered:
+                    llm_insights.findings.append({
+                        "type": "webhook_endpoint_discovered",
+                        "detail": f"Webhook endpoint discovered: {ep.get('url', '')} (provider: {ep.get('provider', 'unknown')})",
+                        "severity": "high",
+                        "confidence": 0.70,
+                        "category": "webhook_forgery",
+                        "source": "webhook_endpoint_prober",
+                    })
+            except Exception:  # noqa: BLE001
+                pass
+
         # --- Step 4: HYPOTHESIS — Generate hypotheses ---
         hypotheses = self.belief_system.generate_hypotheses(observation)
         self._hypotheses_formed += len(hypotheses)

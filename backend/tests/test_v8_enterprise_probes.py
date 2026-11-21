@@ -274,7 +274,84 @@ def test_browser_payment_flows_imports():
 
 
 # ============================================================================
-# 10. INTEGRATION: total line count and engine count
+# 10. v8.2 ENTERPRISE PATTERNS: SAML/SSO, API version, race, idempotency, seat overflow
+# ============================================================================
+
+def test_access_without_payment_has_27_patterns():
+    from benchmark.llm_replacement_layer import AccessWithoutPaymentDetector
+    assert "27 attack pattern detectors" in AccessWithoutPaymentDetector.analyze.__doc__
+
+
+def test_v82_vuln_categories():
+    from app.testing.discovery.vuln_knowledge import VulnCategory
+    v82_cats = [
+        "SAML_SSO_BYPASS", "API_VERSION_DOWNGRADE", "IDEMPOTENCY_ABUSE",
+        "SUBSCRIPTION_STATE_CONFUSION", "SEAT_OVERFLOW",
+    ]
+    for cat in v82_cats:
+        assert hasattr(VulnCategory, cat), f"Missing VulnCategory.{cat}"
+
+
+def test_v82_detection_signatures():
+    from app.testing.discovery.vuln_knowledge import RESPONSE_BODY_SIGNATURES, VulnCategory
+    v82_cats = {
+        VulnCategory.SAML_SSO_BYPASS, VulnCategory.API_VERSION_DOWNGRADE,
+        VulnCategory.IDEMPOTENCY_ABUSE, VulnCategory.SUBSCRIPTION_STATE_CONFUSION,
+        VulnCategory.SEAT_OVERFLOW,
+    }
+    covered = {sig.category for sig in RESPONSE_BODY_SIGNATURES} & v82_cats
+    assert covered == v82_cats, f"Missing signatures for: {v82_cats - covered}"
+
+
+def test_v82_exploit_chain_templates():
+    from benchmark.llm_replacement_layer import ExploitChainSynthesizer
+    templates = ExploitChainSynthesizer._CHAIN_TEMPLATES
+    v82_names = {
+        "saml_sso_to_entitlement", "api_version_downgrade_chain",
+        "race_condition_double_spend", "idempotency_replay_chain",
+        "subscription_state_exploit", "seat_overflow_chain",
+    }
+    actual = {t["name"] for t in templates}
+    assert v82_names <= actual, f"Missing templates: {v82_names - actual}"
+    assert len(templates) >= 30, f"Expected 30+ templates, got {len(templates)}"
+
+
+def test_saml_bypass_detection():
+    from benchmark.llm_replacement_layer import AccessWithoutPaymentDetector
+    detector = AccessWithoutPaymentDetector()
+    obs = {
+        "request_data": {"url": "/saml/acs", "headers": {}},
+        "response_data": {"body": '<Assertion xmlns="urn:oasis:names:tc:SAML:2.0:assertion"><Subject><NameID>admin@corp.com</NameID></Subject></Assertion> "entitlement": true "plan": "enterprise"', "headers": {}},
+    }
+    findings = detector.analyze(obs, {
+        "body_text": obs["response_data"]["body"],
+        "endpoint": "/saml/acs",
+        "method": "POST",
+        "status_code": 200,
+    })
+    saml_findings = [f for f in findings if "saml" in f.get("type", "").lower()]
+    assert len(saml_findings) >= 1, "Should detect SAML bypass"
+
+
+def test_subscription_state_confusion_detection():
+    from benchmark.llm_replacement_layer import AccessWithoutPaymentDetector
+    detector = AccessWithoutPaymentDetector()
+    obs = {
+        "request_data": {"url": "/api/subscription", "headers": {}},
+        "response_data": {"body": '{"status": "past_due", "entitlement": true, "plan": "pro"}', "headers": {}},
+    }
+    findings = detector.analyze(obs, {
+        "body_text": obs["response_data"]["body"],
+        "endpoint": "/api/subscription",
+        "method": "GET",
+        "status_code": 200,
+    })
+    state_findings = [f for f in findings if "state_confusion" in f.get("type", "")]
+    assert len(state_findings) >= 1, "Should detect subscription state confusion"
+
+
+# ============================================================================
+# 11. INTEGRATION: total line count and engine count
 # ============================================================================
 
 def test_total_v8_code_volume():

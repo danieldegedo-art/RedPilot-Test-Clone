@@ -5283,6 +5283,49 @@ class ExploitChainSynthesizer:
             "severity_upgrade": "critical",
             "kill_chain": "access_without_payment",
         },
+        # --- v8.2: 6 new enterprise chain templates ---
+        {
+            "name": "saml_sso_to_entitlement",
+            "steps": ["saml_bypass", "auth_bypass", "entitlement_bypass"],
+            "description": "Forge unsigned SAML assertion -> impersonate paid user -> free enterprise access",
+            "severity_upgrade": "critical",
+            "kill_chain": "access_without_payment",
+        },
+        {
+            "name": "api_version_downgrade_chain",
+            "steps": ["api_version_downgrade", "auth_bypass", "entitlement_bypass"],
+            "description": "Hit deprecated API version lacking auth -> bypass payment checks -> free access",
+            "severity_upgrade": "critical",
+            "kill_chain": "access_without_payment",
+        },
+        {
+            "name": "race_condition_double_spend",
+            "steps": ["race_condition", "payment_manipulation", "entitlement_bypass"],
+            "description": "Concurrent requests exploit TOCTOU -> double-spend credits or duplicate entitlements",
+            "severity_upgrade": "critical",
+            "kill_chain": "access_without_payment",
+        },
+        {
+            "name": "idempotency_replay_chain",
+            "steps": ["webhook_forge", "idempotency_abuse", "entitlement_bypass"],
+            "description": "Replay webhook events with null idempotency key -> stack credits/entitlements",
+            "severity_upgrade": "critical",
+            "kill_chain": "access_without_payment",
+        },
+        {
+            "name": "subscription_state_exploit",
+            "steps": ["payment_manipulation", "subscription_state_confusion", "entitlement_bypass"],
+            "description": "Trigger payment failure -> subscription enters past_due -> access persists indefinitely",
+            "severity_upgrade": "critical",
+            "kill_chain": "access_without_payment",
+        },
+        {
+            "name": "seat_overflow_chain",
+            "steps": ["race_condition", "seat_overflow", "entitlement_bypass"],
+            "description": "Concurrent seat additions exceed plan limit -> free enterprise seats for extra users",
+            "severity_upgrade": "high",
+            "kill_chain": "access_without_payment",
+        },
     ]
 
     def __init__(self) -> None:
@@ -7990,8 +8033,10 @@ class EnterprisePlatformDetector:
 class AccessWithoutPaymentDetector:
     """Detects access-without-payment attack patterns across enterprise systems.
 
-    Encodes 12 general attack patterns from real-world payment bypasses plus
-    9 Anthropic-specific vectors from confirmed CVEs and threat reports.
+    Encodes 18 general attack patterns (including SAML/SSO bypass, API version
+    downgrade, race condition detection, idempotency replay, subscription state
+    machine confusion, and org seat overflow) plus 9 Anthropic-specific vectors
+    from confirmed CVEs and threat reports.  27 total patterns.
     Every pattern is deterministic -- no LLM calls, no API deps."""
 
     # Patterns that indicate entitlement was granted
@@ -8073,6 +8118,36 @@ class AccessWithoutPaymentDetector:
         re.I,
     )
 
+    # SAML/SSO patterns
+    _SAML_RE = re.compile(
+        r"(SAMLResponse|saml2?:|urn:oasis:names:tc:SAML|<saml:|"
+        r"<Assertion|<AuthnStatement|<Subject>|NameID|"
+        r"AudienceRestriction|InResponseTo|samlp:Response)",
+        re.I,
+    )
+
+    # API version indicators
+    _API_VERSION_RE = re.compile(
+        r"(/api/v[0-9]+/|/v[0-9]+/|\"api_version\"\s*:\s*\"[^\"]+\"|"
+        r"x-api-version|api-version:\s*\d|swagger.*v[0-9]|openapi.*3\.\d)",
+        re.I,
+    )
+
+    # Idempotency key patterns
+    _IDEMPOTENCY_RE = re.compile(
+        r"(idempotency.key|idempotent-key|x-idempotency|"
+        r"\"idempotency_key\"\s*:\s*null|retry-after|duplicate.*event)",
+        re.I,
+    )
+
+    # Race condition indicators in responses
+    _RACE_INDICATOR_RE = re.compile(
+        r"(already.*processed|duplicate.*transaction|concurrent.*modification|"
+        r"optimistic.*lock|version.*conflict|retry.*later|stale.*data|"
+        r"\"balance\":\s*-\d|double.*credit|double.*debit)",
+        re.I,
+    )
+
     def __init__(self) -> None:
         self._findings: list[dict[str, Any]] = []
         self._pattern_hits: dict[str, int] = defaultdict(int)
@@ -8081,7 +8156,7 @@ class AccessWithoutPaymentDetector:
     def analyze(
         self, observation: dict, components: dict, memory: Any = None,
     ) -> list[dict[str, Any]]:
-        """Run all 21 attack pattern detectors against an observation."""
+        """Run all 27 attack pattern detectors against an observation."""
         self._observation_count += 1
         findings: list[dict[str, Any]] = []
 
@@ -8342,6 +8417,160 @@ class AccessWithoutPaymentDetector:
                 "attack_pattern": "AP-2",
             })
             self._pattern_hits["webhook_entitlement"] += 1
+
+        # 13. SAML/SSO auth bypass granting entitlement
+        has_saml = bool(self._SAML_RE.search(body_text))
+        if has_saml and has_entitlement:
+            sig_missing = not bool(re.search(
+                r"SignatureValue|ds:Signature|<Signature", body_text, re.I,
+            ))
+            if sig_missing:
+                findings.append({
+                    "type": "saml_unsigned_assertion_with_entitlement",
+                    "detail": (
+                        "SAML assertion granted entitlement without signature. "
+                        "Unsigned or weakly-signed SAML responses allow assertion "
+                        "manipulation: an attacker modifies NameID, Role, or Audience "
+                        "to impersonate a paid user. Enterprise SSO bypass is the "
+                        "#1 auth-level attack class against companies using IdPs."
+                    ),
+                    "severity": "critical",
+                    "confidence": 0.85,
+                    "category": "access_without_payment",
+                    "cwe": "CWE-347",
+                    "attack_pattern": "AP-13",
+                })
+                self._pattern_hits["saml_bypass"] += 1
+            else:
+                findings.append({
+                    "type": "saml_entitlement_surface",
+                    "detail": (
+                        "SAML SSO flow detected with entitlement grant. Test for: "
+                        "assertion wrapping, signature exclusion, NameID spoofing, "
+                        "replay attacks, and InResponseTo bypass."
+                    ),
+                    "severity": "medium",
+                    "confidence": 0.55,
+                    "category": "access_without_payment",
+                    "cwe": "CWE-287",
+                    "attack_pattern": "AP-13",
+                })
+                self._pattern_hits["saml_surface"] += 1
+
+        # 14. API version downgrade exposing deprecated auth
+        has_api_version = bool(self._API_VERSION_RE.search(url + " " + body_text))
+        if has_api_version and has_entitlement:
+            version_numbers = re.findall(r'/v(\d+)/', url)
+            if version_numbers:
+                min_ver = min(int(v) for v in version_numbers)
+                if min_ver < 2:
+                    findings.append({
+                        "type": "api_version_downgrade_bypass",
+                        "detail": (
+                            f"API version v{min_ver} returned entitlement data. "
+                            "Older API versions often lack auth checks, rate limits, "
+                            "or payment verification added in later versions. "
+                            "An attacker can hit /api/v1/ to bypass controls enforced only on /api/v2+."
+                        ),
+                        "severity": "high",
+                        "confidence": 0.70,
+                        "category": "access_without_payment",
+                        "cwe": "CWE-863",
+                        "attack_pattern": "AP-14",
+                    })
+                    self._pattern_hits["api_version_downgrade"] += 1
+
+        # 15. Missing idempotency allowing replay
+        has_idempotency = bool(self._IDEMPOTENCY_RE.search(
+            body_text + " " + json.dumps(req_headers) + " " + json.dumps(resp_headers),
+        ))
+        null_idempotency = bool(re.search(
+            r"\"idempotency_key\"\s*:\s*null", body_text, re.I,
+        ))
+        if is_webhook and null_idempotency and has_entitlement:
+            findings.append({
+                "type": "missing_idempotency_replay",
+                "detail": (
+                    "Webhook processed with null idempotency key while granting entitlement. "
+                    "An attacker can replay the same webhook event multiple times to stack "
+                    "credits, extend trials, or grant duplicate entitlements. Must track "
+                    "event IDs and reject already-consumed events."
+                ),
+                "severity": "high",
+                "confidence": 0.80,
+                "category": "access_without_payment",
+                "cwe": "CWE-294",
+                "attack_pattern": "AP-15",
+            })
+            self._pattern_hits["idempotency_replay"] += 1
+
+        # 16. Race condition indicators in payment responses
+        has_race_indicator = bool(self._RACE_INDICATOR_RE.search(body_text))
+        if has_race_indicator:
+            findings.append({
+                "type": "race_condition_payment",
+                "detail": (
+                    "Response contains race condition indicators (negative balance, "
+                    "duplicate transaction, concurrent modification). Payment systems "
+                    "without atomic operations are vulnerable to TOCTOU: two requests "
+                    "read the same state, both succeed, resulting in double-spend."
+                ),
+                "severity": "high",
+                "confidence": 0.70,
+                "category": "access_without_payment",
+                "cwe": "CWE-362",
+                "attack_pattern": "AP-16",
+            })
+            self._pattern_hits["race_condition"] += 1
+
+        # 17. Subscription state machine confusion
+        sub_state = re.search(
+            r"\"status\"\s*:\s*\"(past_due|incomplete_expired|paused)\"",
+            body_text, re.I,
+        )
+        if sub_state and has_entitlement:
+            state_val = sub_state.group(1)
+            findings.append({
+                "type": "subscription_state_confusion",
+                "detail": (
+                    f"Subscription in '{state_val}' state but entitlement still active. "
+                    "Subscription state machines have edge cases: past_due should suspend "
+                    "access, incomplete_expired should revoke it, paused should block it. "
+                    "Exploitable by triggering payment failure after entitlement grant."
+                ),
+                "severity": "high",
+                "confidence": 0.80,
+                "category": "access_without_payment",
+                "cwe": "CWE-863",
+                "attack_pattern": "AP-17",
+            })
+            self._pattern_hits["state_confusion"] += 1
+
+        # 18. Org/team seat overflow
+        seat_indicators = bool(re.search(
+            r"(\"seats\"|\"seat_count\"|\"max_seats\"|\"team_size\"|member_limit)",
+            body_text, re.I,
+        ))
+        over_limit = bool(re.search(
+            r"(\"seats\":\s*\d+.*\"max_seats\":\s*\d+|\"members\":\s*\[)",
+            body_text, re.I,
+        ))
+        if seat_indicators and over_limit and has_entitlement:
+            findings.append({
+                "type": "org_seat_overflow",
+                "detail": (
+                    "Team/org seat management endpoint with active entitlement. "
+                    "Seat overflow: invite more members than the paid seat limit. "
+                    "Race condition: two admins add members simultaneously. "
+                    "Enterprise plans charged per-seat can be exploited for free seats."
+                ),
+                "severity": "high",
+                "confidence": 0.65,
+                "category": "access_without_payment",
+                "cwe": "CWE-863",
+                "attack_pattern": "AP-18",
+            })
+            self._pattern_hits["seat_overflow"] += 1
 
         # ===== 9 ANTHROPIC-SPECIFIC ATTACK VECTORS =====
 

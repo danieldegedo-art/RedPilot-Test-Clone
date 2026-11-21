@@ -591,6 +591,39 @@ SPECS: dict[str, OracleSpec] = {
         rule_out_condition="All payload sizes inspected and blocked consistently.",
         stop_condition=_COMMON_STOP + "; no WAF detected in target infrastructure",
         evidence_requirements=_COMMON_EVIDENCE + "; the payload, both sizes, the WAF response at each size"),
+    "PBB-RACE": OracleSpec(
+        invariant="Concurrent requests to payment/subscription endpoints must not cause double-grant via TOCTOU.",
+        baseline_state="Subscription endpoint grants entitlement exactly once per confirmed payment.",
+        identity_and_tenant="R1 (identity submitting concurrent requests with same payment context).",
+        controlled_variable="the number of concurrent identical requests (1 vs 5 simultaneous).",
+        action_sequence="R1 sends 5 concurrent POST requests to subscription/checkout endpoint with same payment context -> count how many grant entitlement -> verify if more than one entitlement was created.",
+        expected_outcome="Exactly one entitlement grant regardless of concurrent request count.",
+        p0_condition="Two or more concurrent requests each independently grant entitlement from a single payment.",
+        rule_out_condition="All concurrent requests correctly serialize; at most one grants entitlement.",
+        stop_condition=_COMMON_STOP + "; no payment/subscription endpoints discovered",
+        evidence_requirements=_COMMON_EVIDENCE + "; the concurrent request count, number of success responses, number of entitlement grants"),
+    "PBB-SAML": OracleSpec(
+        invariant="SAML/SSO endpoints must reject unsigned, assertion-wrapped, replayed, and subject-manipulated responses.",
+        baseline_state="SAML ACS endpoint validates XML signatures, assertion integrity, and replay protection.",
+        identity_and_tenant="S1 (identity submitting forged SAML responses).",
+        controlled_variable="the SAML response integrity (valid signature vs unsigned vs replayed vs forged NameID).",
+        action_sequence="S1 submits unsigned SAML response with forged admin NameID -> observe acceptance -> S1 replays same assertion -> observe if accepted again.",
+        expected_outcome="All forged/unsigned/replayed SAML responses rejected.",
+        p0_condition="Unsigned SAML assertion with forged NameID is accepted and creates an authenticated session.",
+        rule_out_condition="All SAML manipulation variants rejected with appropriate error responses.",
+        stop_condition=_COMMON_STOP + "; no SAML/SSO endpoints discovered",
+        evidence_requirements=_COMMON_EVIDENCE + "; the forged SAML response, the endpoint, the HTTP status and response body"),
+    "PBB-APIVER": OracleSpec(
+        invariant="Deprecated API versions must enforce the same auth and rate-limit controls as the current version.",
+        baseline_state="Current API version (e.g. v2/v3) enforces authentication and rate limits.",
+        identity_and_tenant="A1 (unauthenticated identity testing version-downgraded paths).",
+        controlled_variable="the API version prefix (current vs deprecated) on the same logical endpoint.",
+        action_sequence="A1 requests current-version endpoint -> verify auth required (401/403) -> A1 requests same endpoint with version decremented to v1 -> observe if auth bypassed.",
+        expected_outcome="Deprecated API versions enforce identical auth controls as current version.",
+        p0_condition="Deprecated API version serves protected resource without authentication while current version requires it.",
+        rule_out_condition="All API versions enforce consistent authentication and authorization.",
+        stop_condition=_COMMON_STOP + "; no versioned API paths discovered",
+        evidence_requirements=_COMMON_EVIDENCE + "; the current and deprecated paths, HTTP status codes for each, response body differences"),
 }
 
 EXPERIMENT_CLASSES: dict[str, str] = {
@@ -610,6 +643,7 @@ EXPERIMENT_CLASSES: dict[str, str] = {
     "PBB-GQL": "graphql_alias_batching", "PBB-JWTF": "jwt_algorithm_confusion",
     "PBB-SMUG": "http_request_smuggling", "PBB-PPOLL": "prototype_pollution",
     "PBB-CACHE": "cache_key_poisoning", "PBB-WAFB": "waf_body_limit_bypass",
+    "PBB-RACE": "payment_race_condition", "PBB-SAML": "saml_sso_bypass", "PBB-APIVER": "api_version_downgrade",
 }
 
 # ZR-006: the identity/tenant SCOPE each experiment probes. The smallest
@@ -632,6 +666,7 @@ SCOPE_BY_HYPOTHESIS: dict[str, str] = {
     "PBB-GQL": "graphql_abuse", "PBB-JWTF": "auth_bypass",
     "PBB-SMUG": "infrastructure_attack", "PBB-PPOLL": "input_fuzzing",
     "PBB-CACHE": "infrastructure_attack", "PBB-WAFB": "defensive_bypass",
+    "PBB-RACE": "payment_race", "PBB-SAML": "auth_bypass", "PBB-APIVER": "api_version_bypass",
 }
 
 
