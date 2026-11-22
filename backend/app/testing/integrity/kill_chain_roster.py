@@ -146,7 +146,7 @@ FLEET_SIZE = len(ROSTER) + len(KNOWN_GAPS)
 
 _BY_ID = {a.agent_id: a for a in ROSTER}
 assert len(_BY_ID) == len(ROSTER), "duplicate agent id in the roster"
-assert FLEET_SIZE == 67, f"declared fleet size should be 67, got {FLEET_SIZE}"
+assert FLEET_SIZE == 65, f"declared fleet size should be 65, got {FLEET_SIZE}"
 
 
 def roster() -> tuple[Agent, ...]:

@@ -273,9 +273,11 @@ async function runScan(url, event) {
             send("scan-progress", { type: "divider" });
             send("scan-progress", { type: "chrome", text: `Scan ${status.toUpperCase()} — ${results.length} total | ${fails.length} FAIL | ${warns.length} WARNING | ${passes.length} PASS` });
 
+            // Only trigger proof-of-bypass for CONFIRMED_P0 from the payment integrity engine (PI-* test IDs).
+            // Generic functional/integration test failures (FUNC-*, INTEG-*) are NOT access-without-payment flaws —
+            // they just mean guessed API endpoints returned errors (e.g. 403 from a WAF).
             const accessFlaws = fails.filter((f) =>
-              f.name && (f.name.toLowerCase().includes("access") || f.name.toLowerCase().includes("payment") ||
-                f.test_case_id === "PBB-U" || f.test_case_id === "PBB-OPEN")
+              f.test_case_id && f.test_case_id.startsWith("PI-")
             );
 
             if (accessFlaws.length > 0) {
@@ -312,8 +314,11 @@ async function runScan(url, event) {
 
 ipcMain.handle("start-backend", startBackend);
 ipcMain.handle("has-session", () => hasSession());
-ipcMain.handle("clear-session", () => {
+ipcMain.handle("clear-session", async () => {
   if (fs.existsSync(SESSION_STATE_PATH)) fs.unlinkSync(SESSION_STATE_PATH);
+  // Also clear Electron partition cookies so a fresh login starts clean
+  try { await session.fromPartition(LOGIN_PARTITION).clearStorageData(); } catch {}
+  try { await session.fromPartition("persist:redpilot-proof").clearStorageData(); } catch {}
   return true;
 });
 ipcMain.handle("open-login-browser", (_, url) => openLoginBrowser(url));
