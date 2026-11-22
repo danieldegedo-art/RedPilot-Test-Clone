@@ -379,7 +379,7 @@ window.redpilot.onScanProof(async (data) => {
   print("Type /help for all commands.", "line-dim");
   printBlank();
 
-  setIdle();
+  if (state === "BOOTING") setIdle();
 })();
 
 // Keep focus on input
