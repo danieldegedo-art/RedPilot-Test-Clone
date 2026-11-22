@@ -10,12 +10,29 @@ from app.testing.enums import ResultStatus, RunStatus, TestCategory, TestScope
 from app.testing.schema_version import SCHEMA_VERSION
 
 
+class ReconNetworkCall(BaseModel):
+    """A single network call captured by Electron's native browser during recon."""
+    method: str = "GET"
+    url: str = ""
+    resource_type: str = ""
+
+
 class ScanRequest(BaseModel):
     """TEST CLONE: dead-simple cold-domain input. Paste a URL, press run.
-    Optionally provide a twin_url for dual-target mode: all probes run against both."""
+    Optionally provide a twin_url for dual-target mode: all probes run against both.
+
+    When the Electron desktop app performs recon before submitting, it populates
+    recon_html / recon_network_calls / recon_cookie_names with data captured by
+    a native BrowserWindow (which passes Cloudflare, unlike Playwright headless).
+    The backend ReconModule uses this pre-fetched data instead of launching its
+    own Playwright crawl."""
     url: HttpUrl
     twin_url: HttpUrl | None = None
     session_cookies: str | None = None
+    recon_html: str | None = None
+    recon_network_calls: list[ReconNetworkCall] | None = None
+    recon_cookie_names: list[str] | None = None
+    user_agent: str | None = None
 
 
 class RunCreateRequest(BaseModel):

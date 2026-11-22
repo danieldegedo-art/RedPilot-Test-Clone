@@ -71,6 +71,7 @@ class RunSettings:
     # settings table -- no DB migration needed. It contains no secrets by construction
     # (identity tokens are referenced by environment-variable NAME only).
     integrity_brief: dict[str, Any] | None = None
+    electron_recon: dict[str, Any] | None = None
 
 
 @dataclass

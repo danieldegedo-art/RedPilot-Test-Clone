@@ -11,6 +11,13 @@ same pass automatically target the real, discovered routes instead of the
 built-in defaults. A manual override already configured in Settings always
 wins: recon fills gaps, it never overwrites a route you've set by hand.
 
+When Electron pre-fetched recon data is available (passed via
+context.shared_state["electron_recon"]), this module uses that data instead
+of launching Playwright.  Electron's native BrowserWindow passes Cloudflare
+and other WAFs that block Playwright's headless Chromium, so the pre-fetched
+data contains the REAL network traffic and page HTML the target serves to a
+normal browser.
+
 Also detects third-party payment-provider integration (currently: Stripe
 Checkout -- see recon/stripe_detector.py) from the same crawl signals, and
 stashes the finding in `context.shared_state["stripe_detection"]` for the
@@ -58,7 +65,9 @@ adding.
 from __future__ import annotations
 
 import asyncio
+import re as _re
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 from app.testing.base import BaseTestModule
 from app.testing.dynamic_values import DiscoveredValues, build_discovered_values
@@ -73,6 +82,7 @@ from app.testing.recon.path_prober import ProbeHit, probe_system_paths
 from app.testing.recon.stripe_detector import StripeDetection, detect_stripe
 
 _MAX_SCRIPTS_SCANNED = 25  # keeps a single run bounded even on script-heavy SPAs
+_SCRIPT_SRC_RE = _re.compile(r'<script[^>]+src=["\']([^"\']+)["\']', _re.IGNORECASE)
 
 
 class ReconModule(BaseTestModule):
@@ -80,17 +90,65 @@ class ReconModule(BaseTestModule):
     display_name = "Application-Layer Recon (Endpoint Discovery)"
     category = TestCategory.RECON
 
+    def _build_crawl_result_from_electron(self, recon: dict) -> CrawlResult:
+        """Convert Electron-captured recon data into a CrawlResult so the
+        rest of this module's pipeline (endpoint mapping, Stripe detection,
+        function map, dynamic values) works identically whether the data
+        came from Playwright or Electron."""
+        base_origin = self.context.base_url.rstrip("/")
+
+        discovered: list[DiscoveredCall] = []
+        network_hosts: set[str] = set()
+        for call in recon.get("network_calls", []):
+            url = call.get("url", "")
+            parsed = urlparse(url)
+            if parsed.hostname:
+                network_hosts.add(parsed.hostname)
+            discovered.append(DiscoveredCall(
+                method=call.get("method", "GET"),
+                path=parsed.path or "/",
+                source="network",
+            ))
+
+        html = recon.get("html", "")
+        script_urls: list[str] = []
+        for match in _SCRIPT_SRC_RE.finditer(html):
+            src = match.group(1)
+            if src.startswith("//"):
+                src = "https:" + src
+            elif src.startswith("/"):
+                src = base_origin + src
+            if base_origin in src or src.startswith(base_origin):
+                script_urls.append(src)
+
+        cookie_names = set(recon.get("cookie_names", []))
+
+        return CrawlResult(
+            discovered=discovered,
+            script_urls=script_urls[:_MAX_SCRIPTS_SCANNED],
+            pages_visited=[self.context.entry_url],
+            errors=[],
+            cookie_names=cookie_names,
+            network_hosts=network_hosts,
+            html_content=html,
+        )
+
     async def run(self) -> None:
         started = datetime.now(timezone.utc)
-        try:
-            result = await crawl(
-                self.context.entry_url,
-                timeout_seconds=self.context.settings.timeout_seconds,
-                extra_headers=self.context.settings.custom_headers,
-            )
-        except Exception as exc:  # Playwright/browser not installed, target unreachable, unexpected API surface, etc.
-            await self._emit_crawl_failed(started, exc)
-            return
+
+        electron_recon = self.context.shared_state.get("electron_recon")
+        if electron_recon:
+            result = self._build_crawl_result_from_electron(electron_recon)
+        else:
+            try:
+                result = await crawl(
+                    self.context.entry_url,
+                    timeout_seconds=self.context.settings.timeout_seconds,
+                    extra_headers=self.context.settings.custom_headers,
+                )
+            except Exception as exc:
+                await self._emit_crawl_failed(started, exc)
+                return
 
         # Fetch every same-origin script ONCE; both endpoint extraction and
         # Stripe detection run against the same fetched source text.
