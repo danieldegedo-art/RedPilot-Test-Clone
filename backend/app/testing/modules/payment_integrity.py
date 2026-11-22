@@ -234,8 +234,12 @@ class PaymentIntegrityModule(BaseTestModule):
                         pass
                 plans[plan_name] = {"prices": {currency: price}}
 
+        # Remove free-tier plans (price <= 0): cheapest_plan must be a PAID tier
+        # so primary_feature() can match features that require it.
+        plans = {k: v for k, v in plans.items()
+                 if any(p > 0 for p in v.get("prices", {}).values())}
         if not plans:
-            plans = {"free": {"prices": {currency: 0.0}}, "pro": {"prices": {currency: 20.0}}}
+            plans = {"pro": {"prices": {currency: 20.0}}}
 
         # --- Define paid features as protected surfaces ---
         # The upgrade page itself is a feature gate indicator
@@ -261,7 +265,7 @@ class PaymentIntegrityModule(BaseTestModule):
             for feat_name, pattern in _FEATURE_PATTERNS:
                 if feat_name not in features and pattern.search(path):
                     plan_keys = list(plans.keys())
-                    cheapest_paid = plan_keys[1] if len(plan_keys) > 1 else plan_keys[0]
+                    cheapest_paid = plan_keys[0]
                     features[feat_name] = {
                         "method": call.get("method", "GET").upper(),
                         "path": path,
@@ -275,7 +279,7 @@ class PaymentIntegrityModule(BaseTestModule):
         # If we found upgrade/subscription endpoints, add the upgrade page as a feature
         if "start_checkout" in surface or "subscription_view" in surface:
             plan_keys = list(plans.keys())
-            cheapest_paid = plan_keys[1] if len(plan_keys) > 1 else plan_keys[0]
+            cheapest_paid = plan_keys[0]
             priciest = plan_keys[-1] if plan_keys else "pro"
             features["subscription_access"] = {
                 "method": "GET",
@@ -300,6 +304,8 @@ class PaymentIntegrityModule(BaseTestModule):
         # --- Build identities: clean visitor first (K), authenticated second (V1) ---
         # Order matters: IdentityProvisioner walks the pool in insertion order.
         # K (clean/unauthenticated) must come first, V1 (authenticated) second.
+        # After the two control identities, add probe identities that reuse the
+        # same tokens so enterprise probes can acquire without exhausting the pool.
         identities["clean_visitor"] = {
             "role": "visitor",
             "tenant": "tenant_clean",
@@ -312,6 +318,11 @@ class PaymentIntegrityModule(BaseTestModule):
                 "tenant": "tenant_primary",
                 "token_env": "REDPILOT_SESSION_COOKIE",
             }
+            for _i in range(1, 21):
+                _role = "customer" if _i % 2 == 1 else "visitor"
+                _tenant = "tenant_primary" if _role == "customer" else "tenant_clean"
+                _env = "REDPILOT_SESSION_COOKIE" if _role == "customer" else "REDPILOT_CLEAN_TOKEN"
+                identities[f"probe_{_i}"] = {"role": _role, "tenant": _tenant, "token_env": _env}
 
         logger.info(
             "auto-brief: %d surface ops, %d features, %d plans, %d identities from %d network calls",
@@ -686,7 +697,10 @@ class PaymentIntegrityModule(BaseTestModule):
         # bare placeholder for clean/unauthenticated identity.
         _tokens: dict[str, str] = {"clean_visitor": "no-auth"}
         if self.context.session_cookies:
-            _tokens["customer_session"] = f"cookie:{self.context.session_cookies}"
+            _c = f"cookie:{self.context.session_cookies}"
+            _tokens["customer_session"] = _c
+            for _i in range(1, 21):
+                _tokens[f"probe_{_i}"] = _c if _i % 2 == 1 else "no-auth"
         try:
             brief = ExecutionBrief.from_dict(raw, tokens=_tokens)
         except BriefRejected as exc:
