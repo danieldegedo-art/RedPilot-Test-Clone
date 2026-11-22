@@ -218,11 +218,15 @@ async def _execute_and_persist(runner: TestRunner) -> None:
 
 
 @router.post("", response_model=RunSummarySchema, status_code=202)
-async def start_run(payload: RunCreateRequest, session: AsyncSession = Depends(get_session), twin_url: str | None = None, session_cookies: str | None = None) -> RunSummarySchema:
+async def start_run(payload: RunCreateRequest, session: AsyncSession = Depends(get_session), twin_url: str | None = None, session_cookies: str | None = None, electron_recon: dict | None = None, user_agent: str | None = None) -> RunSummarySchema:
     loaded_settings = await load_settings(session)
     run_settings = to_run_settings(loaded_settings)
     if session_cookies:
         run_settings.custom_headers["Cookie"] = session_cookies
+    if user_agent:
+        run_settings.user_agent = user_agent
+    if electron_recon:
+        run_settings.electron_recon = electron_recon
     # Customer-declared integrity contract: a plain 0600 file, never a DB column (no migration). None => the
     # payment_integrity module sends no traffic and only reports the capability gaps.
     run_settings.integrity_brief = get_control_adapter().load_brief(app_settings.integrity_brief_path)
@@ -295,7 +299,20 @@ async def scan_cold_domain(payload: ScanRequest, session: AsyncSession = Depends
         scope=TestScope.FULL_REGRESSION,
         extra_allowed_hosts=[],
     )
-    return await start_run(run_request, session, twin_url=str(payload.twin_url) if payload.twin_url else None, session_cookies=payload.session_cookies)
+    electron_recon = None
+    if payload.recon_html or payload.recon_network_calls:
+        electron_recon = {
+            "html": payload.recon_html or "",
+            "network_calls": [c.model_dump() for c in (payload.recon_network_calls or [])],
+            "cookie_names": payload.recon_cookie_names or [],
+        }
+    return await start_run(
+        run_request, session,
+        twin_url=str(payload.twin_url) if payload.twin_url else None,
+        session_cookies=payload.session_cookies,
+        electron_recon=electron_recon,
+        user_agent=payload.user_agent,
+    )
 
 
 @router.get("", response_model=list[RunSummarySchema])

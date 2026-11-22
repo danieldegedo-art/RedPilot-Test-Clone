@@ -118,7 +118,7 @@ class CognitiveCache:
         )
 
         # Status-Code-Bereich
-        status_range = f"{status_code // 100}xx" if status_code > 0 else "0"
+        status_range = f"{status_code // 100}xx" if status_code and status_code > 0 else "0"
 
         key_data = f"{method}:{endpoint_pattern}:{status_range}:{check_type}:{severity}"
         return hashlib.md5(key_data.encode()).hexdigest()

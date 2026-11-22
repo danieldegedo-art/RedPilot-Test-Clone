@@ -155,6 +155,8 @@ class TestRunner:
             feature_registry=self._feature_registry,
             twin_url=self._twin_url,
         )
+        if self.settings.electron_recon:
+            context.shared_state["electron_recon"] = self.settings.electron_recon
 
         # A module planned for this scope but absent from the enabled-modules
         # setting used to vanish silently (Phase-0 finding G6). It is now an

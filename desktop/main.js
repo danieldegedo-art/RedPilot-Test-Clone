@@ -9,6 +9,7 @@ const BACKEND_DIR = path.join(__dirname, "..", "backend");
 const API_BASE = "http://127.0.0.1:8420";
 const STATE_DIR = path.join(app.getPath("userData"), "redpilot");
 const SESSION_STATE_PATH = path.join(STATE_DIR, "session_state.json");
+const RECON_PARTITION = "persist:redpilot-recon";
 
 let mainWindow = null;
 let backendProcess = null;
@@ -52,7 +53,7 @@ function httpPost(url, body) {
     const data = JSON.stringify(body);
     const req = http.request({
       hostname: parsed.hostname, port: parsed.port, path: parsed.pathname,
-      method: "POST", timeout: 30000,
+      method: "POST", timeout: 60000,
       headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) },
     }, (res) => {
       let buf = "";
@@ -215,6 +216,97 @@ async function openProofBrowser(url) {
   });
 }
 
+// --- Electron-based recon (bypasses WAF/Cloudflare) ---
+
+async function electronRecon(url, send) {
+  if (!hasSession()) return null;
+
+  const state = JSON.parse(fs.readFileSync(SESSION_STATE_PATH, "utf-8"));
+  const reconSession = session.fromPartition(RECON_PARTITION);
+
+  // Clear stale data from previous recons
+  try { await reconSession.clearStorageData(); } catch {}
+
+  // Inject saved cookies into the Electron session
+  for (const c of (state.cookies || [])) {
+    try {
+      const domain = (c.domain || "").replace(/^\./, "");
+      await reconSession.cookies.set({
+        url: `${c.secure ? "https" : "http"}://${domain}${c.path || "/"}`,
+        name: c.name,
+        value: c.value,
+        domain: c.domain,
+        path: c.path || "/",
+        secure: !!c.secure,
+        httpOnly: !!c.httpOnly,
+        ...(c.expires && c.expires > 0 ? { expirationDate: c.expires } : {}),
+      });
+    } catch {}
+  }
+
+  const networkCalls = [];
+  const SKIP_TYPES = new Set(["image", "font", "stylesheet", "media"]);
+
+  // Intercept network requests to discover API endpoints
+  reconSession.webRequest.onBeforeRequest({ urls: ["*://*/*"] }, (details, callback) => {
+    if (!SKIP_TYPES.has(details.resourceType)) {
+      try {
+        const parsed = new URL(details.url);
+        networkCalls.push({
+          method: details.method || "GET",
+          url: details.url,
+          resource_type: details.resourceType || "other",
+        });
+      } catch {}
+    }
+    callback({});
+  });
+
+  const reconWindow = new BrowserWindow({
+    show: false,
+    width: 1280,
+    height: 900,
+    webPreferences: {
+      partition: RECON_PARTITION,
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+
+  try {
+    send("scan-progress", { type: "chrome", text: "Electron recon: loading target page..." });
+    await reconWindow.loadURL(url);
+
+    // Wait for lazy/deferred API requests to fire
+    send("scan-progress", { type: "status", text: "Electron recon: capturing network traffic (6s)..." });
+    await new Promise((r) => setTimeout(r, 6000));
+
+    const html = await reconWindow.webContents.executeJavaScript(
+      "document.documentElement.outerHTML"
+    );
+    const userAgent = await reconWindow.webContents.executeJavaScript(
+      "navigator.userAgent"
+    );
+
+    // Capture cookies set by the page (for Stripe detection etc.)
+    let cookieNames = [];
+    try {
+      const cookies = await reconSession.cookies.get({ url });
+      cookieNames = cookies.map((c) => c.name);
+    } catch {}
+
+    reconWindow.close();
+    reconSession.webRequest.onBeforeRequest(null);
+
+    return { html, networkCalls, userAgent, cookieNames };
+  } catch (err) {
+    try { reconWindow.close(); } catch {}
+    try { reconSession.webRequest.onBeforeRequest(null); } catch {}
+    send("scan-progress", { type: "detail", text: `Electron recon error: ${err.message}` });
+    return null;
+  }
+}
+
 // --- Scan: run engine via backend API ---
 
 async function runScan(url, event) {
@@ -229,7 +321,20 @@ async function runScan(url, event) {
   };
 
   try {
-    send("scan-progress", { type: "status", text: "Sending scan request..." });
+    // Electron recon: use native BrowserWindow to bypass Cloudflare/WAF
+    send("scan-progress", { type: "chrome", text: "Starting Electron recon (bypasses WAF)..." });
+    const recon = await electronRecon(url, send);
+    if (recon) {
+      send("scan-progress", { type: "pass", text: `Recon captured ${recon.networkCalls.length} network call(s) + page HTML` });
+      body.recon_html = recon.html;
+      body.recon_network_calls = recon.networkCalls;
+      body.recon_cookie_names = recon.cookieNames;
+      if (recon.userAgent) body.user_agent = recon.userAgent;
+    } else {
+      send("scan-progress", { type: "detail", text: "Electron recon skipped (no session or error)" });
+    }
+
+    send("scan-progress", { type: "status", text: "Sending scan request to engine..." });
     const startResp = await httpPost(`${API_BASE}/api/v1/runs/scan`, body);
     if (startResp.status !== 202) {
       send("scan-progress", { type: "error", text: `Server returned ${startResp.status}: ${startResp.body}` });
@@ -296,9 +401,11 @@ async function runScan(url, event) {
             send("scan-progress", { type: "divider" });
             send("scan-progress", { type: "chrome", text: `Scan ${status.toUpperCase()} — ${results.length} total | ${fails.length} FAIL | ${warns.length} WARNING | ${passes.length} PASS` });
 
+            // Only trigger proof-of-bypass for CONFIRMED_P0 from the payment integrity engine (PI-* test IDs).
+            // Generic functional/integration test failures (FUNC-*, INTEG-*) are NOT access-without-payment flaws —
+            // they just mean guessed API endpoints returned errors (e.g. 403 from a WAF).
             const accessFlaws = fails.filter((f) =>
-              f.name && (f.name.toLowerCase().includes("access") || f.name.toLowerCase().includes("payment") ||
-                f.test_case_id === "PBB-U" || f.test_case_id === "PBB-OPEN")
+              f.test_case_id && f.test_case_id.startsWith("PI-")
             );
 
             if (accessFlaws.length > 0) {
@@ -335,8 +442,11 @@ async function runScan(url, event) {
 
 ipcMain.handle("start-backend", startBackend);
 ipcMain.handle("has-session", () => hasSession());
-ipcMain.handle("clear-session", () => {
+ipcMain.handle("clear-session", async () => {
   if (fs.existsSync(SESSION_STATE_PATH)) fs.unlinkSync(SESSION_STATE_PATH);
+  // Clear Electron partition cookies so a fresh login starts clean
+  try { await session.fromPartition(RECON_PARTITION).clearStorageData(); } catch {}
+  try { await session.fromPartition("persist:redpilot-proof").clearStorageData(); } catch {}
   return true;
 });
 ipcMain.handle("open-login-browser", (_, url) => openLoginBrowser(url));

@@ -25,7 +25,7 @@ const LOGO_TEXT = [
 ].join("\n");
 
 const SUBTITLE = "Payment Security QA — Zero Trust Engine";
-const VERSION = "v9.0 — 36 engines | 34 AWP patterns | 11 PBB probes | 37 tests";
+const VERSION = "v9.1 — 36 engines | 34 AWP patterns | 11 PBB probes | 65 agents";
 
 function renderBanner() {
   banner.innerHTML = "";
