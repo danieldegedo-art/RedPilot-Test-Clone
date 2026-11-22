@@ -297,13 +297,20 @@ class PaymentIntegrityModule(BaseTestModule):
                 }
                 declared_paid.append("premium_tier_access")
 
-        # --- Build identity from session cookies ---
+        # --- Build identities: clean visitor first (K), authenticated second (V1) ---
+        # Order matters: IdentityProvisioner walks the pool in insertion order.
+        # K (clean/unauthenticated) must come first, V1 (authenticated) second.
+        identities["clean_visitor"] = {
+            "role": "visitor",
+            "tenant": "tenant_clean",
+            "token_env": "REDPILOT_CLEAN_TOKEN",
+        }
         session_cookies = self.context.session_cookies
         if session_cookies:
             identities["customer_session"] = {
                 "role": "customer",
                 "tenant": "tenant_primary",
-                "token_env": None,
+                "token_env": "REDPILOT_SESSION_COOKIE",
             }
 
         logger.info(
@@ -314,8 +321,8 @@ class PaymentIntegrityModule(BaseTestModule):
         return {
             "authorization_ref": "redpilot-auto-recon",
             "authorized_by": "redpilot-electron-recon",
-            "environment": "sandbox",
-            "target_kind": "customer_sandbox",
+            "environment": "production",
+            "target_kind": "production",
             "allowed_hosts": [host, f"*.{host}"],
             "surface": surface,
             "features": features,
@@ -329,7 +336,7 @@ class PaymentIntegrityModule(BaseTestModule):
                 "quota_probe_cap": 100,
             },
             "declared_paid_features": declared_paid,
-            "allow_signup": True,
+            "allow_signup": False,
         }
 
     async def _run_autonomous_agents(
@@ -675,8 +682,13 @@ class PaymentIntegrityModule(BaseTestModule):
                                          recommendation="Fix the brief file. No experiment was run and NO request was sent to the target."))
             await self.emit(self._gap_result(capability_gaps(None, None), "The declared brief is unreadable"))
             return
+        # Build tokens map: cookie-prefixed session for authenticated identity,
+        # bare placeholder for clean/unauthenticated identity.
+        _tokens: dict[str, str] = {"clean_visitor": "no-auth"}
+        if self.context.session_cookies:
+            _tokens["customer_session"] = f"cookie:{self.context.session_cookies}"
         try:
-            brief = ExecutionBrief.from_dict(raw)
+            brief = ExecutionBrief.from_dict(raw, tokens=_tokens)
         except BriefRejected as exc:
             await self.emit(self._result("PI-BRIEF-INVALID", "Execution Brief rejected (fail closed)", ResultStatus.ERROR, expected="A valid, authorised, customer-level, sandbox-scoped Execution Brief.",
                                          actual="; ".join(str(r) for r in exc.reasons), params={"reasons": [r.__dict__ for r in exc.reasons]},

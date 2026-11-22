@@ -135,8 +135,11 @@ class CustomerSession:
 
     async def _send(self, op_name: str, label: str, method: str, path_template: str, path: str, *, json_body: Any, params: dict[str, Any] | None, uses_token: bool, extra_headers: dict[str, str] | None = None) -> CallResult:
         headers = {"Accept": "application/json"}
-        if uses_token and self._token:
-            headers["Authorization"] = f"Bearer {self._token}"
+        if uses_token and self._token and self._token != "no-auth":
+            if self._token.startswith("cookie:"):
+                headers["Cookie"] = self._token[7:]
+            else:
+                headers["Authorization"] = f"Bearer {self._token}"
         if extra_headers:
             headers.update(extra_headers)
         started = time.perf_counter()

