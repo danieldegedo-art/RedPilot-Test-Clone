@@ -12,7 +12,7 @@ class Settings(BaseSettings):
 
     app_name: str = "Payment QA Framework"
     api_v1_prefix: str = "/api/v1"
-    database_url: str = "postgresql+asyncpg://qa_user:qa_password@localhost:5433/payment_qa"
+    database_url: str = "sqlite+aiosqlite:///./redpilot.db"
     default_timeout_seconds: float = 30.0
     default_user_agent: str = "PaymentQA-Suite/1.0"
     host: str = "127.0.0.1"
