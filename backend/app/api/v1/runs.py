@@ -348,12 +348,13 @@ async def get_run(
     )
 
 
-@router.delete("/{run_id}", status_code=204)
-async def cancel_run(run_id: str) -> None:
+@router.delete("/{run_id}", status_code=204, response_class=Response)
+async def cancel_run(run_id: str) -> Response:
     runner = active_runners.get(run_id)
     if runner is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id} is not currently active")
     runner.cancel()
+    return Response(status_code=204)
 
 
 @router.get("/{run_id}/export")
