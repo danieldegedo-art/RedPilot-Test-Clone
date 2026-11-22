@@ -20,15 +20,22 @@ _RULES: list[tuple[str, str, re.Pattern[str]]] = [
     ("create_payment", "POST", re.compile(r"/(payments?|charges?)/?$", re.IGNORECASE)),
     ("get_payment", "GET", re.compile(r"/(payments?|charges?)/[^/]+/?$", re.IGNORECASE)),
     ("create_subscription", "POST", re.compile(r"/subscriptions?/?$", re.IGNORECASE)),
+    ("create_subscription", "POST", re.compile(r"/subscription/checkout_session", re.IGNORECASE)),
     ("get_subscription", "GET", re.compile(r"/subscriptions?/[^/]+/?$", re.IGNORECASE)),
+    ("get_subscription", "GET", re.compile(r"/subscription/checkout_capabilities", re.IGNORECASE)),
     ("cancel_subscription", "POST", re.compile(r"/subscriptions?/[^/]+/cancel/?$", re.IGNORECASE)),
     ("create_refund", "POST", re.compile(r"/refunds?/?$", re.IGNORECASE)),
     ("get_refund", "GET", re.compile(r"/refunds?/[^/]+/?$", re.IGNORECASE)),
     ("create_cart", "POST", re.compile(r"/cart/?$", re.IGNORECASE)),
     ("create_checkout_session", "POST", re.compile(r"/checkout/?$", re.IGNORECASE)),
+    ("create_checkout_session", "POST", re.compile(r"/checkout_session/?$", re.IGNORECASE)),
     ("list_products", "GET", re.compile(r"/products?/?$", re.IGNORECASE)),
+    ("list_products", "GET", re.compile(r"/plan_pricing|/individual_plan_pricing", re.IGNORECASE)),
+    ("list_products", "POST", re.compile(r"/plan_pricing|/individual_plan_pricing", re.IGNORECASE)),
     ("get_product", "GET", re.compile(r"/products?/[^/]+/?$", re.IGNORECASE)),
     ("webhook_test", "POST", re.compile(r"/webhooks?/", re.IGNORECASE)),
+    ("get_billing", "GET", re.compile(r"/billing/", re.IGNORECASE)),
+    ("get_billing", "POST", re.compile(r"/billing/", re.IGNORECASE)),
 ]
 
 

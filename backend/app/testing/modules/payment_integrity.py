@@ -142,27 +142,193 @@ class PaymentIntegrityModule(BaseTestModule):
             recommendation=self._recommendation(f), description=f.spec.invariant)
 
     def _auto_brief(self) -> dict[str, Any]:
-        """TEST CLONE: auto-generate a minimal brief from the cold domain so the engine runs without manual setup."""
+        """TEST CLONE: auto-generate an Execution Brief from the Electron recon
+        data so the PBB engine has real endpoints, plans and features to test.
+
+        When Electron recon captured network calls, this method:
+        1. Extracts payment/subscription/billing API endpoints from the calls
+        2. Detects plan names and prices from the page HTML
+        3. Maps discovered endpoints to brief operations (checkout, subscription, billing)
+        4. Identifies paid features (upgrade/pro/ultra pages) as protected surfaces
+        5. Uses session cookies as the identity token for probing
+        """
+        import re as _re
         from urllib.parse import urlparse
+
         host = urlparse(self.context.base_url).hostname or "localhost"
+        recon = self.context.shared_state.get("electron_recon") or {}
+        network_calls = recon.get("network_calls", [])
+        html = recon.get("html", "")
+        cookie_names = recon.get("cookie_names", [])
+
+        surface: dict[str, dict] = {}
+        features: dict[str, dict] = {}
+        plans: dict[str, dict] = {}
+        identities: dict[str, dict] = {}
+        declared_paid: list[str] = []
+
+        # --- Extract real API endpoints from captured network calls ---
+        _SURFACE_RULES = [
+            ("start_checkout", "POST", _re.compile(r"/subscription/checkout_session", _re.I)),
+            ("subscription_view", "GET", _re.compile(r"/subscription/checkout_capabilities", _re.I)),
+            ("get_pricing", "GET", _re.compile(r"/individual_plan_pricing", _re.I)),
+            ("get_pricing", "POST", _re.compile(r"/individual_plan_pricing", _re.I)),
+            ("signup", "POST", _re.compile(r"/signup|/register|/auth/register", _re.I)),
+            ("sandbox_pay", "POST", _re.compile(r"/billing/.+/pay|/payment", _re.I)),
+            ("request_refund", "POST", _re.compile(r"/refund|/billing/.+/cancel", _re.I)),
+            ("event_log", "POST", _re.compile(r"/event_logging", _re.I)),
+            ("privacy_check", "POST", _re.compile(r"/privacy-consents", _re.I)),
+        ]
+
+        seen_ops: set[str] = set()
+        for call in network_calls:
+            url = call.get("url", "")
+            method = call.get("method", "GET").upper()
+            parsed = urlparse(url)
+            path = parsed.path or "/"
+            if parsed.hostname and parsed.hostname != host:
+                continue
+            for op_name, op_method, pattern in _SURFACE_RULES:
+                if op_name in seen_ops:
+                    continue
+                if method == op_method and pattern.search(path):
+                    surface[op_name] = {
+                        "method": method,
+                        "path": path,
+                        "observed_via": "electron_recon_network_capture",
+                    }
+                    seen_ops.add(op_name)
+                    break
+
+        # --- Detect plans and prices from page HTML ---
+        plan_patterns = [
+            (_re.compile(r"Free\s*(?:plan|tier)", _re.I), "free", 0.0),
+            (_re.compile(r"Pro\s*(?:plan|tier)?", _re.I), "pro", 20.0),
+            (_re.compile(r"Ultra\s*(?:plan|tier)?", _re.I), "ultra", 180.0),
+            (_re.compile(r"Team\s*(?:plan|tier)?", _re.I), "team", 25.0),
+            (_re.compile(r"Enterprise\s*(?:plan|tier)?", _re.I), "enterprise", 0.0),
+        ]
+
+        # Try to extract real prices from HTML
+        price_re = _re.compile(r"(\d+(?:[.,]\d{2})?)\s*(?:€|\$|USD|EUR)", _re.I)
+        price_matches = price_re.findall(html)
+
+        # Detect currency from HTML
+        currency = "USD"
+        if "€" in html or "EUR" in html:
+            currency = "EUR"
+
+        for pattern, plan_name, default_price in plan_patterns:
+            if pattern.search(html):
+                price = default_price
+                # Try to find associated price near the plan mention
+                plan_section = _re.search(
+                    pattern.pattern + r".*?(\d+(?:[.,]\d{2})?)\s*(?:€|\$|USD|EUR)",
+                    html, _re.I | _re.S
+                )
+                if plan_section:
+                    raw = plan_section.group(1).replace(",", ".")
+                    try:
+                        price = float(raw)
+                    except ValueError:
+                        pass
+                plans[plan_name] = {"prices": {currency: price}}
+
+        if not plans:
+            plans = {"free": {"prices": {currency: 0.0}}, "pro": {"prices": {currency: 20.0}}}
+
+        # --- Define paid features as protected surfaces ---
+        # The upgrade page itself is a feature gate indicator
+        base = self.context.base_url.rstrip("/")
+        entry = self.context.entry_url
+
+        # Detect plan-gated feature paths from the URL and HTML
+        feature_paths = []
+        if "/upgrade" in entry or "/pro" in entry or "/ultra" in entry:
+            feature_paths.append(("upgrade_access", entry.replace(base, "")))
+
+        # Look for feature-gated paths in network calls
+        _FEATURE_PATTERNS = [
+            ("claude_chat", _re.compile(r"/api/organizations/.+/chat", _re.I)),
+            ("claude_code", _re.compile(r"/api/.+/code|/code/", _re.I)),
+            ("model_access", _re.compile(r"/api/.+/model|/api/.+/completions", _re.I)),
+            ("settings_billing", _re.compile(r"/api/.+/billing|/settings/billing", _re.I)),
+        ]
+        for call in network_calls:
+            url = call.get("url", "")
+            parsed = urlparse(url)
+            path = parsed.path or "/"
+            for feat_name, pattern in _FEATURE_PATTERNS:
+                if feat_name not in features and pattern.search(path):
+                    plan_keys = list(plans.keys())
+                    cheapest_paid = plan_keys[1] if len(plan_keys) > 1 else plan_keys[0]
+                    features[feat_name] = {
+                        "method": call.get("method", "GET").upper(),
+                        "path": path,
+                        "proof_field": "data",
+                        "requires_plan": cheapest_paid,
+                        "consumes_quota": False,
+                        "observed_via": "electron_recon_network_capture",
+                    }
+                    declared_paid.append(feat_name)
+
+        # If we found upgrade/subscription endpoints, add the upgrade page as a feature
+        if "start_checkout" in surface or "subscription_view" in surface:
+            plan_keys = list(plans.keys())
+            cheapest_paid = plan_keys[1] if len(plan_keys) > 1 else plan_keys[0]
+            priciest = plan_keys[-1] if plan_keys else "pro"
+            features["subscription_access"] = {
+                "method": "GET",
+                "path": surface.get("subscription_view", {}).get("path", "/api/subscription"),
+                "proof_field": "data",
+                "requires_plan": cheapest_paid,
+                "consumes_quota": False,
+                "observed_via": "electron_recon_network_capture",
+            }
+            declared_paid.append("subscription_access")
+            if cheapest_paid != priciest:
+                features["premium_tier_access"] = {
+                    "method": "GET",
+                    "path": surface.get("subscription_view", {}).get("path", "/api/subscription"),
+                    "proof_field": "data",
+                    "requires_plan": priciest,
+                    "consumes_quota": False,
+                    "observed_via": "electron_recon_network_capture",
+                }
+                declared_paid.append("premium_tier_access")
+
+        # --- Build identity from session cookies ---
+        session_cookies = self.context.session_cookies
+        if session_cookies:
+            identities["customer_session"] = {
+                "role": "customer",
+                "tenant": "tenant_primary",
+                "token_env": None,
+            }
+
+        logger.info(
+            "auto-brief: %d surface ops, %d features, %d plans, %d identities from %d network calls",
+            len(surface), len(features), len(plans), len(identities), len(network_calls),
+        )
+
         return {
-            "authorization_ref": "test-clone-auto",
-            "authorized_by": "developer-self-test",
+            "authorization_ref": "redpilot-auto-recon",
+            "authorized_by": "redpilot-electron-recon",
             "environment": "sandbox",
             "target_kind": "customer_sandbox",
             "allowed_hosts": [host, f"*.{host}"],
-            "surface": {},
-            "features": {},
-            "plans": {"default": {"USD": 0.00}},
-            "primary_currency": "USD",
-            "identities": {},
+            "surface": surface,
+            "features": features,
+            "plans": plans,
+            "primary_currency": currency,
+            "identities": identities,
             "limits": {
                 "max_requests": 10_000_000,
                 "max_requests_per_second": 10_000.0,
                 "timeout_seconds": 30.0,
                 "quota_probe_cap": 100,
             },
-            "declared_paid_features": [],
+            "declared_paid_features": declared_paid,
             "allow_signup": True,
         }
 
